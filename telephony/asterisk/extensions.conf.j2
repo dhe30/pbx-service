@@ -1,0 +1,5 @@
+; Dialplan only hands calls to the ARI app.
+[from-edge]
+exten => _X.,1,Stasis(pbx-app,inbound)
+ same => n,Hangup(34)        ; Stasis failed (ARI app down) -> cause 34 -> SIP 503 -> Kamailio
+                             ; retries another pbx node   [VERIFY cause->503 mapping]

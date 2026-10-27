@@ -1,0 +1,6 @@
+; Asterisk PJSIP config (pbx nodes). Spec: CLAUDE.md §9.
+; Only trunks to the two Kamailio edges; NO per-staff endpoints, NO webrtc=yes
+; (rtpengine handles WebRTC, Kamailio is the registrar).
+;
+; TODO: transport-udp on {{ private_ip }}:5060; endpoints/aors/identify for edge-a and edge-b
+;       (context=from-edge, allow=ulaw only, direct_media=no, dtmf_mode=rfc4733, qualify).

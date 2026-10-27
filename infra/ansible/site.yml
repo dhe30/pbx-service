@@ -1,0 +1,32 @@
+---
+# Full deployment. See CLAUDE.md §15 for ordering and cross-group dependencies.
+- hosts: all
+  become: true
+  roles: [common]
+
+- hosts: db
+  become: true
+  roles: [etcd, postgres_patroni, objectstore]
+
+- hosts: db_clients
+  become: true
+  roles: [db_local_proxy]
+
+- hosts: app
+  become: true
+  serial: 1
+  roles: [api]
+
+- hosts: pbx
+  become: true
+  serial: 1
+  roles: [asterisk, ari_app]
+
+- hosts: edge
+  become: true
+  serial: 1
+  roles: [kamailio, rtpengine, edge_haproxy]
+
+- hosts: mon
+  become: true
+  roles: [monitoring, backups]

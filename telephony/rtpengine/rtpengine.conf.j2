@@ -1,0 +1,8 @@
+# rtpengine (edge nodes). Spec: CLAUDE.md §8.
+[rtpengine]
+interface = internal/{{ private_ip }};external/{{ public_ip }}
+# ng control protocol: private IP only; host firewall allows only edge peers.
+listen-ng = {{ private_ip }}:2223
+port-min = 30000
+port-max = 40000
+# TODO: logging, Prometheus/HTTP stats interface [VERIFY], transcoding options.

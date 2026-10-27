@@ -1,0 +1,17 @@
+# Local dev stack (CLAUDE.md §5, phase 2). Not used in production.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pbx
+      POSTGRES_PASSWORD: pbx
+      POSTGRES_DB: pbx
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["./data/postgres:/var/lib/postgresql/data"]
+
+  # S3-compatible object store. TODO: pick Garage or SeaweedFS to match production (CLAUDE.md §13).
+  # objectstore:
+  #   image: ...
+  #   ports: ["127.0.0.1:9000:9000"]
+
+  # TODO: api and web services once implemented (build from services/*/Dockerfile).

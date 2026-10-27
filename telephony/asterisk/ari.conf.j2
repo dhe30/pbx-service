@@ -1,0 +1,8 @@
+; ARI user for the local Node app. Password from Ansible Vault.
+[general]
+enabled = yes
+
+[pbxapp]
+type = user
+read_only = no
+password = {{ vault_ari_password }}
