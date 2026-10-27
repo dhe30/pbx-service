@@ -1,0 +1,6 @@
+# Everything here ends up on Linux VMs: force LF so bash scripts and configs work after a
+# checkout on Windows.
+* text=auto eol=lf
+*.wav binary
+*.pcap binary
+*.png binary

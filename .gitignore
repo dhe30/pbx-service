@@ -147,3 +147,15 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# --- pbx-service ---
+# Ansible
+*.retry
+.vault_pass*
+infra/ansible/group_vars/vault.yml.dec
+# Local spool / recordings from dev runs
+spool/
+*.wav
+!loadtest/sipp/pcap/*.wav
+# Local object-store / db data from dev/docker-compose
+dev/data/

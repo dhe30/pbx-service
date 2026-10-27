@@ -1,0 +1,10 @@
+#!KAMAILIO
+# Kamailio edge config (rendered per edge node). Spec: CLAUDE.md §7.
+#
+# Listeners:
+#   udp:{{ public_ip }}:5060   - carrier SIP
+#   udp:{{ private_ip }}:5060  - Asterisk + peer edge
+#   tcp:{{ private_ip }}:8080  - WebSocket (HAProxy terminates TLS for wss://)
+#
+# TODO: loadmodule list, modparams (usrloc db_mode=3, dispatcher probing, rtpengine_sock with
+#       BOTH rtpengines), request_route steps 1-8, reply/failure routes, websocket event route.

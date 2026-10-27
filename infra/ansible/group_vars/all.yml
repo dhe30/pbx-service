@@ -1,0 +1,10 @@
+# Pinned component versions (CLAUDE.md §5). [VERIFY] exact versions before first deploy.
+asterisk_version: "22"
+kamailio_version: "5.8"
+postgres_version: "16"
+etcd_version: "3.5"
+haproxy_version: "2.8"
+
+app_domain: "CHANGE_ME"        # needed for TLS/WSS
+sip_domain: "CHANGE_ME"
+carrier_ips: []                # provider SIP source IPs (Kamailio permissions group 1)

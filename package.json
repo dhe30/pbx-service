@@ -1,0 +1,22 @@
+{
+  "name": "pbx-service",
+  "private": true,
+  "description": "Hosted multi-tenant PBX (Kamailio + rtpengine + Asterisk/ARI + Node API + React softphone)",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "services/shared",
+    "services/api",
+    "services/ari-app",
+    "services/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:up": "docker compose -f dev/docker-compose.yml up -d",
+    "dev:down": "docker compose -f dev/docker-compose.yml down",
+    "db:migrate": "dbmate --migrations-dir db/migrations up"
+  }
+}
