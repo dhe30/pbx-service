@@ -52,7 +52,9 @@ app_db_url: "postgres://{{ db_app_user }}:{{ vault_db_app_password }}@{{ db_host
 s3_bucket: "pbx-media"
 s3_region: "garage"
 s3_port: 3900
-garage_replication_factor: 1      # 3 once there are 3 db nodes
+# Copies of every object: one per db node, at most 3 (1 on the all-in-one VM, 3 on db-1..3).
+# Must be right before Garage stores data; changing it later is a migration.
+garage_replication_factor: "{{ [groups['db'] | length, 3] | min }}"
 s3_endpoint: "http://{{ hostvars[groups['db'][0]].private_ip }}:{{ s3_port }}"
 
 # ---- Test data (phase 1) -----------------------------------------------------------------------

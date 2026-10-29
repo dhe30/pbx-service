@@ -430,6 +430,10 @@ node_exporter 9100 and other exporters.
 4. Split and replicate per §4.1, killing a node after each step: pbx x2 behind dispatcher;
    Patroni x3 + local DB proxies; app x2 behind HAProxy; edge x2 (Path, shared usrloc,
    rtpengine set); object store x3.
+   -> Worked on in parallel tracks (data tier / telephony split / API+web / monitoring+backups).
+      Shared interfaces every track codes against (inventory groups + vars, ports, DB and S3
+      contracts, health endpoints): docs/split-contracts.md. Example 10-VM inventory:
+      infra/ansible/inventory/staging.ini.
 5. Observability + synthetic checks.
 6. Load + chaos testing; capacity numbers; tune.
 7. Hardening: backups/restore drill, cert renewal, log rotation, runbook, deploy rules for the
