@@ -1,0 +1,35 @@
+---
+# Phase 1: the whole telephony stack on one VM (CLAUDE.md §17).
+#
+#   ansible-galaxy collection install -r requirements.yml
+#   ansible-playbook -i inventory/allinone.ini phase1-allinone.yml --ask-vault-pass
+#
+# Same roles as the split deployment; only the inventory differs. Order matters on a fresh VM:
+# database and object store first, then the services that depend on them.
+
+- name: Baseline
+  hosts: all
+  become: true
+  roles: [common]
+
+- name: Database server and object store
+  hosts: db
+  become: true
+  roles: [postgres_standalone, objectstore]
+
+- name: Database contents (primary only)
+  hosts: "{{ groups['db'][0] }}"
+  become: true
+  roles: [db_schema]
+
+- name: SIP edge
+  hosts: edge
+  become: true
+  serial: 1
+  roles: [kamailio, rtpengine, edge_haproxy]
+
+- name: PBX nodes
+  hosts: pbx
+  become: true
+  serial: 1
+  roles: [asterisk, ari_app]

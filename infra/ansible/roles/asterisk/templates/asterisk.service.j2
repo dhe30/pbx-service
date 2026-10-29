@@ -1,0 +1,22 @@
+[Unit]
+Description=Asterisk PBX
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+Environment=HOME=/var/lib/asterisk
+WorkingDirectory=/var/lib/asterisk
+# -f foreground, -q quiet, -m mute console output.
+ExecStart=/usr/sbin/asterisk -mqf -C /etc/asterisk/asterisk.conf
+ExecReload=/usr/sbin/asterisk -rx "core reload"
+RuntimeDirectory=asterisk
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

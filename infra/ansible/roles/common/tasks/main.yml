@@ -1,2 +1,43 @@
 ---
-# TODO: common role tasks.
+# Baseline for every VM: packages, hostname, host firewall.
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - acl            # lets Ansible "become" unprivileged users (postgres, asterisk)
+      - ca-certificates
+      - chrony
+      - curl
+      - gnupg
+      - jq
+      - nftables
+      - rsync
+      - sngrep         # live SIP ladder diagrams: the #1 debugging tool for this project
+      - tcpdump
+      - unzip
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Host firewall rules
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    mode: "0644"
+    validate: nft -c -f %s
+  notify: Reload nftables
+
+- name: Enable host firewall
+  ansible.builtin.service:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Config directory for pbx services
+  ansible.builtin.file:
+    path: /etc/pbx
+    state: directory
+    mode: "0755"

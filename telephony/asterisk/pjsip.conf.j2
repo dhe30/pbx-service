@@ -1,6 +1,59 @@
 ; Asterisk PJSIP config (pbx nodes). Spec: CLAUDE.md §9.
-; Only trunks to the two Kamailio edges; NO per-staff endpoints, NO webrtc=yes
-; (rtpengine handles WebRTC, Kamailio is the registrar).
 ;
-; TODO: transport-udp on {{ private_ip }}:5060; endpoints/aors/identify for edge-a and edge-b
-;       (context=from-edge, allow=ulaw only, direct_media=no, dtmf_mode=rfc4733, qualify).
+; Asterisk only ever talks SIP to the Kamailio edges. There are NO per-staff endpoints and NO
+; webrtc=yes: Kamailio is the registrar and rtpengine does WebRTC. Every call Asterisk sees is
+; plain RTP, PCMU, from a private IP.
+
+[global]
+type=global
+user_agent=pbx-asterisk
+; Identify the edges by source IP (they don't authenticate).
+endpoint_identifier_order=ip
+
+[transport-udp]
+type=transport
+protocol=udp
+bind={{ private_ip }}:{{ asterisk_sip_port }}
+
+{% for host in groups['edge'] %}
+{% set trunk = {'name': edge_trunk_names[loop.index0], 'ip': hostvars[host].private_ip} %}
+; ---- {{ trunk.name }}: Kamailio on {{ host }} ({{ trunk.ip }}) ----
+[{{ trunk.name }}]
+type=endpoint
+transport=transport-udp
+context=from-edge
+disallow=all
+allow=ulaw
+; rtpengine anchors the media; never let RTP go point-to-point.
+direct_media=no
+dtmf_mode=rfc4733
+; Show the caller's number on the staff phone (originate callerId -> From / P-Asserted-Identity).
+send_pai=yes
+trust_id_inbound=yes
+trust_id_outbound=yes
+; If rtpengine dies mid-call, audio stops: hang up instead of leaving a silent call open.
+rtp_timeout=60
+; Hold (docs/hold-call-waiting.md). Staff holds with a re-INVITE a=sendonly/inactive ->
+; Asterisk marks the staff channel held and raises ARI ChannelHold; the ARI app plays MOH to
+; the caller. moh_passthrough=no: when a hold reaches a channel, Asterisk plays MOH itself
+; instead of sending a hold re-INVITE on to that side (e.g. the carrier).
+moh_passthrough=no
+moh_suggest=default
+; A held leg may send no RTP at all. Allow that for up to hold_max_sec, then treat the device as
+; dead (e.g. the browser closed while holding) and hang up. Keep below rtpengine silent-timeout.
+rtp_timeout_hold={{ hold_max_sec }}
+aors={{ trunk.name }}
+
+[{{ trunk.name }}]
+type=aor
+contact=sip:{{ trunk.ip }}:5060
+; OPTIONS ping so Asterisk knows if this edge is reachable.
+qualify_frequency=10
+qualify_timeout=2
+
+[{{ trunk.name }}]
+type=identify
+endpoint={{ trunk.name }}
+match={{ trunk.ip }}
+
+{% endfor %}

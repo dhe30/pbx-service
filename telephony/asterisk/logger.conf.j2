@@ -1,0 +1,8 @@
+[general]
+dateformat = %F %T.%3q
+
+[logfiles]
+; journald via syslog for routine logs; rotated file for detailed debugging.
+syslog.local2 => notice,warning,error
+messages.log => notice,warning,error,verbose(3)
+console => notice,warning,error

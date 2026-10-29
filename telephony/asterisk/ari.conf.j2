@@ -1,8 +1,10 @@
-; ARI user for the local Node app. Password from Ansible Vault.
+; ARI user for the local Node app (services/ari-app). Password from Ansible Vault.
 [general]
 enabled = yes
+pretty = no
+allowed_origins = 
 
-[pbxapp]
+[{{ ari_user }}]
 type = user
 read_only = no
 password = {{ vault_ari_password }}

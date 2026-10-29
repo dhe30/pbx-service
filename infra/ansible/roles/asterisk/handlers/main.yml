@@ -1,1 +1,8 @@
 ---
+# NOTE: restarting Asterisk drops calls in progress on this node. Phase 4 adds a drain step
+# (dispatcher inactive -> wait for 0 calls) before restarts.
+- name: Restart asterisk
+  ansible.builtin.systemd:
+    name: asterisk
+    state: restarted
+    daemon_reload: true

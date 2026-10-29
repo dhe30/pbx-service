@@ -1,5 +1,16 @@
-; Dialplan only hands calls to the ARI app.
+; Dialplan: hand every call to the ARI app. All call logic lives in services/ari-app.
+
+[general]
+static=yes
+writeprotect=yes
+
 [from-edge]
-exten => _X.,1,Stasis(pbx-app,inbound)
- same => n,Hangup(34)        ; Stasis failed (ARI app down) -> cause 34 -> SIP 503 -> Kamailio
-                             ; retries another pbx node   [VERIFY cause->503 mapping]
+; DIDs arrive as the Request-URI user, with or without a leading '+'.
+exten => _[+0-9].,1,NoOp(Inbound call to ${EXTEN} from ${CALLERID(num)})
+ same => n,Stasis(pbx-app,inbound)
+; Only reached if Stasis() failed (ARI app not connected). Cause 34 = congestion -> SIP 503, so
+; Kamailio fails the call over to another pbx node.
+ same => n,Hangup(34)
+
+; Anything else (e.g. non-numeric R-URI user) is not ours.
+exten => _.,1,Hangup(1)

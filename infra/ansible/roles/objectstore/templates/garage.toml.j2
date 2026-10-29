@@ -1,0 +1,20 @@
+# Garage config. Reference: https://garagehq.deuxfleurs.fr/documentation/reference-manual/configuration/
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+
+# Copies of every object. 1 on the all-in-one VM, 3 across db-1..3.
+replication_factor = {{ garage_replication_factor }}
+
+# Node-to-node RPC (private network only).
+rpc_bind_addr = "{{ private_ip }}:3901"
+rpc_public_addr = "{{ private_ip }}:3901"
+rpc_secret = "{{ vault_garage_rpc_secret }}"
+
+[s3_api]
+s3_region = "{{ s3_region }}"
+api_bind_addr = "{{ private_ip }}:{{ s3_port }}"
+root_domain = ".s3.pbx.internal"
+
+[admin]
+api_bind_addr = "127.0.0.1:3903"

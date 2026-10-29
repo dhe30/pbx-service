@@ -3,7 +3,7 @@
   "private": true,
   "description": "Hosted multi-tenant PBX (Kamailio + rtpengine + Asterisk/ARI + Node API + React softphone)",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "workspaces": [
     "services/shared",

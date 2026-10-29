@@ -19,7 +19,12 @@ sections marked [VERIFY] must be checked against the docs for the versions actua
   phone number (DID), configure call handling (IVR menu, ring staff), and staff answer calls in
   the browser via WebRTC.
 - Required features: number purchase, IVR, ringing staff (browser softphones), CALL RECORDING,
-  VOICEMAIL, WebRTC.
+  VOICEMAIL, WebRTC, and HOLD + CALL WAITING (a staff member can put a caller on hold, answer
+  another call, then return to the first). Implemented in phase 1 — see §19.
+- Codec support (requirement): calls offering G.711 (PCMU/PCMA), G.723.1, G.729 or Opus must work.
+  Design: rtpengine transcodes the carrier leg to PCMU for Asterisk (§4.3 #3); browsers get PCMU
+  (WebRTC supports G.711 + Opus, not G.723.1/G.729), so the browser leg never transcodes.
+  [VERIFY] on the VM: `rtpengine --codecs` shows encode+decode for G723, G729, opus.
 - The system must run for several weeks on the course's Linode-clone cloud under (non-malicious)
   stress testing.
 - GRADE IS ALMOST ENTIRELY RELIABILITY / FAULT TOLERANCE. Keep features minimal and robust.
@@ -55,7 +60,12 @@ A3. The dialed DID (E.164) is in the Request-URI user part.
 A4. Every SDP offer includes G.711 (PCMU/PCMA), G.723.1, G.729, and Opus, plus RFC 4733
     telephone-event for DTMF.
     Impact if some calls lack G.711: NONE in design — rtpengine flags below already transcode;
-    only CPU capacity planning changes. Impact if DTMF is in-band audio only: MODERATE
+    only CPU capacity planning changes. G.723.1/G.729 calls to browsers always need one transcode
+    (browsers can't decode them). Possible later optimization if phase-6 load tests show Opus
+    transcoding is costly: pass Opus through end-to-end (Kamailio carrier-leg flags keep opus,
+    pjsip allow=opus,ulaw + an Asterisk Opus codec module; ARI originate already passes
+    `originator` so the staff leg prefers the caller's codec). Saves CPU only for Opus calls
+    with recording off (recording/prompts make Asterisk decode anyway). Config-only change. Impact if DTMF is in-band audio only: MODERATE
     (enable rtpengine in-band DTMF detection; CPU cost; unreliable over G.723.1/G.729).
 A5. Inbound calls only. Tenants do not place outbound PSTN calls.
     Impact if outbound required: MODERATE (Kamailio route for staff-originated INVITEs, outbound
@@ -156,11 +166,12 @@ pbx/
   loadtest/sipp/                # SIPp scenarios + RTP pcaps per codec
   dev/docker-compose.yml        # local dev: postgres, object store, api, web
 
-Tooling defaults (change if the team prefers): Node 20+ LTS, TypeScript strict, Fastify, postgres.js
+Tooling defaults (change if the team prefers): Node 24 LTS, TypeScript strict, Fastify, postgres.js
 (`postgres` npm), zod, pino logging, prom-client metrics, @aws-sdk/client-s3, argon2 for password
-hashing, vitest. ari-client (npm) has no TS types — wrap it in a small typed adapter module.
-Pin component versions in Ansible vars: Asterisk 22 LTS, Kamailio 5.8+/6.x, rtpengine (recent
-mr release, built with bcg729), Postgres 16, Patroni, etcd 3.5, HAProxy 2.8+.
+hashing, vitest. ARI: own small typed client in services/ari-app/src/ari/ (fetch + ws), not ari-client.
+Pin component versions in Ansible vars (infra/ansible/group_vars/all/main.yml): Asterisk 22 LTS
+(built from source), Kamailio 6.0, rtpengine 26.0 LTS (rtpengine.dfx.at, with bcg729), Postgres 16,
+Garage v2 (object store), Patroni, etcd 3.5, HAProxy from Debian 13 (3.0). Target OS: Debian 13.
 
 ---------------------------------------------------------------------------------------------
 ## 6. Data model (app schema `public`; Kamailio tables in schema/db as Kamailio expects)
@@ -252,6 +263,12 @@ request_route (in order):
 - Built with transcoding (ffmpeg) + bcg729 for G.729; verify `rtpengine --codecs` lists PCMU,
   PCMA, G723, G729, opus with encode+decode support. [VERIFY]
 - Transcoded calls run in userspace (no kernel forwarding) => CPU is the capacity limit; measure.
+- Phase 1 runs ALL media in userspace (rtpengine.conf `table = -1`, no kernel module) for a simple
+  install. Media-CPU scaling levers, in order: (1) kernel forwarding (`table = 0` + install
+  rtpengine-kernel-dkms; non-transcoded RTP and SRTP are then relayed in-kernel), (2) dedicated
+  media-N nodes, (3) only then architecture changes. Decision (2026-10-27): keep WebRTC
+  termination in rtpengine, NOT Asterisk (webrtc=yes would need public IPs/TURN for pbx nodes for
+  a small CPU saving; SRTP/DTLS cost is minor next to relaying/transcoding).
 - Metrics: enable its Prometheus/HTTP stats interface. [VERIFY]
 - Redis-based session replication between instances: optional later (in-progress calls on a dead
   rtpengine lose audio otherwise).
@@ -406,6 +423,8 @@ node_exporter 9100 and other exporters.
    structure; inbound call (SIPp/softphone as fake carrier) -> IVR -> rings browser and a UDP
    softphone; recording + voicemail to a local object store. (Optional warm-up: Asterisk-only
    WebRTC smoke test.)
+   -> IMPLEMENTED: infra/ansible/phase1-allinone.yml. Runbook, decisions taken beyond this spec,
+      and the items still to verify on a real VM: docs/phase1.md.
 2. (Parallel) API + web locally via dev/docker-compose; staff creation writes subscriber rows.
 3. Everything as code: Ansible roles + StackScript; rebuild the all-in-one VM with one command.
 4. Split and replicate per §4.1, killing a node after each step: pbx x2 behind dispatcher;
@@ -427,3 +446,22 @@ node_exporter 9100 and other exporters.
   domain name + DNS control (needed for TLS/WSS).
 - Are external services allowed (GitHub Actions, ghcr.io, Let's Encrypt, public STUN)?
 - Retention requirements for recordings/voicemail?
+
+---------------------------------------------------------------------------------------------
+## 19. Hold + call waiting (added 2026-10-27, implemented in phase 1 on 2026-10-28)
+---------------------------------------------------------------------------------------------
+Full requirements (H1-H3, W1-W7, R1-R5), design, decisions D1-D8 and tests: docs/hold-call-waiting.md.
+Summary:
+- Hold = the staff phone sends an in-dialog re-INVITE with a=sendonly (resume: a=sendrecv).
+- Kamailio route[INDLG_SDP] picks rtpengine flags from the leg tag set on the initial INVITE
+  (leg=carrier|staff_ws|staff_udp) + whether the request came from Asterisk. Never from the
+  request's own transport (with 2 edges a browser's re-INVITE arrives at the anchoring edge via UDP).
+- Asterisk raises ChannelHold/ChannelUnhold on the agent channel; the ARI app (hold.ts,
+  connectToAgent in ring.ts) starts/stops MOH on the CALLER channel. Needed because Asterisk only
+  forwards hold inside 2-party bridges; recorded calls use softmix, which drops hold frames.
+- Recording keeps running while held (D1). Max hold 30 min = Asterisk rtp_timeout_hold
+  (hold_max_sec) < rtpengine silent-timeout 3600 (D2). MOH = stock opsound u-law, class default.
+- Call waiting: no server-side busy check (W1). The softphone (telephony/webrtc-test now, and
+  services/web §12 later) uses SIP.js UserAgent/Invitation with several sessions: auto-holds the
+  active call when answering another, declines with 486, no limit on calls.
+- Tests: loadtest/sipp/uas_staff_hold.xml; manual browser steps in docs/phase1.md §4.

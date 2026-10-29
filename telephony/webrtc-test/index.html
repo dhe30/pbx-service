@@ -1,0 +1,368 @@
+<!doctype html>
+<!--
+  Bare-bones WebRTC softphone for phase-1 testing (NOT the real dashboard softphone).
+  Served by HAProxy at https://<edge>/webrtc-test. Must stay under ~30 KB (HAProxy buffer).
+  Registers to Kamailio over wss://<same host>/ws and answers incoming calls.
+
+  Several calls at once (hold + call waiting, docs/hold-call-waiting.md), so it uses the SIP.js
+  UserAgent/Registerer/Invitation API: SimpleUser only handles one session.
+    - Hold/Resume = re-INVITE with a=sendonly / a=sendrecv. Our mic and their audio are also
+      muted locally for a held call.
+    - A call arriving while on another call beeps once every few seconds (call waiting).
+    - Answering a call first holds the active one: at most one unheld call at a time.
+    - Decline = 486 Busy Here. No limit on the number of calls (decision D4).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PBX WebRTC test</title>
+<style>
+  :root { color-scheme: light dark; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; --muted: #6e7781; }
+  body { font: 15px/1.4 system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; }
+  fieldset { border: 1px solid var(--muted); border-radius: 8px; margin-bottom: 16px; }
+  label { display: block; margin: 6px 0; }
+  input { width: 100%; box-sizing: border-box; padding: 6px; font: inherit; }
+  button { font: inherit; padding: 8px 14px; margin: 4px 4px 4px 0; border-radius: 6px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  #status { font-weight: 600; }
+  #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
+  .line { padding: 10px 12px; border: 2px solid var(--muted); border-radius: 8px; margin-bottom: 10px; }
+  .line.ringing { border-color: var(--ok); } .line.active { border-color: var(--ok); background: rgba(26,127,55,.08); }
+  .line.held { border-color: var(--warn); }
+  .line .st { font-size: 13px; color: var(--muted); margin-left: 6px; }
+  #log { height: 220px; overflow: auto; font: 12px/1.35 ui-monospace, monospace; background: rgba(127,127,127,.12); padding: 8px; border-radius: 6px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>PBX WebRTC test phone</h1>
+
+<fieldset>
+  <legend>Account (staff SIP credentials)</legend>
+  <label>WebSocket URL <input id="ws"></label>
+  <label>SIP domain <input id="domain" placeholder="e.g. pbx.example"></label>
+  <label>Username <input id="user" value="alice" autocomplete="username"></label>
+  <label>Password <input id="pass" type="password" autocomplete="current-password"></label>
+</fieldset>
+
+<p>Status: <span id="status">offline</span></p>
+<button id="online">Go online</button>
+<button id="offline" disabled>Go offline</button>
+
+<h3>Calls</h3>
+<div id="lines"><p class="st">No calls.</p></div>
+<div id="audio" hidden></div>
+
+<h3>Log</h3>
+<div id="log"></div>
+
+<script type="module">
+import { UserAgent, UserAgentState, Registerer, SessionState } from "https://cdn.jsdelivr.net/npm/sip.js@0.21.2/+esm";
+
+const REINVITE_TIMEOUT_MS = 35000;
+
+const $ = (id) => document.getElementById(id);
+const log = (msg) => {
+  const line = `${new Date().toISOString().slice(11, 23)} ${msg}\n`;
+  $("log").textContent += line;
+  $("log").scrollTop = $("log").scrollHeight;
+};
+const setStatus = (text, cls = "") => { $("status").textContent = text; $("status").className = cls; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Remember non-secret fields between page loads (storage may be blocked: then just don't).
+const store = {
+  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+};
+$("ws").value = store.get("ws") || `wss://${location.host}/ws`;
+$("domain").value = store.get("domain") || "";
+$("user").value = store.get("user") || "alice";
+
+let ua = null;
+let registerer = null;
+let wantOnline = false;
+let retry = 0;
+let retryTimer = null;
+
+// ---- Calls ("lines") ------------------------------------------------------------------------
+// line = { id, inv (SIP.js Invitation), from, held, busy (re-INVITE in flight), audio }
+const lines = new Map();
+let nextId = 1;
+
+const isRinging = (l) => l.inv.state === SessionState.Initial || l.inv.state === SessionState.Establishing;
+const isUp = (l) => l.inv.state === SessionState.Established;
+const activeLine = () => [...lines.values()].find((l) => isUp(l) && !l.held);
+
+function onInvite(inv) {
+  const l = { id: nextId++, inv, from: inv.remoteIdentity.uri.user || "unknown", held: false, busy: false };
+  l.audio = document.createElement("audio");
+  l.audio.autoplay = true;
+  $("audio").append(l.audio);
+  lines.set(l.id, l);
+  log(`#${l.id} incoming call from ${l.from}${activeLine() ? " (call waiting)" : ""}`);
+
+  inv.stateChange.addListener((state) => {
+    if (state === SessionState.Established) {
+      // Play this call's remote audio in its own <audio> element.
+      const pc = inv.sessionDescriptionHandler.peerConnection;
+      const stream = new MediaStream();
+      pc.getReceivers().forEach((r) => r.track && stream.addTrack(r.track));
+      l.audio.srcObject = stream;
+      l.audio.play().catch(() => {});
+      log(`#${l.id} connected`);
+    } else if (state === SessionState.Terminated) {
+      log(`#${l.id} ended`);
+      l.audio.srcObject = null;
+      l.audio.remove();
+      lines.delete(l.id);
+    }
+    render();
+  });
+  render();
+}
+
+// Mute our mic and their audio for a held call (the SDP direction alone doesn't stop the tracks).
+function applyTracks(l) {
+  const pc = l.inv.sessionDescriptionHandler?.peerConnection;
+  if (!pc) return;
+  pc.getSenders().forEach((s) => { if (s.track) s.track.enabled = !l.held; });
+  pc.getReceivers().forEach((r) => { if (r.track) r.track.enabled = !l.held; });
+}
+
+// One re-INVITE (hold or resume). Resolves on 2xx; rejects (with .status) otherwise.
+function reinvite(l, hold) {
+  const s = l.inv;
+  s.sessionDescriptionHandlerOptionsReInvite = { ...s.sessionDescriptionHandlerOptionsReInvite, hold };
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("no answer to re-INVITE")), REINVITE_TIMEOUT_MS);
+    const done = (fn, v) => { clearTimeout(timer); fn(v); };
+    s.invite({
+      requestDelegate: {
+        onAccept: () => done(resolve),
+        onReject: (res) => {
+          const err = new Error(`re-INVITE rejected: ${res.message.statusCode} ${res.message.reasonPhrase}`);
+          err.status = res.message.statusCode;
+          done(reject, err);
+        },
+      },
+    }).catch((err) => done(reject, err));
+  });
+}
+
+async function setHold(l, hold) {
+  if (l.held === hold) return;
+  if (l.busy) throw new Error("hold/resume already in progress");
+  l.busy = true;
+  render();
+  try {
+    try {
+      await reinvite(l, hold);
+    } catch (err) {
+      // 491 = both sides sent a re-INVITE at once (glare): retry once after a random pause.
+      if (err.status !== 491) throw err;
+      await sleep(1000 + Math.random() * 1500);
+      await reinvite(l, hold);
+    }
+    l.held = hold;
+    log(`#${l.id} ${hold ? "on hold" : "resumed"}`);
+  } catch (err) {
+    // The call stays as it was (SIP.js rolled the offer back); restore our SDP option too.
+    l.inv.sessionDescriptionHandlerOptionsReInvite = { ...l.inv.sessionDescriptionHandlerOptionsReInvite, hold: l.held };
+    throw err;
+  } finally {
+    l.busy = false;
+    applyTracks(l);
+    render();
+  }
+}
+
+// Answer or resume `l`; first hold whichever other call is active (at most one unheld call).
+async function makeActive(l) {
+  const current = activeLine();
+  if (current && current !== l) {
+    try {
+      await setHold(current, true);
+    } catch (err) {
+      log(`#${current.id} could not be held (${err.message}); not switching calls`);
+      return;
+    }
+  }
+  if (isRinging(l)) {
+    await l.inv.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+  } else {
+    await setHold(l, false);
+  }
+}
+
+function endLine(l) {
+  if (isRinging(l)) return l.inv.reject({ statusCode: 486 });   // decline (D5)
+  if (isUp(l)) return l.inv.bye();
+}
+
+const act = (fn) => async (l) => {
+  try { await fn(l); } catch (err) { log(`#${l.id} ${err.message}`); render(); }
+};
+const actions = {
+  answer: act(makeActive),
+  resume: act(makeActive),
+  hold: act((l) => setHold(l, true)),
+  hangup: act(endLine),
+};
+
+function render() {
+  const box = $("lines");
+  box.textContent = "";
+  if (lines.size === 0) {
+    box.innerHTML = '<p class="st">No calls.</p>';
+  }
+  for (const l of lines.values()) {
+    const ringing = isRinging(l);
+    const state = ringing ? (activeLine() ? "waiting" : "ringing") : l.busy ? "…" : l.held ? "on hold" : isUp(l) ? "active" : "";
+    const div = document.createElement("div");
+    div.className = `line ${ringing ? "ringing" : l.held ? "held" : isUp(l) ? "active" : ""}`;
+    div.innerHTML = `<strong></strong><span class="st"></span><br>`;
+    div.querySelector("strong").textContent = `#${l.id} ${l.from}`;
+    div.querySelector(".st").textContent = state;
+    const btn = (label, fn, disabled = false) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.disabled = disabled || l.busy;
+      b.onclick = () => fn(l);
+      div.append(b);
+    };
+    if (ringing) {
+      btn("Answer", actions.answer);
+      btn("Decline", actions.hangup);
+    } else if (isUp(l)) {
+      if (l.held) btn("Resume", actions.resume);
+      else btn("Hold", actions.hold);
+      btn("Hang up", actions.hangup);
+    }
+    box.append(div);
+  }
+  updateAlert();
+}
+
+// ---- Ring / call-waiting tone (WebAudio, no files) ------------------------------------------
+let audioCtx = null;
+let alertTimer = null;
+let alertKind = "";
+function beep(times) {
+  if (!audioCtx) return;
+  for (let i = 0; i < times; i++) {
+    const t = audioCtx.currentTime + i * 0.3;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 440;
+    gain.gain.value = 0.15;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+}
+function updateAlert() {
+  const ringing = [...lines.values()].some(isRinging);
+  // Ringing while on a call = short call-waiting beep; otherwise a "ring" every 2 s.
+  const kind = !ringing ? "" : activeLine() ? "waiting" : "ring";
+  if (kind === alertKind) return;
+  alertKind = kind;
+  clearInterval(alertTimer);
+  if (!kind) return;
+  const play = () => (kind === "waiting" ? beep(1) : beep(2));
+  play();
+  alertTimer = setInterval(play, kind === "waiting" ? 4000 : 2000);
+}
+
+// ---- Registration + reconnect ----------------------------------------------------------------
+function buildUserAgent() {
+  const user = $("user").value.trim();
+  const domain = $("domain").value.trim();
+  const uri = UserAgent.makeURI(`sip:${user}@${domain}`);
+  if (!uri) throw new Error("invalid user/domain");
+  return new UserAgent({
+    uri,
+    transportOptions: { server: $("ws").value.trim() },
+    authorizationUsername: user,
+    authorizationPassword: $("pass").value,
+    displayName: user,
+    logLevel: "warn",
+    delegate: {
+      onConnect: () => log("websocket connected"),
+      onDisconnect: (err) => {
+        log(`websocket disconnected${err ? ": " + err.message : ""}`);
+        setStatus("disconnected", "bad");
+        if (wantOnline) scheduleReconnect();
+      },
+      onInvite,
+    },
+  });
+}
+
+async function connectAndRegister() {
+  clearTimeout(retryTimer);
+  setStatus("connecting…");
+  try {
+    // We reconnect ourselves (not SIP.js) so we can re-REGISTER after the socket comes back.
+    if (ua.state === UserAgentState.Started) await ua.reconnect();
+    else await ua.start();
+    await registerer.register();
+  } catch (err) {
+    log(`connect/register failed: ${err.message}`);
+    setStatus("error", "bad");
+    if (wantOnline) scheduleReconnect();
+  }
+}
+
+// Exponential backoff with jitter (1 s .. 30 s). An edge failure drops the WebSocket; HAProxy on
+// the other edge accepts the new one and the new REGISTER replaces the stale contact.
+function scheduleReconnect() {
+  clearTimeout(retryTimer);
+  const delay = Math.min(30000, 1000 * 2 ** retry++) * (0.5 + Math.random() / 2);
+  log(`reconnecting in ${(delay / 1000).toFixed(1)} s`);
+  retryTimer = setTimeout(connectAndRegister, delay);
+}
+
+$("online").onclick = async () => {
+  for (const k of ["ws", "domain", "user"]) store.set(k, $(k).value.trim());
+  // Ask for the mic now (user gesture) so answering is instant and the browser allows autoplay.
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach((t) => t.stop());
+    audioCtx ??= new AudioContext();
+  } catch (err) {
+    log(`microphone permission failed: ${err.message}`);
+    return;
+  }
+  try {
+    ua = buildUserAgent();
+  } catch (err) {
+    log(err.message);
+    return;
+  }
+  registerer = new Registerer(ua, { expires: 120 });
+  registerer.stateChange.addListener((state) => {
+    log(`registration: ${state}`);
+    if (state === "Registered") { retry = 0; setStatus(`registered as ${$("user").value.trim()}`, "ok"); }
+    else if (state === "Unregistered") setStatus("unregistered");
+  });
+  wantOnline = true;
+  $("online").disabled = true;
+  $("offline").disabled = false;
+  await connectAndRegister();
+};
+
+$("offline").onclick = async () => {
+  wantOnline = false;
+  clearTimeout(retryTimer);
+  for (const l of lines.values()) { try { await endLine(l); } catch {} }
+  try { await registerer?.unregister(); } catch {}
+  try { await ua?.stop(); } catch {}
+  ua = registerer = null;
+  setStatus("offline");
+  $("online").disabled = false;
+  $("offline").disabled = true;
+};
+</script>
+</body>
+</html>

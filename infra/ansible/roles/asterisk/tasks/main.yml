@@ -1,2 +1,144 @@
 ---
-# TODO: asterisk role tasks.
+# Asterisk (pbx nodes). Debian doesn't package Asterisk, so build the pinned version from source.
+# A build takes ~10-20 minutes on 2 vCPUs and only runs when the installed version differs.
+
+- name: asterisk system user
+  ansible.builtin.user:
+    name: asterisk
+    system: true
+    home: /var/lib/asterisk
+    shell: /usr/sbin/nologin
+
+- name: Installed Asterisk version
+  ansible.builtin.command: /usr/sbin/asterisk -V
+  register: asterisk_installed
+  changed_when: false
+  failed_when: false
+
+- name: Build and install Asterisk {{ asterisk_version }}
+  when: asterisk_installed.stdout | default('') != 'Asterisk ' ~ asterisk_version
+  block:
+    - name: Build dependencies
+      ansible.builtin.apt:
+        name:
+          - build-essential
+          - pkg-config
+          - autoconf
+          - bzip2
+          - patch
+          - wget
+          - python3
+          - libedit-dev
+          - libjansson-dev
+          - libxml2-dev
+          - uuid-dev
+          - libsqlite3-dev
+          - libssl-dev
+          - libcurl4-openssl-dev
+          - libncurses-dev
+          - libsrtp2-dev
+          - libopus-dev
+        update_cache: true
+
+    - name: Download and unpack Asterisk source
+      ansible.builtin.unarchive:
+        src: "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-{{ asterisk_version }}.tar.gz"
+        dest: /usr/src
+        remote_src: true
+        creates: "{{ asterisk_src_dir }}/configure"
+
+    # Bundled pjproject = the exact PJSIP version Asterisk is tested with (downloaded at build).
+    - name: Configure
+      ansible.builtin.command: ./configure --with-pjproject-bundled --with-jansson-bundled
+      args:
+        chdir: "{{ asterisk_src_dir }}"
+      changed_when: true
+
+    - name: Generate default module selection
+      ansible.builtin.command: make menuselect.makeopts
+      args:
+        chdir: "{{ asterisk_src_dir }}"
+      changed_when: true
+
+    # u-law prompts and music on hold (our only codec, so no transcoding when playing them);
+    # BUILD_NATIVE off so binaries also run on other CPUs (Images / rebuilt VMs).
+    - name: Select modules and sounds
+      ansible.builtin.command: >-
+        menuselect/menuselect
+        --enable CORE-SOUNDS-EN-ULAW --disable CORE-SOUNDS-EN-GSM
+        --enable MOH-OPSOUND-ULAW --disable MOH-OPSOUND-WAV
+        --enable res_prometheus
+        --disable BUILD_NATIVE
+        menuselect.makeopts
+      args:
+        chdir: "{{ asterisk_src_dir }}"
+      changed_when: true
+
+    # NOISY_BUILD=yes: without it the bundled pjproject build hides compiler errors and only
+    # reports "Error 2". Full output goes to asterisk_build_log. If the parallel build fails
+    # (pjproject has been flaky with -j), retry once serially; on a second failure show the
+    # end of the log.
+    - name: Compile (long; log in {{ asterisk_build_log }})
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! make -j{{ ansible_processor_vcpus | default(2) }} NOISY_BUILD=yes > {{ asterisk_build_log }} 2>&1; then
+          echo "parallel build failed; retrying with -j1" >> {{ asterisk_build_log }}
+          if ! make NOISY_BUILD=yes >> {{ asterisk_build_log }} 2>&1; then
+            grep -nE "error|Error|Killed" {{ asterisk_build_log }} | tail -20
+            echo "----- last 60 lines of {{ asterisk_build_log }} -----"
+            tail -60 {{ asterisk_build_log }}
+            exit 1
+          fi
+        fi
+      args:
+        chdir: "{{ asterisk_src_dir }}"
+        executable: /bin/bash
+      async: 5400
+      poll: 30
+      changed_when: true
+
+    - name: Install (also downloads sound files)
+      ansible.builtin.command: make install
+      args:
+        chdir: "{{ asterisk_src_dir }}"
+      changed_when: true
+      notify: Restart asterisk
+
+- name: Asterisk directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: asterisk
+    group: asterisk
+    mode: "0750"
+  loop:
+    - /etc/asterisk
+    - /var/lib/asterisk
+    - /var/log/asterisk
+    - /var/spool/asterisk
+    - /var/spool/asterisk/recording   # ARI recordings; the ARI app uploads and deletes them
+    - /var/lib/asterisk/sounds/cache  # tenant greetings cached by the ARI app
+
+- name: Asterisk configs
+  ansible.builtin.template:
+    src: "{{ repo_root }}/telephony/asterisk/{{ item }}.j2"
+    dest: "/etc/asterisk/{{ item }}"
+    owner: asterisk
+    group: asterisk
+    mode: "0640"
+  loop: "{{ asterisk_config_files }}"
+  notify: Restart asterisk
+
+- name: Asterisk systemd unit
+  ansible.builtin.template:
+    src: asterisk.service.j2
+    dest: /etc/systemd/system/asterisk.service
+    mode: "0644"
+  notify: Restart asterisk
+
+- name: Start Asterisk
+  ansible.builtin.systemd:
+    name: asterisk
+    enabled: true
+    state: started
+    daemon_reload: true

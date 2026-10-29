@@ -1,2 +1,58 @@
 ---
-# TODO: edge_haproxy role tasks.
+# HAProxy on edge nodes: TLS termination for HTTPS (API) and WSS (browser SIP -> Kamailio).
+
+- name: Install HAProxy
+  ansible.builtin.apt:
+    name: haproxy
+
+- name: HAProxy directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: haproxy
+    mode: "0750"
+  loop:
+    - /etc/haproxy/certs
+    - /etc/haproxy/www
+
+# PHASE 1: self-signed cert for the public IP. Open https://<public_ip>/webrtc-test once and
+# accept the warning; the same exception then covers wss://<public_ip>/ws.
+# TODO(phase 7): Let's Encrypt for the app domain + renewal + expiry alert.
+- name: Self-signed certificate
+  ansible.builtin.command: >-
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825
+    -subj "/CN={{ public_ip }}"
+    -addext "subjectAltName=IP:{{ public_ip }}"
+    -keyout /etc/haproxy/certs/site.key -out /etc/haproxy/certs/site.crt
+  args:
+    creates: /etc/haproxy/certs/site.crt
+
+- name: Combined PEM for HAProxy
+  ansible.builtin.shell: cat /etc/haproxy/certs/site.crt /etc/haproxy/certs/site.key > /etc/haproxy/certs/site.pem && chmod 0640 /etc/haproxy/certs/site.pem && chgrp haproxy /etc/haproxy/certs/site.pem
+  args:
+    creates: /etc/haproxy/certs/site.pem
+  notify: Reload haproxy
+
+- name: WebRTC test page
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/telephony/webrtc-test/index.html"
+    dest: /etc/haproxy/www/webrtc-test.html
+    owner: root
+    group: haproxy
+    mode: "0640"
+  notify: Reload haproxy
+
+- name: HAProxy config
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: "0644"
+    validate: haproxy -c -f %s
+  notify: Reload haproxy
+
+- name: Start HAProxy
+  ansible.builtin.service:
+    name: haproxy
+    enabled: true
+    state: started

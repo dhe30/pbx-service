@@ -1,1 +1,6 @@
 ---
+- name: Restart ari-app
+  ansible.builtin.systemd:
+    name: pbx-ari-app
+    state: restarted
+    daemon_reload: true

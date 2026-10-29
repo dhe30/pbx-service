@@ -1,0 +1,87 @@
+---
+# Database contents: roles + database, Kamailio's tables, app migrations, optional test seed.
+# Runs against the primary only (groups['db'][0] in phase 1).
+
+- name: Repo SQL directory on the host
+  ansible.builtin.file:
+    path: /opt/pbx/db
+    state: directory
+    mode: "0755"
+
+- name: Copy SQL (Kamailio schema, migrations, seeds)
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/db/{{ item }}/"
+    dest: "/opt/pbx/db/{{ item }}/"
+    mode: "0644"
+  loop: [kamailio, migrations, seeds]
+
+- name: Render bootstrap SQL (contains passwords)
+  ansible.builtin.template:
+    src: bootstrap.sql.j2
+    dest: /var/lib/postgresql/pbx-bootstrap.sql
+    owner: postgres
+    group: postgres
+    mode: "0600"
+
+- name: Create roles, database and schemas
+  ansible.builtin.command: psql -X -q -f /var/lib/postgresql/pbx-bootstrap.sql
+  become: true
+  become_user: postgres
+  changed_when: false
+
+# ---- Kamailio tables (created as the kamailio role so it owns them) -------------------------
+
+- name: Check for the Kamailio schema
+  ansible.builtin.command: psql -X -tAc "select to_regclass('kamailio.version') is not null" {{ db_name }}
+  become: true
+  become_user: postgres
+  register: kamailio_schema
+  changed_when: false
+
+- name: Create Kamailio tables
+  ansible.builtin.command: >-
+    psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U {{ db_kamailio_user }} -d {{ db_name }}
+    -f /opt/pbx/db/kamailio/{{ item }}
+  environment:
+    PGPASSWORD: "{{ vault_db_kamailio_password }}"
+  loop:
+    - standard-create.sql
+    - auth_db-create.sql
+    - usrloc-create.sql
+  when: kamailio_schema.stdout != 't'
+  changed_when: true
+
+# ---- App schema (dbmate) ------------------------------------------------------------------
+
+- name: Install dbmate {{ dbmate_version }}
+  ansible.builtin.get_url:
+    url: "https://github.com/amacneil/dbmate/releases/download/{{ dbmate_version }}/dbmate-linux-amd64"
+    dest: "/usr/local/bin/dbmate-{{ dbmate_version }}"
+    mode: "0755"
+
+- name: Link dbmate
+  ansible.builtin.file:
+    src: "/usr/local/bin/dbmate-{{ dbmate_version }}"
+    dest: /usr/local/bin/dbmate
+    state: link
+
+- name: Apply app migrations
+  ansible.builtin.command: dbmate --no-dump-schema --migrations-dir /opt/pbx/db/migrations up
+  environment:
+    DATABASE_URL: "{{ app_db_url }}?sslmode=disable"
+  register: dbmate_up
+  changed_when: "'Applying' in dbmate_up.stdout"
+
+# ---- Test tenant (phase 1) ----------------------------------------------------------------
+
+- name: Load test tenant seed
+  ansible.builtin.command: >-
+    psql -X -q -h 127.0.0.1 -U {{ db_app_user }} -d {{ db_name }} -v ON_ERROR_STOP=1
+    -v did={{ test_did }} -v sip_domain={{ sip_domain }}
+    -v alice_password={{ vault_test_alice_password }} -v bob_password={{ vault_test_bob_password }}
+    -f /opt/pbx/db/seeds/test_tenant.sql
+  environment:
+    PGPASSWORD: "{{ vault_db_app_password }}"
+  when: load_test_seed | bool
+  changed_when: false
+  no_log: true
