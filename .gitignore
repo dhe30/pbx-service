@@ -159,3 +159,6 @@ spool/
 !loadtest/sipp/pcap/*.wav
 # Local object-store / db data from dev/docker-compose
 dev/data/
+
+# Ansible Vault with real secrets (plaintext before `ansible-vault encrypt`); never commit.
+infra/ansible/group_vars/all/vault.yml

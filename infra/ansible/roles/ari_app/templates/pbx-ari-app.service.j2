@@ -1,0 +1,19 @@
+[Unit]
+Description=PBX ARI call-control app
+After=network-online.target asterisk.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+EnvironmentFile=/etc/pbx/ari-app.env
+WorkingDirectory=/opt/pbx/src/services/ari-app
+ExecStart=/usr/bin/node dist/index.js
+# Crash-only: the app exits when it loses ARI; systemd brings it back in 2 s.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

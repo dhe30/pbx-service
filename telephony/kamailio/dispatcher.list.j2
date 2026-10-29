@@ -1,5 +1,6 @@
-# Dispatcher set 1 = pbx nodes (rendered from inventory group `pbx`).
-# Format: <setid> <destination> <flags> <priority> <attrs>
+# Dispatcher set 1 = pbx nodes (Asterisk), rendered from inventory group `pbx`.
+# Format: <setid> <destination> <flags> <priority>
+# Reload after edits without restarting Kamailio:  kamcmd dispatcher.reload
 {% for host in groups['pbx'] %}
-1 sip:{{ hostvars[host].private_ip }}:5060 0 0
+1 sip:{{ hostvars[host].private_ip }}:{{ hostvars[host].asterisk_sip_port | default(5060) }} 0 0
 {% endfor %}

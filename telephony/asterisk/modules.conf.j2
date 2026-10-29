@@ -1,0 +1,19 @@
+; Load everything that was built, minus channel drivers and apps we never use.
+; (Keeps startup fast and the attack surface small.)
+[modules]
+autoload = yes
+noload => chan_iax2.so
+noload => chan_unistim.so
+noload => chan_skinny.so
+noload => chan_mgcp.so
+noload => chan_motif.so
+noload => chan_console.so
+noload => res_pjsip_phoneprov_provider.so
+noload => res_phoneprov.so
+noload => app_voicemail.so
+noload => app_queue.so
+noload => res_xmpp.so
+noload => cdr_sqlite3_custom.so
+noload => cel_sqlite3_custom.so
+noload => pbx_dundi.so
+noload => res_smdi.so

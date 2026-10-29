@@ -1,2 +1,121 @@
 ---
-# TODO: objectstore role tasks.
+# Garage S3-compatible object store (recordings, voicemail, greetings).
+# Phase 1: one node, replication_factor 1. Phase 4: db-1..3, replication_factor 3.
+
+- name: Garage system user
+  ansible.builtin.user:
+    name: garage
+    system: true
+    home: /var/lib/garage
+    shell: /usr/sbin/nologin
+
+- name: Garage data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: garage
+    group: garage
+    mode: "0750"
+  loop:
+    - /var/lib/garage
+    - /var/lib/garage/meta
+    - /var/lib/garage/data
+    - /usr/local/lib/garage
+
+- name: Download Garage {{ garage_version }}
+  ansible.builtin.get_url:
+    url: "https://garagehq.deuxfleurs.fr/_releases/{{ garage_version }}/x86_64-unknown-linux-musl/garage"
+    dest: "/usr/local/lib/garage/garage-{{ garage_version }}"
+    mode: "0755"
+
+- name: Link garage binary
+  ansible.builtin.file:
+    src: "/usr/local/lib/garage/garage-{{ garage_version }}"
+    dest: /usr/local/bin/garage
+    state: link
+  notify: Restart garage
+
+- name: Garage config
+  ansible.builtin.template:
+    src: garage.toml.j2
+    dest: /etc/garage.toml
+    owner: root
+    group: garage
+    mode: "0640"
+  notify: Restart garage
+
+- name: Garage systemd unit
+  ansible.builtin.template:
+    src: garage.service.j2
+    dest: /etc/systemd/system/garage.service
+    mode: "0644"
+  notify: Restart garage
+
+- name: Start Garage
+  ansible.builtin.systemd:
+    name: garage
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending restarts before configuring the cluster
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Garage to answer
+  ansible.builtin.command: garage status
+  register: garage_status
+  retries: 15
+  delay: 2
+  until: garage_status.rc == 0
+  changed_when: false
+
+# ---- Cluster layout (first run only) ------------------------------------------------------
+# A fresh node shows "NO ROLE ASSIGNED" until it is given a zone + capacity and the layout is
+# applied. Multi-node layout changes (phase 4) are a deliberate manual step, see runbook.
+
+- name: Get node id
+  ansible.builtin.command: garage node id -q
+  register: garage_node_id
+  changed_when: false
+  when: "'NO ROLE ASSIGNED' in garage_status.stdout"
+
+- name: Assign layout
+  ansible.builtin.command: garage layout assign -z dc1 -c 20G {{ garage_node_id.stdout.split('@')[0] }}
+  when: "'NO ROLE ASSIGNED' in garage_status.stdout"
+  changed_when: true
+
+- name: Apply layout
+  ansible.builtin.command: garage layout apply --version 1
+  when: "'NO ROLE ASSIGNED' in garage_status.stdout"
+  changed_when: true
+
+# ---- Bucket and access key ---------------------------------------------------------------
+
+- name: Check bucket
+  ansible.builtin.command: garage bucket info {{ s3_bucket }}
+  register: garage_bucket
+  failed_when: false
+  changed_when: false
+
+- name: Create bucket
+  ansible.builtin.command: garage bucket create {{ s3_bucket }}
+  when: garage_bucket.rc != 0
+  changed_when: true
+
+- name: Check access key
+  ansible.builtin.command: garage key info pbx-media
+  register: garage_key
+  failed_when: false
+  changed_when: false
+
+# Importing (instead of "key create") keeps the credentials in Vault, so a rebuilt store gets
+# the same key and no service config changes.
+- name: Import access key
+  ansible.builtin.command: garage key import --yes -n pbx-media {{ vault_s3_access_key }} {{ vault_s3_secret_key }}
+  when: garage_key.rc != 0
+  changed_when: true
+  no_log: true
+
+- name: Allow key on bucket
+  ansible.builtin.command: garage bucket allow --read --write --owner {{ s3_bucket }} --key pbx-media
+  changed_when: false

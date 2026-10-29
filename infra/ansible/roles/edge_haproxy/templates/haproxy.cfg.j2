@@ -1,0 +1,50 @@
+# HAProxy on edge nodes: the only public HTTPS/WSS entry point (CLAUDE.md §4.2).
+#   /ws          -> Kamailio WebSocket (browsers' SIP)
+#   /webrtc-test -> static WebRTC test page (phase 1 only)
+#   everything else -> API on app nodes
+global
+    log /dev/log local0
+    maxconn 20000
+    # The test page is served from memory by "http-request return"; it must fit in one buffer.
+    tune.bufsize 32768
+    ssl-default-bind-options ssl-min-ver TLSv1.2
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+
+defaults
+    mode http
+    log global
+    option httplog
+    option dontlognull
+    timeout connect 5s
+    timeout client 60s
+    timeout server 60s
+    # WebSocket connections are long-lived; Kamailio pings every 30 s.
+    timeout tunnel 1h
+
+frontend https
+    # HTTP/1.1 only: Kamailio doesn't speak WebSocket over HTTP/2.
+    bind {{ public_bind_ip }}:443 ssl crt /etc/haproxy/certs/site.pem alpn http/1.1
+    http-request return status 200 content-type "text/html; charset=utf-8" file /etc/haproxy/www/webrtc-test.html hdr cache-control no-store if { path /webrtc-test }
+    use_backend kamailio_ws if { path /ws }
+    default_backend api
+
+backend kamailio_ws
+    # Local Kamailio first; peers only if it's down. Either way the registration's Path points at
+    # whichever Kamailio holds this connection, so calls still reach the browser.
+    server kam-local {{ private_ip }}:{{ kamailio_ws_port }} check
+{% for ip in edge_peer_ips %}
+    server kam-peer{{ loop.index }} {{ ip }}:{{ kamailio_ws_port }} check backup
+{% endfor %}
+
+backend api
+    option httpchk GET /health
+{% for host in groups['app'] | default([]) %}
+    server {{ host }} {{ hostvars[host].private_ip }}:3000 check
+{% endfor %}
+
+# Local stats + Prometheus metrics (private IP only).
+frontend stats
+    bind {{ private_ip }}:8404
+    http-request use-service prometheus-exporter if { path /metrics }
+    stats enable
+    stats uri /stats

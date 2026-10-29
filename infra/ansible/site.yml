@@ -1,5 +1,7 @@
 ---
-# Full deployment. See CLAUDE.md §15 for ordering and cross-group dependencies.
+# Full multi-VM deployment (phase 4+; etcd/postgres_patroni/db_local_proxy/api/monitoring/backups
+# are still stubs). For phase 1 use phase1-allinone.yml.
+# See CLAUDE.md §15 for ordering and cross-group dependencies.
 - hosts: all
   become: true
   roles: [common]
@@ -7,6 +9,10 @@
 - hosts: db
   become: true
   roles: [etcd, postgres_patroni, objectstore]
+
+- hosts: "{{ groups['db'][0] }}"
+  become: true
+  roles: [db_schema]
 
 - hosts: db_clients
   become: true

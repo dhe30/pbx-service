@@ -1,10 +1,560 @@
 #!KAMAILIO
-# Kamailio edge config (rendered per edge node). Spec: CLAUDE.md §7.
 #
-# Listeners:
-#   udp:{{ public_ip }}:5060   - carrier SIP
-#   udp:{{ private_ip }}:5060  - Asterisk + peer edge
-#   tcp:{{ private_ip }}:8080  - WebSocket (HAProxy terminates TLS for wss://)
+# Kamailio edge config, rendered per edge node by Ansible (role: kamailio).
+# Spec: CLAUDE.md §7. Kamailio only handles SIGNALING; all audio goes through rtpengine.
 #
-# TODO: loadmodule list, modparams (usrloc db_mode=3, dispatcher probing, rtpengine_sock with
-#       BOTH rtpengines), request_route steps 1-8, reply/failure routes, websocket event route.
+# Who talks to us:
+#   carrier  -> udp public:5060   INVITEs for our DIDs                  (FLT_CARRIER)
+#   pbx-N    -> udp private:5060  Asterisk ringing staff, in-dialog     (FLT_PBX)
+#   peer edge-> udp private:5060  INVITE for a browser connected there  (FLT_PEER)
+#   browsers -> ws  private:{{ kamailio_ws_port }} via HAProxy (which terminates wss:// TLS)
+#   SIP phones / SIPp UAS -> udp public:5060  REGISTER as staff
+#
+# Call legs (marked with an RR param so in-dialog requests get the right rtpengine flags):
+#   leg=carrier   : carrier <-> rtpengine <-> Asterisk   (Asterisk always gets plain RTP, PCMU)
+#   leg=staff_ws  : Asterisk <-> rtpengine <-> browser (DTLS-SRTP/ICE)
+#   leg=staff_udp : Asterisk <-> rtpengine <-> SIP phone (plain RTP)
+# Hold/resume = in-dialog re-INVITE (a=sendonly / a=sendrecv), see route[INDLG_SDP] and
+# docs/hold-call-waiting.md.
+
+####### Defines ########
+
+#!define FLT_CARRIER 1
+#!define FLT_PBX 2
+#!define FLT_PEER 3
+#!define FLT_STAFF_SRC 4
+#!define FLT_STAFF_WS 5
+
+#!define DBURL "{{ kamailio_db_url }}"
+
+####### Global parameters #########
+
+debug={{ kamailio_debug | default(2) }}
+log_stderror=no
+log_facility=LOG_LOCAL0
+log_prefix="{$mt $hdr(CSeq) $ci} "
+
+fork=yes
+children=8
+tcp_children=4
+
+# Pick the outgoing socket by routing table (public vs private interface).
+mhomed=1
+auto_aliases=no
+
+{% if public_bind_ip != private_ip %}
+listen=udp:{{ public_bind_ip }}:5060{% if public_bind_ip != public_ip %} advertise {{ public_ip }}:5060{% endif %}
+
+{% endif %}
+listen=udp:{{ private_ip }}:5060
+# WebSocket listener (HTTP upgrade). Only HAProxy connects here; never exposed publicly.
+listen=tcp:{{ private_ip }}:{{ kamailio_ws_port }}
+
+alias="{{ sip_domain }}"
+alias="{{ public_ip }}"
+
+# WebSocket connections are long-lived; HAProxy has a matching tunnel timeout.
+tcp_accept_no_cl=yes
+tcp_connection_lifetime=3605
+tcp_keepalive=yes
+
+server_header="Server: pbx-edge"
+user_agent_header="User-Agent: pbx-edge"
+
+####### Modules Section ########
+
+loadmodule "jsonrpcs.so"
+loadmodule "kex.so"
+loadmodule "corex.so"
+loadmodule "tm.so"
+loadmodule "tmx.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "pv.so"
+loadmodule "maxfwd.so"
+loadmodule "textops.so"
+loadmodule "textopsx.so"
+loadmodule "siputils.so"
+loadmodule "xlog.so"
+loadmodule "sanity.so"
+loadmodule "ctl.so"
+loadmodule "db_postgres.so"
+loadmodule "usrloc.so"
+loadmodule "registrar.so"
+loadmodule "path.so"
+loadmodule "auth.so"
+loadmodule "auth_db.so"
+loadmodule "nathelper.so"
+loadmodule "rtpengine.so"
+loadmodule "dispatcher.so"
+loadmodule "ipops.so"
+loadmodule "pike.so"
+loadmodule "xhttp.so"
+loadmodule "websocket.so"
+
+# ----- tm -----
+modparam("tm", "failure_reply_mode", 3)
+modparam("tm", "fr_timer", 5000)          # ms: no reply at all
+modparam("tm", "fr_inv_timer", 120000)    # ms: provisional received, waiting for final
+
+# ----- rr -----
+modparam("rr", "enable_full_lr", 0)
+modparam("rr", "append_fromtag", 1)
+# Two Record-Route headers when the in/out sockets differ (public<->private, ws<->udp).
+modparam("rr", "enable_double_rr", 1)
+
+# ----- usrloc / registrar: registrations shared by all edges through Postgres -----
+modparam("usrloc", "db_url", DBURL)
+modparam("usrloc", "db_mode", 3)          # DB-only: every edge sees every registration
+modparam("usrloc", "use_domain", 0)       # one SIP domain; sip_username is globally unique
+modparam("usrloc", "timer_interval", 60)
+
+modparam("registrar", "use_path", 1)
+modparam("registrar", "path_mode", 0)     # store Path even if the client doesn't support it
+modparam("registrar", "path_use_received", 0)
+modparam("registrar", "default_expires", 300)
+modparam("registrar", "min_expires", 60)
+modparam("registrar", "max_expires", 300)
+
+# path: when a peer edge relays to us with our Path as Route, deliver to the "received" address
+# (the browser's WebSocket connection) stored in it.
+modparam("path", "use_received", 1)
+
+# ----- auth -----
+modparam("auth_db", "db_url", DBURL)
+modparam("auth_db", "calculate_ha1", yes)
+modparam("auth_db", "password_column", "password")
+modparam("auth_db", "load_credentials", "")
+modparam("auth_db", "use_domain", 0)
+
+# ----- dispatcher: set 1 = pbx (Asterisk) nodes -----
+modparam("dispatcher", "list_file", "/etc/kamailio/dispatcher.list")
+modparam("dispatcher", "flags", 2)                 # failover support (ds_next_dst)
+modparam("dispatcher", "ds_ping_interval", 5)
+modparam("dispatcher", "ds_probing_threshold", 2)
+modparam("dispatcher", "ds_inactive_threshold", 2)
+modparam("dispatcher", "ds_probing_mode", 1)       # always probe, so dead nodes come back automatically
+modparam("dispatcher", "ds_ping_from", "sip:dispatcher@{{ private_ip }}")
+modparam("dispatcher", "ds_ping_reply_codes", "class=2")
+
+# ----- rtpengine: the SAME set on every edge, so any edge can handle any call's in-dialog requests.
+# Node choice is a hash of the Call-ID.
+modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+modparam("rtpengine", "rtpengine_disable_tout", 20)
+modparam("rtpengine", "rtpengine_tout_ms", 1000)
+modparam("rtpengine", "rtpengine_retr", 2)
+
+# ----- nathelper -----
+modparam("nathelper", "natping_interval", 0)       # clients keep their own NAT bindings alive
+
+# ----- websocket -----
+modparam("websocket", "keepalive_mechanism", 1)    # send WS pings
+modparam("websocket", "keepalive_timeout", 30)
+modparam("websocket", "keepalive_interval", 1)
+
+# ----- pike (light flood protection for untrusted sources) -----
+modparam("pike", "sampling_time_unit", 2)
+modparam("pike", "reqs_density_per_unit", 30)
+modparam("pike", "remove_latency", 4)
+
+# ----- control interfaces (kamcmd / kamctl) -----
+modparam("ctl", "binrpc", "unix:/run/kamailio/kamailio_ctl")
+modparam("jsonrpcs", "pretty_format", 1)
+
+####### Routing Logic ########
+
+request_route {
+	route(CLASSIFY);
+	route(REQINIT);
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans()) {
+			rtpengine_delete();
+			route(RELAY);
+		}
+		exit;
+	}
+
+	# Retransmissions of requests we're already handling.
+	if (!is_method("ACK")) {
+		if (t_precheck_trans()) {
+			t_check_trans();
+			exit;
+		}
+		t_check_trans();
+	}
+
+	route(NATDETECT);
+
+	if (has_totag()) {
+		route(WITHINDLG);
+		exit;
+	}
+
+	if (is_method("REGISTER")) {
+		route(REGISTRAR);
+		exit;
+	}
+
+	if (is_method("INVITE")) {
+		if (isflagset(FLT_PEER)) route(FROM_PEER);
+		if (isflagset(FLT_CARRIER)) route(FROM_CARRIER);
+		if (isflagset(FLT_PBX)) route(TO_STAFF);
+		# Staff placing calls (outbound) is out of scope (assumption A5).
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+
+	if (is_method("ACK")) {
+		# ACK for a non-2xx reply is absorbed by tm; anything else here is stray.
+		exit;
+	}
+
+	sl_send_reply("403", "Forbidden");
+	exit;
+}
+
+# Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_STAFF_SRC.
+route[CLASSIFY] {
+{% for cidr in carrier_cidrs %}
+	if (is_in_subnet("$si", "{{ cidr if '/' in cidr else cidr ~ '/32' }}")) {
+		setflag(FLT_CARRIER);
+		return;
+	}
+{% endfor %}
+	# Matches source IP + port + protocol against the dispatcher list (Asterisk nodes).
+	if (ds_is_from_list("1")) {
+		setflag(FLT_PBX);
+		return;
+	}
+{% for ip in edge_peer_ips %}
+	if ($si == "{{ ip }}" && $pr == "udp") {
+		setflag(FLT_PEER);
+		return;
+	}
+{% endfor %}
+	setflag(FLT_STAFF_SRC);
+}
+
+route[REQINIT] {
+	if (!mf_process_maxfwd_header("10")) {
+		sl_send_reply("483", "Too Many Hops");
+		exit;
+	}
+	if (!sanity_check("17895", "7")) {
+		xlog("L_WARN", "malformed request from $si:$sp\n");
+		exit;
+	}
+	if (isflagset(FLT_STAFF_SRC)) {
+		# Anything on the public internet gets scanned; drop the well-known scanners silently.
+		if ($ua =~ "friendly-scanner|sipcli|sipvicious|sip-scan|VaxSIPUserAgent|pplsip") {
+			exit;
+		}
+		if (!pike_check_req()) {
+			xlog("L_ALERT", "pike blocking $rm from $si:$sp\n");
+			exit;
+		}
+	}
+	# Keepalive / dispatcher probes / Asterisk qualify addressed to us.
+	if (is_method("OPTIONS") && uri == myself && $rU == $null) {
+		sl_send_reply("200", "OK");
+		exit;
+	}
+}
+
+# Browsers (WS) and NATed phones put unreachable addresses in Contact; remember the real source
+# with an ;alias param so in-dialog requests can find them again.
+route[NATDETECT] {
+	if (!isflagset(FLT_STAFF_SRC)) return;
+	force_rport();
+	if (!is_method("REGISTER") && nat_uac_test("83")) {   # 1+2+16+64 (64 = WebSocket)
+		if (!add_contact_alias()) {
+			xlog("L_ERR", "cannot alias contact <$ct>\n");
+			sl_send_reply("400", "Bad Request");
+			exit;
+		}
+	}
+}
+
+route[RELAY] {
+	if (!t_relay()) {
+		sl_reply_error();
+	}
+	exit;
+}
+
+# ---------------------------------------------------------------------------------------------
+# REGISTER: staff browsers (WS) and SIP phones (UDP).
+# ---------------------------------------------------------------------------------------------
+route[REGISTRAR] {
+	# Asterisk and peer edges never register. Carrier IPs may (in testing, SIPp acts as both the
+	# carrier and a staff phone from one machine); auth below is still required.
+	if (isflagset(FLT_PBX) || isflagset(FLT_PEER)) {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	if (!auth_check("$fd", "subscriber", "1")) {
+		auth_challenge("$fd", "1");
+		exit;
+	}
+	consume_credentials();
+
+	# Path = "reach this contact through THIS edge". The received param is where the client
+	# actually is (for a browser: HAProxy's connection to us, which carries the WebSocket).
+	# Another edge that looks this user up relays the call to us via Path; we use received.
+	$var(rcv) = "sip:" + $si + ":" + $sp + ";transport=" + $pr;
+	remove_hf("Path");
+	append_hf("Path: <sip:{{ private_ip }}:5060;lr;received=$(var(rcv){s.escape.param})>\r\n");
+	# Apply the header change so registrar sees the Path we just added.
+	if (!msg_apply_changes()) {
+		sl_send_reply("500", "Server Error");
+		exit;
+	}
+	# 0x04: keep ONE contact per user (the latest). A browser that reconnects after an edge
+	# failure replaces its stale registration instead of leaving a dead contact to ring.
+	if (!save("location", "0x04")) {
+		sl_reply_error();
+	}
+	exit;
+}
+
+# ---------------------------------------------------------------------------------------------
+# LEG 1: carrier -> Asterisk
+# ---------------------------------------------------------------------------------------------
+route[FROM_CARRIER] {
+	if (!ds_select_dst("1", "4")) {   # 4 = round-robin
+		xlog("L_ERR", "no pbx node available for $rU\n");
+		send_reply("503", "Service Unavailable");
+		exit;
+	}
+	add_rr_param(";leg=carrier");
+	record_route();
+
+	# Toward Asterisk: plain RTP, PCMU only (+DTMF events). rtpengine transcodes if the carrier's
+	# offer has no PCMU; if it has PCMU this is a pure pass-through.
+	if (!rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection ICE=remove RTP/AVP codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event")) {
+		xlog("L_ERR", "rtpengine offer failed for carrier call\n");
+		send_reply("503", "Media Unavailable");
+		exit;
+	}
+	$avp(rtp_answer) = "replace-origin replace-session-connection ICE=remove RTP/AVP";
+
+	route(PBX_TIMERS);
+	route(RELAY);
+}
+
+# Before relaying to a pbx node (initial try and each failover).
+route[PBX_TIMERS] {
+	# 2 s to get any reply from the pbx node before trying the next one; 120 s once ringing.
+	t_set_fr(120000, 2000);
+	t_on_reply("RTP_REPLY");
+	t_on_failure("PBX_FAILOVER");
+}
+
+failure_route[PBX_FAILOVER] {
+	if (t_is_canceled()) exit;
+	# 503: ARI app down (dialplan Hangup(34)) or overloaded. Timeout: node dead.
+	# The SDP rewritten by rtpengine_offer in request_route is kept for the new branch.
+	if (t_check_status("500|503") || (t_branch_timeout() && !t_branch_replied())) {
+		xlog("L_WARN", "pbx $du failed ($T_reply_code), trying next\n");
+		ds_mark_dst("ip");   # inactive + probing until it answers OPTIONS again
+		if (ds_next_dst()) {
+			route(PBX_TIMERS);
+			t_relay();
+			exit;
+		}
+	}
+	rtpengine_delete();
+}
+
+# ---------------------------------------------------------------------------------------------
+# LEG 2: Asterisk -> staff (browser or SIP phone)
+# ---------------------------------------------------------------------------------------------
+route[TO_STAFF] {
+	if (!lookup("location")) {
+		# The ARI app treats this as "unavailable" and falls back to voicemail.
+		send_reply("480", "Temporarily Unavailable");
+		exit;
+	}
+	# After lookup, $du is the contact's Path URI: the edge holding the connection, with the
+	# client's real address in ;received. (One contact per user, see REGISTRAR, so one branch.)
+	$var(rcv) = "";
+	if ($du != $null && $(du{uri.param,received}) != "") {
+		$var(rcv) = $(du{uri.param,received}{s.unescape.param});
+	}
+	if ($var(rcv) != "") {
+		if ($(var(rcv){uri.transport}) =~ "^wss?$") setflag(FLT_STAFF_WS);
+		if ($(du{uri.host}) == "{{ private_ip }}") {
+			# The client is connected to THIS edge: send straight to it.
+			$du = $var(rcv);
+		}
+		# else: leave $du = peer edge; it delivers over its own connection (route FROM_PEER).
+	} else if ($(ru{uri.transport}) =~ "^wss?$") {
+		setflag(FLT_STAFF_WS);
+	}
+
+	# Remember in the dialog's route set whether the staff side is a browser. In-dialog requests
+	# (hold/resume re-INVITEs) need it, and they can't tell from their own transport: with two
+	# edges, a browser's re-INVITE reaches this edge over UDP from the peer edge.
+	if (isflagset(FLT_STAFF_WS)) {
+		add_rr_param(";leg=staff_ws");
+	} else {
+		add_rr_param(";leg=staff_udp");
+	}
+	record_route();
+	t_on_branch("STAFF_BRANCH");
+	t_on_reply("STAFF_REPLY");
+	t_on_failure("STAFF_FAILURE");
+	route(RELAY);
+}
+
+branch_route[STAFF_BRANCH] {
+	if (isflagset(FLT_STAFF_WS)) {
+		# Browser: WebRTC needs ICE + DTLS-SRTP + rtcp-mux. Codec stays PCMU (no transcoding).
+		if (!rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection RTP/SAVPF ICE=force DTLS=passive SDES-off rtcp-mux-offer generate-mid")) {
+			xlog("L_ERR", "rtpengine offer failed toward $ru; dropping branch\n");
+			drop;
+		}
+	} else {
+		if (!rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection ICE=remove RTP/AVP")) {
+			xlog("L_ERR", "rtpengine offer failed toward $ru; dropping branch\n");
+			drop;
+		}
+	}
+}
+
+onreply_route[STAFF_REPLY] {
+	if (proto == WS || proto == WSS || nat_uac_test("19")) {
+		add_contact_alias();
+	}
+	if (has_body("application/sdp")) {
+		if (isflagset(FLT_STAFF_WS)) {
+			rtpengine_answer("replace-origin replace-session-connection RTP/AVP ICE=remove DTLS=off rtcp-mux-demux");
+		} else {
+			rtpengine_answer("replace-origin replace-session-connection ICE=remove RTP/AVP");
+		}
+	}
+}
+
+failure_route[STAFF_FAILURE] {
+	if (t_is_canceled()) exit;
+	rtpengine_delete();
+}
+
+# ---------------------------------------------------------------------------------------------
+# Peer edge relaying a staff INVITE because the browser's WebSocket lives on this node.
+# The peer already engaged rtpengine; we only deliver. (Not exercised with a single edge.)
+# ---------------------------------------------------------------------------------------------
+route[FROM_PEER] {
+	if (!loose_route()) {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	# path use_received=1 has set $du to the client address from our own Path ;received.
+	record_route();
+	t_on_reply("PEER_REPLY");
+	route(RELAY);
+}
+
+onreply_route[PEER_REPLY] {
+	if (proto == WS || proto == WSS || nat_uac_test("19")) {
+		add_contact_alias();
+	}
+}
+
+# ---------------------------------------------------------------------------------------------
+# In-dialog requests (BYE, re-INVITE, ACK for 2xx, ...)
+# ---------------------------------------------------------------------------------------------
+route[WITHINDLG] {
+	if (!loose_route()) {
+		if (is_method("ACK") && t_check_trans()) {
+			route(RELAY);
+		}
+		sl_send_reply("404", "Not here");
+		exit;
+	}
+
+	# Next hop is a NATed/WS client: restore its real address from the Contact ;alias.
+	if (!isdsturiset()) {
+		handle_ruri_alias();
+	}
+
+	if (is_method("BYE")) {
+		rtpengine_delete();
+	} else if (is_method("INVITE|UPDATE") && has_body("application/sdp")) {
+		route(INDLG_SDP);
+	}
+	route(RELAY);
+}
+
+# re-INVITE / UPDATE with SDP: hold (a=sendonly or a=inactive), resume (a=sendrecv), session
+# refresh. Same rtpengine flags as the initial offer/answer for that leg and direction. rtpengine
+# passes the a=sendonly/recvonly/inactive attributes through unchanged; Asterisk turns them into
+# ChannelHold/ChannelUnhold for the ARI app (docs/hold-call-waiting.md).
+#
+# check_route_param() looks at OUR Record-Route entry, so a peer edge that only relays (FROM_PEER,
+# no leg param) does nothing here; the edge that anchored the media does the rtpengine work.
+# "From Asterisk" = FLT_PBX; anything else (the carrier, a staff phone, a peer edge relaying a
+# browser's request) is the far side.
+route[INDLG_SDP] {
+	if (check_route_param("leg=carrier")) {
+		if (isflagset(FLT_PBX)) {
+			rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection ICE=remove RTP/AVP");
+		} else {
+			rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection ICE=remove RTP/AVP codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event");
+		}
+		$avp(rtp_answer) = "replace-origin replace-session-connection ICE=remove RTP/AVP";
+		t_on_reply("RTP_REPLY");
+	} else if (check_route_param("leg=staff_ws")) {
+		if (isflagset(FLT_PBX)) {
+			# Asterisk -> browser
+			rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection RTP/SAVPF ICE=force DTLS=passive SDES-off rtcp-mux-offer generate-mid");
+			$avp(rtp_answer) = "replace-origin replace-session-connection RTP/AVP ICE=remove DTLS=off rtcp-mux-demux";
+		} else {
+			# Browser -> Asterisk (e.g. SIP.js hold/resume). The browser offers a=setup:actpass;
+			# DTLS=passive keeps rtpengine in the passive role it took on the initial call, so the
+			# existing DTLS-SRTP session carries on instead of renegotiating.
+			rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection RTP/AVP ICE=remove DTLS=off rtcp-mux-demux");
+			$avp(rtp_answer) = "replace-origin replace-session-connection RTP/SAVPF ICE=force DTLS=passive rtcp-mux-accept SDES-off";
+		}
+		t_on_reply("RTP_REPLY");
+	} else if (check_route_param("leg=staff_udp")) {
+		if (isflagset(FLT_PBX)) {
+			rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection ICE=remove RTP/AVP");
+		} else {
+			rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection ICE=remove RTP/AVP");
+		}
+		$avp(rtp_answer) = "replace-origin replace-session-connection ICE=remove RTP/AVP";
+		t_on_reply("RTP_REPLY");
+	}
+}
+
+# Generic answer handler: flags were chosen when the offer was sent (AVPs live in the transaction).
+onreply_route[RTP_REPLY] {
+	# Reply from a staff browser/NATed phone to Asterisk's re-INVITE: its Contact becomes
+	# Asterisk's new remote target, so it needs the ;alias too (like STAFF_REPLY).
+	if (isflagset(FLT_PBX) && (proto == WS || proto == WSS || nat_uac_test("19"))) {
+		add_contact_alias();
+	}
+	if (has_body("application/sdp") && $avp(rtp_answer) != $null) {
+		rtpengine_answer("$avp(rtp_answer)");
+	}
+}
+
+# ---------------------------------------------------------------------------------------------
+# WebSocket handshake (HTTP Upgrade) from HAProxy
+# ---------------------------------------------------------------------------------------------
+event_route[xhttp:request] {
+	set_reply_close();
+	set_reply_no_connect();
+	if ($Rp != {{ kamailio_ws_port }}) {
+		xhttp_reply("403", "Forbidden", "", "");
+		exit;
+	}
+	if ($hdr(Upgrade) =~ "websocket" && $hdr(Connection) =~ "Upgrade" && $rm =~ "GET") {
+		if (ws_handle_handshake()) {
+			exit;
+		}
+	}
+	xhttp_reply("404", "Not Found", "", "");
+}

@@ -1,2 +1,62 @@
 ---
-# TODO: rtpengine role tasks.
+# rtpengine media relay (edge nodes): anchors all audio, transcodes, does WebRTC. CLAUDE.md §8.
+# Packages from rtpengine.dfx.at (built with ffmpeg transcoding + bcg729 for G.729).
+
+- name: Download rtpengine repo keyring package
+  ansible.builtin.get_url:
+    url: https://rtpengine.dfx.at/latest/pool/main/r/rtpengine-dfx-repo-keyring/rtpengine-dfx-repo-keyring_1.0_all.deb
+    dest: /var/cache/rtpengine-dfx-repo-keyring_1.0_all.deb
+    checksum: sha256:78fe26f0251138f4e3c749c88dc4df29666c8efe0823858d3a4ab49d2fa2e088
+    mode: "0644"
+
+- name: Install rtpengine repo keyring
+  ansible.builtin.apt:
+    deb: /var/cache/rtpengine-dfx-repo-keyring_1.0_all.deb
+
+- name: rtpengine apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/dfx.at-rtpengine.list
+    content: "deb [signed-by=/usr/share/keyrings/dfx.at-rtpengine-archive-keyring.gpg] https://rtpengine.dfx.at/{{ rtpengine_release }} {{ ansible_distribution_release }} main\n"
+    mode: "0644"
+
+# Daemon + CLI only: no kernel module (we run userspace forwarding, table = -1).
+- name: Install rtpengine
+  ansible.builtin.apt:
+    name:
+      - rtpengine-daemon
+      - rtpengine-utils
+    install_recommends: false
+    update_cache: true
+
+- name: rtpengine config
+  ansible.builtin.template:
+    src: "{{ repo_root }}/telephony/rtpengine/rtpengine.conf.j2"
+    dest: /etc/rtpengine/rtpengine.conf
+    mode: "0644"
+  notify: Restart rtpengine
+
+- name: Systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ rtpengine_service }}.service.d
+    state: directory
+    mode: "0755"
+
+- name: Always restart rtpengine if it dies
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/{{ rtpengine_service }}.service.d/restart.conf
+    content: |
+      [Unit]
+      StartLimitIntervalSec=0
+
+      [Service]
+      Restart=always
+      RestartSec=2
+    mode: "0644"
+  notify: Restart rtpengine
+
+- name: Start rtpengine
+  ansible.builtin.systemd:
+    name: "{{ rtpengine_service }}"
+    enabled: true
+    state: started
+    daemon_reload: true

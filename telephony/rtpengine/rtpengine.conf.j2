@@ -1,8 +1,34 @@
 # rtpengine (edge nodes). Spec: CLAUDE.md §8.
+# Kamailio controls it over the "ng" protocol; every call's audio flows through here.
 [rtpengine]
-interface = internal/{{ private_ip }};external/{{ public_ip }}
-# ng control protocol: private IP only; host firewall allows only edge peers.
+
+# Two logical interfaces. Kamailio picks them per leg with direction=internal/external:
+#   internal = private IP, faces Asterisk
+#   external = public IP, faces carriers, browsers and SIP phones
+# "local!advertised" form is used when the public IP is NATed onto the VM.
+interface = internal/{{ private_ip }};external/{{ public_bind_ip }}{% if public_bind_ip != public_ip %}!{{ public_ip }}{% endif %}
+
+# Control socket: private IP only; nftables allows only edge nodes.
 listen-ng = {{ private_ip }}:2223
+# Prometheus metrics at http://{{ private_ip }}:2225/metrics
+listen-http = {{ private_ip }}:2225
+
+# Public media ports (open UDP 30000-40000 in the cloud firewall).
 port-min = 30000
 port-max = 40000
-# TODO: logging, Prometheus/HTTP stats interface [VERIFY], transcoding options.
+
+# Userspace forwarding only (no kernel module): simpler to install, and transcoded calls run in
+# userspace anyway. Revisit in phase 6 if CPU is the bottleneck for PCMU pass-through calls.
+table = -1
+
+# Kill sessions with no media (e.g. both ends vanished without BYE).
+timeout = 60
+# Same for sessions whose streams are on hold (sendonly/recvonly/inactive) and may carry no
+# packets at all. Must stay above Asterisk rtp_timeout_hold (hold_max_sec in group_vars).
+silent-timeout = 3600
+final-timeout = 10800
+delete-delay = 30
+
+tos = 184
+log-level = 6
+

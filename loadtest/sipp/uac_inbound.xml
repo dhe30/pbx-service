@@ -1,3 +1,101 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- TODO: fake-carrier UAC scenario (INVITE -> 200 -> ACK -> play pcap -> DTMF 1 -> BYE). -->
-<scenario name="uac_inbound"></scenario>
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  Fake carrier: call a DID, press 1 (IVR -> ring group), send audio, hang up after 20 s.
+  The machine running this must be in carrier_cidrs (group_vars/all/main.yml).
+  Offers PCMA (+telephone-event), so it also exercises rtpengine PCMA<->PCMU transcoding.
+
+    sipp -sf uac_inbound.xml -s 15555550100 -p 5062 -m 1 <edge_public_ip>:5060
+-->
+<scenario name="Inbound DID call, press 1">
+
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: "SIPp caller" <sip:+15550001111@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:+15550001111@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Subject: pbx phase1 test
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 53655765 2353687637 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 8 101
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=ptime:20
+
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <!-- rrs: remember Record-Route so ACK/BYE follow the same path through Kamailio. -->
+  <recv response="200" rtd="true" rrs="true"/>
+
+  <send>
+    <![CDATA[
+
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      [routes]
+      From: "SIPp caller" <sip:+15550001111@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:+15550001111@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Let the IVR greeting start, then press 1 (RFC 4733 event) and send some speech. -->
+  <pause milliseconds="2000"/>
+  <nop>
+    <action>
+      <exec play_pcap_audio="pcap/dtmf_2833_1.pcap"/>
+    </action>
+  </nop>
+  <pause milliseconds="1500"/>
+  <nop>
+    <action>
+      <exec play_pcap_audio="pcap/g711a.pcap"/>
+    </action>
+  </nop>
+
+  <pause milliseconds="20000"/>
+
+  <send retrans="500">
+    <![CDATA[
+
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      [routes]
+      From: "SIPp caller" <sip:+15550001111@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:+15550001111@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" crlf="true"/>
+
+  <ResponseTimeRepartition value="100, 500, 1000, 2000, 5000"/>
+  <CallLengthRepartition value="10000, 20000, 30000, 60000"/>
+</scenario>

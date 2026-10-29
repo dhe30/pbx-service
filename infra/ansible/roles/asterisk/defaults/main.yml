@@ -1,1 +1,15 @@
 ---
+asterisk_sip_port: 5060
+asterisk_src_dir: "/usr/src/asterisk-{{ asterisk_version }}"
+asterisk_build_log: /usr/src/asterisk-build.log
+asterisk_config_files:
+  - asterisk.conf
+  - modules.conf
+  - logger.conf
+  - pjsip.conf
+  - extensions.conf
+  - ari.conf
+  - http.conf
+  - rtp.conf
+  - prometheus.conf
+  - musiconhold.conf

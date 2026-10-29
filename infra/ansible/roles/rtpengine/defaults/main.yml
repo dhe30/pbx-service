@@ -1,1 +1,4 @@
 ---
+# systemd unit shipped by the rtpengine.dfx.at packages. Since the 2025 releases it is
+# "rtpengine-daemon" (older packages: "ngcp-rtpengine-daemon").
+rtpengine_service: rtpengine-daemon

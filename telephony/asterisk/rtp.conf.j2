@@ -1,4 +1,6 @@
-; RTP between Asterisk and rtpengine (private network only).
+; RTP between Asterisk and rtpengine (private network only, never public).
 [general]
 rtpstart = 10000
 rtpend = 20000
+; No STUN/ICE needed: rtpengine handles NAT and WebRTC.
+icesupport = no

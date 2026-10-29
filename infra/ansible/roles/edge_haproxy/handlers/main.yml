@@ -1,1 +1,6 @@
 ---
+# Reload (not restart): existing WebSocket connections are kept by the old process.
+- name: Reload haproxy
+  ansible.builtin.service:
+    name: haproxy
+    state: reloaded

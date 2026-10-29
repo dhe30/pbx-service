@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  REGISTER a staff user (digest auth) so Kamailio can ring this machine.
+  users.csv: username;password;sip_domain   (see users.csv.example)
+
+    sipp -sf register.xml -inf users.csv -p 5070 -m 1 <edge_public_ip>:5060
+
+  Registration lasts 300 s: re-run it (or loop it) while testing.
+-->
+<scenario name="Register staff">
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[field2] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[field0]@[field2]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[field0]@[field2]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[field0]@[local_ip]:[local_port]>
+      Expires: 300
+      Max-Forwards: 70
+      User-Agent: SIPp staff
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="401" auth="true"/>
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[field2] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[field0]@[field2]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[field0]@[field2]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:[field0]@[local_ip]:[local_port]>
+      [authentication username=[field0] password=[field1]]
+      Expires: 300
+      Max-Forwards: 70
+      User-Agent: SIPp staff
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200"/>
+</scenario>

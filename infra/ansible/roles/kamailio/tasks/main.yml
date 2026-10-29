@@ -1,2 +1,82 @@
 ---
-# TODO: kamailio role tasks.
+# Kamailio SIP edge: registrar (staff), dispatcher (to Asterisk), rtpengine control. CLAUDE.md §7.
+
+- name: Kamailio apt key
+  ansible.builtin.get_url:
+    url: https://deb.kamailio.org/kamailiodebkey.gpg
+    dest: /usr/share/keyrings/kamailio.asc
+    mode: "0644"
+
+- name: Kamailio apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/kamailio.list
+    content: "deb [signed-by=/usr/share/keyrings/kamailio.asc] http://deb.kamailio.org/kamailio{{ kamailio_version }} {{ ansible_distribution_release }} main\n"
+    mode: "0644"
+
+- name: Install Kamailio
+  ansible.builtin.apt:
+    name:
+      - kamailio
+      - kamailio-postgres-modules
+      - kamailio-websocket-modules
+      - kamailio-extra-modules
+    update_cache: true
+
+- name: Dispatcher list (pbx nodes)
+  ansible.builtin.template:
+    src: "{{ repo_root }}/telephony/kamailio/dispatcher.list.j2"
+    dest: /etc/kamailio/dispatcher.list
+    owner: root
+    group: kamailio
+    mode: "0640"
+  notify: Reload dispatcher
+
+- name: Kamailio config (contains the DB password)
+  ansible.builtin.template:
+    src: "{{ repo_root }}/telephony/kamailio/kamailio.cfg.j2"
+    dest: /etc/kamailio/kamailio.cfg
+    owner: root
+    group: kamailio
+    mode: "0640"
+    # Syntax + module/fixup check before replacing the live config.
+    validate: kamailio -c -f %s
+  notify: Restart kamailio
+
+- name: Kamailio defaults (memory, config path)
+  ansible.builtin.copy:
+    dest: /etc/default/kamailio
+    content: |
+      # Managed by Ansible.
+      RUN_KAMAILIO=yes
+      CFGFILE=/etc/kamailio/kamailio.cfg
+      SHM_MEMORY=512
+      PKG_MEMORY=16
+    mode: "0644"
+  notify: Restart kamailio
+
+- name: Systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/kamailio.service.d
+    state: directory
+    mode: "0755"
+
+- name: Always restart Kamailio if it dies
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/kamailio.service.d/restart.conf
+    content: |
+      [Unit]
+      # Don't give up after a few fast failures (e.g. DB not up yet at boot).
+      StartLimitIntervalSec=0
+
+      [Service]
+      Restart=always
+      RestartSec=2
+    mode: "0644"
+  notify: Restart kamailio
+
+- name: Start Kamailio
+  ansible.builtin.systemd:
+    name: kamailio
+    enabled: true
+    state: started
+    daemon_reload: true

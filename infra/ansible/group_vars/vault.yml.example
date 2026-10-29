@@ -1,6 +1,0 @@
-# Copy to vault.yml and encrypt with: ansible-vault encrypt group_vars/vault.yml
-vault_db_password: CHANGE_ME
-vault_ari_password: CHANGE_ME
-vault_jwt_secret: CHANGE_ME
-vault_s3_access_key: CHANGE_ME
-vault_s3_secret_key: CHANGE_ME

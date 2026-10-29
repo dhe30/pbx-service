@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  Fake staff phone that exercises HOLD (docs/hold-call-waiting.md): answers after 1 s, talks
+  3 s, puts the caller on hold (re-INVITE a=sendonly), stays held for -d ms, resumes
+  (re-INVITE a=sendrecv), then waits for the caller's BYE.
+  Same port/registration as uas_staff.xml:
+
+    sipp -sf uas_staff_hold.xml -p 5070 -rtp_echo -d 10000 <edge_public_ip>:5060
+
+  While held, the caller should hear music on hold; check `asterisk -rx "core show channels"`
+  (caller channel running MusicOnHold) and the ARI app log ("agent hold").
+  The caller (uac_inbound.xml) hangs up ~20 s after pressing 1, so keep -d below ~12000 or the
+  caller hangs up while still held (SIPp then reports an unexpected BYE for that call).
+-->
+<scenario name="Staff UAS with hold/resume">
+
+  <!-- rrs: keep the Record-Route set so our re-INVITEs go back through Kamailio ([routes]).
+       Also keep the caller's From (our To) and our To URI for the requests we originate. -->
+  <recv request="INVITE" crlf="true" rrs="true">
+    <action>
+      <ereg regexp=".*" search_in="hdr" header="From:" assign_to="remote_party"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="local_party"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Record-Route:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="1000"/>
+
+  <send retrans="500">
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Record-Route:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 53655765 2353687637 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=ptime:20
+
+    ]]>
+  </send>
+
+  <recv request="ACK" rtd="true" crlf="true"/>
+
+  <pause milliseconds="3000"/>
+
+  <!-- HOLD: our first request in this dialog (CSeq 1). o= version bumped to 2353687638. -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      [routes]
+      From: [$local_party];tag=[pid]SIPpTag01[call_number]
+      To: [$remote_party]
+      [last_Call-ID:]
+      CSeq: 1 INVITE
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 53655765 2353687638 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=ptime:20
+      a=sendonly
+
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+
+  <send>
+    <![CDATA[
+
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      [routes]
+      From: [$local_party];tag=[pid]SIPpTag01[call_number]
+      To: [$remote_party]
+      [last_Call-ID:]
+      CSeq: 1 ACK
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Held for -d milliseconds. -->
+  <pause/>
+
+  <!-- RESUME (CSeq 2), back to sendrecv. -->
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      [routes]
+      From: [$local_party];tag=[pid]SIPpTag01[call_number]
+      To: [$remote_party]
+      [last_Call-ID:]
+      CSeq: 2 INVITE
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 53655765 2353687639 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=ptime:20
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+
+  <send>
+    <![CDATA[
+
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      [routes]
+      From: [$local_party];tag=[pid]SIPpTag01[call_number]
+      To: [$remote_party]
+      [last_Call-ID:]
+      CSeq: 2 ACK
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="BYE"/>
+
+  <send>
+    <![CDATA[
+
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Keep the call context around briefly to absorb BYE retransmissions. -->
+  <pause milliseconds="2000"/>
+</scenario>

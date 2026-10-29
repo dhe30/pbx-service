@@ -14,12 +14,14 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
     "@pbx/shared": "*",
-    "ari-client": "^2.2.0",
     "pino": "^9.2.0",
-    "prom-client": "^15.1.0"
+    "prom-client": "^15.1.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

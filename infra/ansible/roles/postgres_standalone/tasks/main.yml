@@ -1,0 +1,29 @@
+---
+# PHASE 1 ONLY: a single Postgres on the all-in-one VM, listening on 127.0.0.1:5432 (the same
+# address clients will use for the local HAProxy in front of Patroni later).
+# Replaced by postgres_patroni + db_local_proxy in phase 4.
+
+- name: PGDG apt signing key
+  ansible.builtin.get_url:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    dest: /usr/share/keyrings/pgdg.asc
+    mode: "0644"
+
+- name: PGDG apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pgdg.list
+    content: "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main\n"
+    mode: "0644"
+
+- name: Install PostgreSQL {{ postgres_version }}
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgres_version }}"
+      - "postgresql-client-{{ postgres_version }}"
+    update_cache: true
+
+- name: Start PostgreSQL
+  ansible.builtin.service:
+    name: postgresql
+    enabled: true
+    state: started

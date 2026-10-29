@@ -1,0 +1,63 @@
+# Variables shared by every host. Secrets live in group_vars/all/vault.yml (ansible-vault encrypted).
+# Per-host values (private_ip, public_ip, ...) live in the inventory.
+
+# ---- Versions (pinned) -------------------------------------------------------------------------
+# Target OS: Debian 13 (trixie) or 12 (bookworm). Repos below use the detected codename.
+kamailio_version: "60"            # deb.kamailio.org/kamailio60 -> Kamailio 6.0.x
+asterisk_version: "22.11.0"       # built from source (Asterisk is not packaged for Debian)
+rtpengine_release: "26.0"         # rtpengine.dfx.at LTS line (built with transcoding + bcg729)
+postgres_version: "16"            # apt.postgresql.org
+garage_version: "v2.5.0"
+dbmate_version: "v2.37.0"
+node_major: "24"                  # Node.js LTS (20 reached end of life in April 2026)
+
+# ---- Telephony ---------------------------------------------------------------------------------
+# One SIP domain for all tenants. Browsers register as <sip_username>@<sip_domain>; it only has to
+# match between the subscriber rows, the test page and Kamailio's alias. Use the app's DNS name
+# once there is one.
+sip_domain: "pbx.local"
+
+# Carrier (DID provider) source addresses allowed to send INVITEs (IP or CIDR).
+# PHASE 1: put the public IP of the machine running SIPp / your test softphone here.
+carrier_cidrs: []
+
+kamailio_ws_port: 8080
+# asterisk_sip_port: defaults to 5060 (asterisk role defaults). Set it as a HOST var to override
+# (the all-in-one inventory uses 5080 because Kamailio already owns 5060 there).
+ari_user: "pbxapp"
+# Longest a staff member can hold a call that sends no audio (Asterisk rtp_timeout_hold), in s.
+# Guards against a browser that closed while holding. Must stay below rtpengine silent-timeout.
+hold_max_sec: 1800
+
+# PJSIP trunk names toward the edges, in preference order: edge-a -> groups['edge'][0], ...
+edge_trunk_names: "{{ ['edge-a', 'edge-b', 'edge-c', 'edge-d'][:groups['edge'] | length] }}"
+rtpengine_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
+# Other edges, as seen from this host (empty for a single edge).
+edge_peer_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | reject('equalto', private_ip) | list }}"
+# Where the public listeners bind. Same as public_ip unless the provider NATs the public IP
+# (then set public_bind_ip to the VM's local address in the inventory).
+public_bind_ip: "{{ public_ip | default(private_ip) }}"
+
+# ---- Database ----------------------------------------------------------------------------------
+db_name: "pbx"
+db_app_user: "pbx_app"
+db_kamailio_user: "kamailio"
+# Every DB client talks to 127.0.0.1:5432: the local Postgres in phase 1, the local HAProxy in
+# front of the Patroni primary later (CLAUDE.md §4.3 #7).
+db_host: "127.0.0.1"
+kamailio_db_url: "postgres://{{ db_kamailio_user }}:{{ vault_db_kamailio_password }}@{{ db_host }}:5432/{{ db_name }}"
+app_db_url: "postgres://{{ db_app_user }}:{{ vault_db_app_password }}@{{ db_host }}:5432/{{ db_name }}"
+
+# ---- Object store (Garage) ---------------------------------------------------------------------
+s3_bucket: "pbx-media"
+s3_region: "garage"
+s3_port: 3900
+garage_replication_factor: 1      # 3 once there are 3 db nodes
+s3_endpoint: "http://{{ hostvars[groups['db'][0]].private_ip }}:{{ s3_port }}"
+
+# ---- Test data (phase 1) -----------------------------------------------------------------------
+load_test_seed: true
+test_did: "+15555550100"
+
+# Where the repo lives on the control machine (this file is infra/ansible/group_vars/all/main.yml).
+repo_root: "{{ playbook_dir }}/../.."

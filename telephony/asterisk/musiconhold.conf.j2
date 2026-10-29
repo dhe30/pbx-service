@@ -1,0 +1,13 @@
+; Music on hold (pbx nodes). Played to the caller while staff holds the call: the ARI app calls
+; POST /channels/<caller>/moh?mohClass=default on ChannelHold (docs/hold-call-waiting.md).
+;
+; Files: the stock "opsound" set, installed in u-law by the Asterisk build (menuselect
+; MOH-OPSOUND-ULAW), so playing it needs no transcoding toward the PCMU-only trunks.
+
+[general]
+
+[default]
+mode=files
+directory=moh
+; Each held caller starts at a random track (instead of everyone hearing the same one).
+sort=random

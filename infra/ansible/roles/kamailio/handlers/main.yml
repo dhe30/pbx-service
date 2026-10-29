@@ -1,1 +1,12 @@
 ---
+- name: Restart kamailio
+  ansible.builtin.systemd:
+    name: kamailio
+    state: restarted
+    daemon_reload: true
+
+# Picks up added/removed pbx nodes without dropping calls.
+- name: Reload dispatcher
+  ansible.builtin.command: kamcmd dispatcher.reload
+  changed_when: true
+  failed_when: false
