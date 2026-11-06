@@ -21,3 +21,7 @@ export function parse<S extends z.ZodTypeAny>(schema: S, input: unknown): z.infe
 export const email = z.string().trim().toLowerCase().email().max(254);
 // Dashboard passwords. The upper bound keeps argon2 work per request bounded.
 export const password = z.string().min(8, 'must be at least 8 characters').max(128);
+// Display name of a mailbox, ring group or IVR menu.
+export const name = z.string().trim().min(1).max(100);
+// An optional reference to another row (greeting, owner, fallback mailbox, ...). Omitted = null.
+export const nullableId = z.string().uuid().nullable().default(null);

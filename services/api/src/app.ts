@@ -6,6 +6,10 @@ import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
+import { ivrMenuRoutes } from './routes/ivr-menus.js';
+import { mailboxRoutes } from './routes/mailboxes.js';
+import { numberRoutes } from './routes/numbers.js';
+import { ringGroupRoutes } from './routes/ring-groups.js';
 import { staffRoutes } from './routes/staff.js';
 
 // Builds the Fastify app without listening, so tests can drive it with app.inject().
@@ -59,8 +63,13 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(authRoutes, { sql: deps.sql });
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
 
-  // Steps 5+ register numbers, ivr-menus, ... routes here. Every tenant-scoped route follows the
-  // rules in src/tenancy.ts (docs/backend-step3.md).
+  await app.register(mailboxRoutes, { sql: deps.sql });
+  await app.register(ringGroupRoutes, { sql: deps.sql });
+  await app.register(ivrMenuRoutes, { sql: deps.sql });
+  await app.register(numberRoutes, { sql: deps.sql });
+
+  // Steps 6+ register media, voicemails, calls, settings routes here. Every tenant-scoped route
+  // follows the rules in src/tenancy.ts (docs/backend-step3.md) and src/references.ts.
 
   return app;
 }

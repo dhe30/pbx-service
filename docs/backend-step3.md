@@ -20,10 +20,10 @@ No new endpoints.
    - `ring_group_members` has no `tenant_id` of its own;
    - `ivr_menus.config` is JSON, with no foreign keys at all.
 
-   When a delete route refuses to delete a row that is still referenced (for example
-   `DELETE /staff/:id` while an IVR menu targets that user, step 4), the write that adds the
-   reference must also lock the referenced rows (`select ... for share`). Otherwise the two
-   can race.
+   `assertOwned()` locks the rows it checks `FOR SHARE` (added in step 5), so a delete that
+   refuses to remove a row still in use (409 `in_use`, `src/references.ts`) can't race with a
+   save that adds a reference. Delete routes lock their row `FOR UPDATE` before checking. See
+   `docs/backend-step5.md`.
 
 ## Helpers (`services/api/src/tenancy.ts`)
 

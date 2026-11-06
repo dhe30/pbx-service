@@ -71,6 +71,10 @@ export interface Ref {
  * 400 `invalid_reference` unless every ref is a row owned by `tenantId`. One query per table.
  * Unknown ids and other tenants' ids get the same answer. Call it inside the write's transaction
  * (pass `tx`) right before the insert/update.
+ *
+ * The referenced rows are locked FOR SHARE until that transaction ends. Delete routes that refuse
+ * to delete a row still in use lock it FOR UPDATE first (see src/references.ts), so a save and a
+ * delete running at the same time can't both succeed and leave a dangling reference.
  */
 export async function assertOwned(sql: Db, tenantId: string, refs: readonly Ref[]): Promise<void> {
   const byTable = new Map<TenantTable, Ref[]>();
@@ -81,7 +85,8 @@ export async function assertOwned(sql: Db, tenantId: string, refs: readonly Ref[
   for (const [table, tableRefs] of byTable) {
     const ids = [...new Set(tableRefs.map((r) => r.id))];
     const found = await sql<{ id: string }[]>`
-      select id from ${sql(table)} where tenant_id = ${tenantId} and id = any(${ids}::uuid[])`;
+      select id from ${sql(table)} where tenant_id = ${tenantId} and id = any(${ids}::uuid[])
+         for share`;
     const owned = new Set(found.map((r) => r.id));
     const missing = tableRefs.find((r) => !owned.has(r.id));
     if (missing) throw invalidRef(missing);

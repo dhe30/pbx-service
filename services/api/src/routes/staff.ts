@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { HttpError, isUniqueViolation } from '../errors.js';
 import { hashPassword } from '../passwords.js';
+import { menusUsing, refuseIfUsed, usages } from '../references.js';
 import { IdParams, tenantOf } from '../tenancy.js';
 import { email, parse, password } from '../validation.js';
 
@@ -106,8 +107,8 @@ export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, 
 
     await withRetry(() =>
       sql.begin(async (tx) => {
-        // Lock the row so a concurrent IVR save can't start pointing at this user meanwhile
-        // (step 5 IVR writes lock the users they reference with FOR SHARE).
+        // Lock the row so a concurrent IVR or ring group save can't start pointing at this user
+        // meanwhile (those saves lock the users they reference FOR SHARE, via assertOwned).
         // Owners and other tenants' users are "not found": this route only manages staff.
         const [user] = await tx<{ sipUsername: string | null }[]>`
           select sip_username from users
@@ -117,19 +118,7 @@ export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, 
 
         // IVR configs reference users inside JSON (no foreign key). A dangling "user" target makes
         // the ARI app hang up on callers who press that digit, so refuse instead.
-        const menus = await tx<{ name: string }[]>`
-          select name from ivr_menus
-           where tenant_id = ${tenantId}
-             and jsonb_path_exists(config, '$.** ? (@.action == "user" && @.target == $id)',
-                                   jsonb_build_object('id', ${id}::text))
-           order by name`;
-        if (menus.length > 0) {
-          throw new HttpError(
-            409,
-            'in_use',
-            `Used by IVR menu ${menus.map((m) => `"${m.name}"`).join(', ')}; change the menu first`,
-          );
-        }
+        refuseIfUsed(usages('IVR menu', await menusUsing(tx, tenantId, 'user', id)));
 
         if (user.sipUsername) {
           // Registrations too (usrloc db_mode=3 reads the DB on every lookup), so calls stop

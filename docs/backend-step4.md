@@ -81,9 +81,8 @@ Example `/me/sip-credentials` response, ready for SIP.js:
   users in JSON with no foreign key. The ARI app hangs up when a `user` target is missing
   (`inbound.ts`), so a caller pressing that digit would be cut off. The owner must change the
   menu first; the message names it.
-  - Race: the delete locks the user row. **Step 5 IVR writes must lock every user they reference
-    with `FOR SHARE`** (inside the transaction, with the `assertOwned` check). Otherwise a menu saved
-    at the same moment could still point at the deleted user.
+  - Race: the delete locks the user row `FOR UPDATE`; IVR and ring group saves lock the users
+    they reference `FOR SHARE` (via `assertOwned`, step 5), so they can't interleave.
 - **Only staff are managed here.** `DELETE /staff/:id` on an owner returns 404 like an unknown id.
   Owners get no SIP account, and `/me/sip-credentials` is staff-only (CLAUDE.md §11).
 - **`SIP_DOMAIN` must equal Ansible's `sip_domain`** (`infra/ansible/group_vars/all/main.yml`,

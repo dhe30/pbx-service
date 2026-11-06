@@ -1,7 +1,7 @@
 # Backend API: what the rest of the team needs to know
 
 From: Aaron (Track 3 backend). As of 2026-11-06.
-Details: `docs/backend-step1.md` to `docs/backend-step4.md`. Code: `services/api/`.
+Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api/`.
 
 ## Status
 
@@ -11,8 +11,9 @@ Details: `docs/backend-step1.md` to `docs/backend-step4.md`. Code: `services/api
 | 2 | Auth: signup, login, refresh, logout (cookies + JWT) | Done, `GET /me` deliberately postponed |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
 | 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
-| 5 | IVR menus, ring groups, mailboxes, number routing | Next |
-| 6-8 | Media, history/voicemail views, number purchase | Planned |
+| 5 | IVR menus, ring groups, mailboxes, number routing | Done |
+| 6 | Greeting upload, media URLs | Next (needs Garage in dev) |
+| 7-8 | History/voicemail views, settings, number purchase | Planned |
 
 ## For everyone
 
@@ -29,7 +30,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step4.md`. Code: `services/api
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
-| 409 | `email_taken`, `in_use` | Conflict with existing data (`in_use`: still referenced, e.g. a staff member an IVR menu routes to; `message` names what) |
+| 409 | `email_taken`, `in_use` | Conflict with existing data (`in_use`: can't delete, still used by an IVR menu, ring group or phone number; `message` names them) |
 | 415 | | Body wasn't JSON (only `application/json` is accepted) |
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
 | 500 | `internal_error` | A bug; details are only in the server log |
@@ -115,6 +116,26 @@ purpose). A taken email at signup returns `409 email_taken`.
   (`wsUri` = WebSocket server, `sipUri` = AOR, `username`/`password` = digest auth). Keep the
   password in memory only, don't store it. Owners get `403` here: only staff have a softphone.
 
+### Call configuration endpoints (available now, step 5)
+
+Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
+
+| Resource | Routes | Object |
+|---|---|---|
+| Mailboxes | `GET/POST /mailboxes`, `GET/PUT/DELETE /mailboxes/:id` | `{ id, name, greetingMediaId, ownerUserId }` |
+| Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, fallbackMailboxId, memberIds }` |
+| IVR menus | `GET/POST /ivr-menus`, `GET/PUT/DELETE /ivr-menus/:id` | `{ id, name, greetingMediaId, timeoutSec, maxRetries, config }` |
+| Number routing | `PUT /numbers/:id/route` `{ ivrMenuId }` | `{ id, did, status, ivrMenuId }` |
+
+- **`PUT` replaces the whole object**: omitted fields reset to defaults. Edit forms should send
+  everything they got from `GET`.
+- `memberIds` order is the ring order (matters for `strategy: "sequential"`). Only staff can be
+  members or IVR `user` targets; offer only `GET /staff` people in those pickers.
+- `config` uses the ARI app's keys as-is: `{ options: { "1": { action, target } }, on_timeout }`
+  (snake_case `on_timeout`, unlike the other fields).
+- `409 in_use` on delete: show `message` (e.g. `Used by IVR menu "Main"; change that first`).
+- There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
+
 ### Not available yet
 
 - `GET /me` (current user + tenant name). Until then, keep `{ userId, tenantId, role }` from the
@@ -169,6 +190,15 @@ purpose). A taken email at signup returns `409 email_taken`.
   `tenant_id` column.
 - New shared types: `Db` and `TransactionSql` in `services/shared/src/db.ts`, for helpers that
   should run on the pool or inside a transaction.
+- **Bug fix in `services/shared` that affects the ARI app** (step 5): `createDb` used
+  `postgres.camel`, which also renamed keys inside JSON columns, so `ivr_menus.config.on_timeout`
+  came back as `onTimeout` and `parseIvrConfig` dropped it. Callers who pressed nothing were hung
+  up instead of reaching `on_timeout`. Only column names are converted now; no ARI app code
+  changed. Rebuild shared (`npm run build -w @pbx/shared`) and please recheck the on_timeout path
+  on the phase-1 VM. Details: `docs/backend-step5.md`.
+- **The API refuses to delete what calls still depend on** (409 `in_use`): a staff member, mailbox
+  or ring group an IVR menu targets, a mailbox used as a ring group fallback, an IVR menu a number
+  routes to. Seeds or scripts that delete these rows directly should keep the same rule.
 
 ---
 
@@ -242,7 +272,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - **Daniel:** extensions schema (column, format, who writes the migration, auto-assigned or
   picked by owners). Step 4 shipped without it; needed before staff-to-staff calling.
 - **Justin:** fields in `GET /me`, and request/response shapes for each dashboard page. Needed
-  before `/me` and steps 5-7. (Staff shapes are already built; say if they don't suit the UI.)
+  before `/me` and steps 6-7. (Staff and call configuration shapes are already built; say if they
+  don't suit the UI.)
+- **Daniel:** confirm on the phase-1 VM that an IVR `on_timeout` action now runs (fixed in
+  `services/shared` in step 5; see the Daniel section above).
 - **Muhammad:** Garage in `dev/docker-compose.yml` (bucket, keys, endpoint matching production).
   Needed before step 6; until then `/ready` is 503 locally.
 - **Muhammad:** who runs `dbmate` migrations during a deploy (once, before the new API version
@@ -259,8 +292,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - `GET /me` (postponed on purpose).
 - Staff extensions (step 4 follow-up, waiting on the schema decision with Daniel).
 - Changing a staff member's dashboard password (no reset or change-password route yet).
-- Step 5: IVR menus, ring groups and mailboxes CRUD; `PUT /numbers/:id/route`. IVR writes must
-  lock referenced users `FOR SHARE` (pairs with the lock in `DELETE /staff/:id`).
 - Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
 - Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
 - Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
@@ -277,6 +308,9 @@ Everything backend-related that is still missing or undecided. Remove items as t
   would remove the trap.
 - **No end-to-end test over a real socket or browser yet.** Auth and staff are covered by
   `app.inject()` tests only; a curl/browser run with the Vite proxy is still to do.
+- **Deleting a mailbox leaves its voicemail audio behind.** The voicemail rows cascade, but their
+  `media` rows and object-store files stay. Step 7 (voicemail delete) should add the cleanup.
+- **No call has gone through an API-created IVR menu yet** (phase-1 VM test).
 - **No softphone has registered with API-created credentials yet.** Needs the phase-1 VM (or a
   local Kamailio) pointed at the same database.
 - **`@types/node` is `^22`** while the project targets Node 24.

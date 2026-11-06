@@ -426,9 +426,10 @@ node_exporter 9100 and other exporters.
    -> IMPLEMENTED: infra/ansible/phase1-allinone.yml. Runbook, decisions taken beyond this spec,
       and the items still to verify on a real VM: docs/phase1.md.
 2. (Parallel) API + web locally via dev/docker-compose; staff creation writes subscriber rows.
-   -> API IN PROGRESS (Aaron): steps 1-4 done (skeleton, auth, tenant isolation, staff + SIP
-      credentials). Contracts for other tracks: docs/backend-for-team.md; per-step details:
-      docs/backend-step{1,2,3,4}.md. Local dev also needs `npm run db:kamailio`.
+   -> API IN PROGRESS (Aaron): steps 1-5 done (skeleton, auth, tenant isolation, staff + SIP
+      credentials, mailboxes / ring groups / IVR menus / number routing). Contracts for other
+      tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5}.md.
+      Local dev also needs `npm run db:kamailio`.
       Every tenant-scoped API route must follow the rules in docs/backend-step3.md.
 3. Everything as code: Ansible roles + StackScript; rebuild the all-in-one VM with one command.
 4. Split and replicate per §4.1, killing a node after each step: pbx x2 behind dispatcher;

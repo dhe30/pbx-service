@@ -208,7 +208,7 @@ describe.skipIf(!db || !hasKamailio)('staff + SIP credentials (Postgres)', () =>
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({
       error: 'in_use',
-      message: 'Used by IVR menu "Main menu"; change the menu first',
+      message: 'Used by IVR menu "Main menu"; change that first',
     });
     expect(await sql`select 1 from kamailio.subscriber where username = ${staff.sipUsername}`).toHaveLength(1);
   });
