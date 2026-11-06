@@ -1,4 +1,4 @@
-import type { z } from 'zod';
+import { z } from 'zod';
 import { HttpError } from './errors.js';
 
 /**
@@ -15,3 +15,9 @@ export function parse<S extends z.ZodTypeAny>(schema: S, input: unknown): z.infe
   }
   return result.data;
 }
+
+// Shared field rules (signup, login, staff creation).
+// Emails are stored lowercased: users.email is a plain case-sensitive UNIQUE column.
+export const email = z.string().trim().toLowerCase().email().max(254);
+// Dashboard passwords. The upper bound keeps argon2 work per request bounded.
+export const password = z.string().min(8, 'must be at least 8 characters').max(128);

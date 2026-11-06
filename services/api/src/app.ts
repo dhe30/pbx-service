@@ -6,6 +6,7 @@ import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
+import { staffRoutes } from './routes/staff.js';
 
 // Builds the Fastify app without listening, so tests can drive it with app.inject().
 // index.ts wires the real dependencies; tests pass fakes or a test database.
@@ -19,7 +20,13 @@ export interface AppDeps {
 
 export type AppConfig = Pick<
   Config,
-  'LOG_LEVEL' | 'JWT_SECRET' | 'ACCESS_TOKEN_TTL_SEC' | 'REFRESH_TOKEN_TTL_SEC' | 'COOKIE_SECURE'
+  | 'LOG_LEVEL'
+  | 'JWT_SECRET'
+  | 'ACCESS_TOKEN_TTL_SEC'
+  | 'REFRESH_TOKEN_TTL_SEC'
+  | 'COOKIE_SECURE'
+  | 'SIP_WS_URI'
+  | 'SIP_DOMAIN'
 >;
 
 export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyInstance> {
@@ -50,8 +57,10 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
 
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
   await app.register(authRoutes, { sql: deps.sql });
+  await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
 
-  // Steps 3+ register staff, numbers, ... routes here (protected with { preHandler: authenticate }).
+  // Steps 5+ register numbers, ivr-menus, ... routes here. Every tenant-scoped route follows the
+  // rules in src/tenancy.ts (docs/backend-step3.md).
 
   return app;
 }

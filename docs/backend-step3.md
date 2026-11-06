@@ -20,6 +20,11 @@ No new endpoints.
    - `ring_group_members` has no `tenant_id` of its own;
    - `ivr_menus.config` is JSON, with no foreign keys at all.
 
+   When a delete route refuses to delete a row that is still referenced (for example
+   `DELETE /staff/:id` while an IVR menu targets that user, step 4), the write that adds the
+   reference must also lock the referenced rows (`select ... for share`). Otherwise the two
+   can race.
+
 ## Helpers (`services/api/src/tenancy.ts`)
 
 | Helper | Use |

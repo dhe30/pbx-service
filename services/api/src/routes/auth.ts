@@ -2,20 +2,15 @@ import { withRetry, type Sql, type UserRole } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { clearAuthCookies, readRefreshToken, setAuthCookies, type AuthUser } from '../auth.js';
-import { HttpError } from '../errors.js';
+import { HttpError, isUniqueViolation } from '../errors.js';
 import { hashPassword, verifyPassword } from '../passwords.js';
-import { parse } from '../validation.js';
+import { email, parse, password } from '../validation.js';
 
 // POST /auth/signup   create a business (tenant) + its owner, log them in      201
 // POST /auth/login    email + password -> auth cookies                         200
 // POST /auth/refresh  refresh cookie -> new access + refresh cookies           200
 // POST /auth/logout   clear auth cookies                                       204
 // Responses carry only { userId, tenantId, role }; profile data comes from GET /me (not built yet).
-
-// Emails are stored lowercased: users.email is a plain case-sensitive UNIQUE column.
-const email = z.string().trim().toLowerCase().email().max(254);
-// Upper bound keeps argon2 work per request bounded.
-const password = z.string().min(8, 'must be at least 8 characters').max(128);
 
 const SignupBody = z.object({
   businessName: z.string().trim().min(1).max(100),
@@ -108,7 +103,3 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
   });
 };
 
-function isUniqueViolation(err: unknown, constraint: string): boolean {
-  const e = err as { code?: string; constraint_name?: string };
-  return e?.code === '23505' && e.constraint_name === constraint;
-}

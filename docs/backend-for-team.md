@@ -1,7 +1,7 @@
 # Backend API: what the rest of the team needs to know
 
 From: Aaron (Track 3 backend). As of 2026-11-06.
-Details: `docs/backend-step1.md`, `docs/backend-step2.md`, `docs/backend-step3.md`. Code: `services/api/`.
+Details: `docs/backend-step1.md` to `docs/backend-step4.md`. Code: `services/api/`.
 
 ## Status
 
@@ -10,8 +10,9 @@ Details: `docs/backend-step1.md`, `docs/backend-step2.md`, `docs/backend-step3.m
 | 1 | Server skeleton: config, logging, `/health`, `/ready`, `/metrics`, error format, graceful shutdown | Done |
 | 2 | Auth: signup, login, refresh, logout (cookies + JWT) | Done, `GET /me` deliberately postponed |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
-| 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Next |
-| 5-8 | IVR / ring groups / mailboxes, media, history/voicemail views, number purchase | Planned |
+| 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
+| 5 | IVR menus, ring groups, mailboxes, number routing | Next |
+| 6-8 | Media, history/voicemail views, number purchase | Planned |
 
 ## For everyone
 
@@ -28,7 +29,7 @@ Details: `docs/backend-step1.md`, `docs/backend-step2.md`, `docs/backend-step3.m
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
-| 409 | e.g. `email_taken` | Conflict with existing data |
+| 409 | `email_taken`, `in_use` | Conflict with existing data (`in_use`: still referenced, e.g. a staff member an IVR menu routes to; `message` names what) |
 | 415 | | Body wasn't JSON (only `application/json` is accepted) |
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
 | 500 | `internal_error` | A bug; details are only in the server log |
@@ -39,6 +40,7 @@ Details: `docs/backend-step1.md`, `docs/backend-step2.md`, `docs/backend-step3.m
 cp .env.example .env          # add SHUTDOWN_DRAIN_MS=0 for fast restarts
 npm run dev:up                # Postgres (Docker Desktop with WSL integration)
 npm run db:migrate
+npm run db:kamailio           # Kamailio tables (subscriber, location); safe to re-run
 npm run dev -w @pbx/api       # http://127.0.0.1:3000
 ```
 
@@ -96,6 +98,23 @@ purpose). A taken email at signup returns `409 email_taken`.
   instead of showing an error right away.
 - **Bodies must be JSON**: send `Content-Type: application/json`. Form posts get 415.
 
+### Staff endpoints (available now, step 4)
+
+| Request | Who | Success response |
+|---|---|---|
+| `POST /staff` `{ "email", "password" }` | owner | `201 { "id", "email", "role": "staff", "sipUsername", "createdAt" }` |
+| `GET /staff` | owner | `200 [ { same fields }, ... ]`, oldest first |
+| `DELETE /staff/:id` | owner | `204` |
+| `GET /me/sip-credentials` | staff | `200 { "wsUri", "sipUri", "username", "password" }` |
+
+- The owner sets the staff member's first dashboard password (same rules as signup) and gives it
+  to them; the staff member then logs in normally with `/auth/login`.
+- Errors: `409 email_taken` on create; `409 in_use` on delete while an IVR menu routes to that
+  person (show `message`, it names the menu); `404` if already deleted.
+- Softphone: after a staff login, fetch `/me/sip-credentials` and pass the fields to SIP.js
+  (`wsUri` = WebSocket server, `sipUri` = AOR, `username`/`password` = digest auth). Keep the
+  password in memory only, don't store it. Owners get `403` here: only staff have a softphone.
+
 ### Not available yet
 
 - `GET /me` (current user + tenant name). Until then, keep `{ userId, tenantId, role }` from the
@@ -131,10 +150,14 @@ purpose). A taken email at signup returns `409 email_taken`.
   - who writes the migration;
   - the format (digits only? length?);
   - whether the API assigns extensions automatically or owners pick them.
-- **Step 4 (staff) is where our work meets.** `POST /staff` will create the `users` row and the
-  Kamailio `subscriber` row in one transaction, and `GET /me/sip-credentials` will return
-  `{ wsUri, sipUri, username, password }`. If extensions affect `subscriber` rows (e.g. aliases)
-  or the SIP username format, tell me before then.
+- **Step 4 (staff) is done** (`docs/backend-step4.md`):
+  - `POST /staff` creates the `users` row and the Kamailio `subscriber` row in one transaction.
+    The SIP username is generated: `s` + 16 hex chars; the domain is `SIP_DOMAIN`.
+  - `DELETE /staff/:id` also deletes the user's `kamailio.location` rows, so their softphone
+    stops ringing at once.
+  - `GET /me/sip-credentials` returns `{ wsUri, sipUri, username, password }`.
+  - If extensions need `subscriber` changes (aliases) or a different username format, tell me.
+    The routes can take an `extension` field without breaking anything.
 - `users.sip_username` is **globally** unique (Kamailio looks staff up by username only,
   `use_domain=0`), so a generated username can't be just an extension number.
 - The API doesn't write `calls`, `voicemails` or other ARI-app tables; it only reads them
@@ -217,9 +240,9 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Decisions needed from others
 
 - **Daniel:** extensions schema (column, format, who writes the migration, auto-assigned or
-  picked by owners). Needed before step 4.
+  picked by owners). Step 4 shipped without it; needed before staff-to-staff calling.
 - **Justin:** fields in `GET /me`, and request/response shapes for each dashboard page. Needed
-  before `/me` and steps 4-7.
+  before `/me` and steps 5-7. (Staff shapes are already built; say if they don't suit the UI.)
 - **Muhammad:** Garage in `dev/docker-compose.yml` (bucket, keys, endpoint matching production).
   Needed before step 6; until then `/ready` is 503 locally.
 - **Muhammad:** who runs `dbmate` migrations during a deploy (once, before the new API version
@@ -234,9 +257,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - `GET /me` (postponed on purpose).
-- Step 4: staff management (`POST /staff`, `DELETE /staff/:id`, `GET /staff`) writing `users` +
-  Kamailio `subscriber` rows, and `GET /me/sip-credentials`.
-- Step 5: IVR menus, ring groups and mailboxes CRUD; `PUT /numbers/:id/route`.
+- Staff extensions (step 4 follow-up, waiting on the schema decision with Daniel).
+- Changing a staff member's dashboard password (no reset or change-password route yet).
+- Step 5: IVR menus, ring groups and mailboxes CRUD; `PUT /numbers/:id/route`. IVR writes must
+  lock referenced users `FOR SHARE` (pairs with the lock in `DELETE /staff/:id`).
 - Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
 - Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
 - Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
@@ -251,8 +275,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - **Stale `services/shared/dist` breaks types silently.** Today the fix is a manual
   `npm run build -w @pbx/shared`; a build step (or pointing the package at its sources in dev)
   would remove the trap.
-- **No end-to-end test over a real socket or browser yet.** Auth is covered by `app.inject()`
-  tests only; a curl/browser run with the Vite proxy is still to do.
+- **No end-to-end test over a real socket or browser yet.** Auth and staff are covered by
+  `app.inject()` tests only; a curl/browser run with the Vite proxy is still to do.
+- **No softphone has registered with API-created credentials yet.** Needs the phase-1 VM (or a
+  local Kamailio) pointed at the same database.
 - **`@types/node` is `^22`** while the project targets Node 24.
 
 ### Known limitations to revisit (hardening phase)

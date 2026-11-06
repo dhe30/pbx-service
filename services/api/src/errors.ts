@@ -50,3 +50,9 @@ export function registerErrorHandling(app: FastifyInstance): void {
     reply.status(404).send({ error: 'not_found', message: `Route ${req.method} ${req.url} not found` });
   });
 }
+
+/** True if `err` is a Postgres unique violation (23505) of the named constraint. */
+export function isUniqueViolation(err: unknown, constraint: string): boolean {
+  const e = err as { code?: string; constraint_name?: string } | null;
+  return e?.code === '23505' && e.constraint_name === constraint;
+}

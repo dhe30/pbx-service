@@ -7,6 +7,8 @@ export const testConfig: AppConfig = {
   ACCESS_TOKEN_TTL_SEC: 900,
   REFRESH_TOKEN_TTL_SEC: 7 * 86400,
   COOKIE_SECURE: true,
+  SIP_WS_URI: 'wss://pbx.test/ws',
+  SIP_DOMAIN: 'pbx.test',
 };
 
 /** Local docker-compose Postgres (npm run dev:up && npm run db:migrate). Override with TEST_DATABASE_URL. */
