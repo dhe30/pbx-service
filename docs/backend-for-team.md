@@ -1,7 +1,7 @@
 # Backend API: what the rest of the team needs to know
 
 From: Aaron (Track 3 backend). As of 2026-11-06.
-Details: `docs/backend-step1.md`. Code: `services/api/`.
+Details: `docs/backend-step1.md`, `docs/backend-step2.md`, `docs/backend-step3.md`. Code: `services/api/`.
 
 ## Status
 
@@ -9,8 +9,8 @@ Details: `docs/backend-step1.md`. Code: `services/api/`.
 |---|---|---|
 | 1 | Server skeleton: config, logging, `/health`, `/ready`, `/metrics`, error format, graceful shutdown | Done |
 | 2 | Auth: signup, login, refresh, logout (cookies + JWT) | Done, `GET /me` deliberately postponed |
-| 3 | Tenant isolation helper | Next |
-| 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Planned |
+| 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
+| 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Next |
 | 5-8 | IVR / ring groups / mailboxes, media, history/voicemail views, number purchase | Planned |
 
 ## For everyone
@@ -23,10 +23,11 @@ Details: `docs/backend-step1.md`. Code: `services/api/`.
 
 | Status | `error` | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Bad body; `message` names each bad field (`email: Invalid email; password: ...`) |
+| 400 | `invalid_request` | Bad body or malformed id; `message` names each bad field (`email: Invalid email; password: ...`) |
+| 400 | `invalid_reference` | The body points at an id that doesn't exist or belongs to another business; `message` names the field (`members.1: no such user`) |
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
-| 404 | `not_found` | |
+| 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
 | 409 | e.g. `email_taken` | Conflict with existing data |
 | 415 | | Body wasn't JSON (only `application/json` is accepted) |
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
@@ -47,6 +48,14 @@ expected; everything else works.
 **Schema changes.** The API, the ARI app and Kamailio all read the same tables. Please send
 migrations (`db/migrations/`, dbmate) through one reviewed PR at a time and tell the other
 owners.
+
+**After pulling changes to `services/shared`, rebuild it:** `npm run build -w @pbx/shared`. The
+API and ARI app use its compiled `dist/` (gitignored). A stale build makes shared types silently
+resolve to `unknown` (this happened once already, see `docs/backend-step3.md`).
+
+**Tenant isolation (step 3).** Every API query is scoped to the logged-in user's business, the
+business comes only from the login token (never from the URL or body), and every id a request
+stores is checked to belong to the same business. Rules and helpers: `docs/backend-step3.md`.
 
 ---
 
@@ -91,8 +100,27 @@ purpose). A taken email at signup returns `409 email_taken`.
 
 - `GET /me` (current user + tenant name). Until then, keep `{ userId, tenantId, role }` from the
   login/signup/refresh response. Tell me what fields you need in `/me`.
+  Proposed GET /me (not built yet; feedback welcome)
+  {
+    "user": {
+      "id": "uuid",
+      "email": "owner@tonys.test",
+      "role": "owner",
+      "sipUsername": null,
+      "extension": null
+    },
+    "tenant": 
+  {
 - All other dashboard endpoints (CLAUDE.md §11). I'll share request/response shapes before
   building each group; tell me early if a shape doesn't suit the UI.
+
+### Errors to handle on upcoming forms (from step 3)
+
+- `404 not_found` on a detail page: show "not found"; the id may simply belong to another
+  business.
+- `400 invalid_reference` on save: `message` starts with the field path (`config.options.2.target`,
+  `memberIds.1`), so you can highlight the field. Usually means a picked item was deleted
+  meanwhile; reload the options.
 
 ---
 
@@ -111,6 +139,13 @@ purpose). A taken email at signup returns `409 email_taken`.
   `use_domain=0`), so a generated username can't be just an extension number.
 - The API doesn't write `calls`, `voicemails` or other ARI-app tables; it only reads them
   (call history, voicemail inbox).
+- **Tenant isolation is enforced in the API, not the database** (step 3). The foreign keys only
+  check that a row exists, not that it's the same tenant's, and `ivr_menus.config` has none. The
+  API checks before writing, but code that writes these tables directly (ARI app, seeds, your
+  extension work) must keep references within one tenant. If you add a table, give it a
+  `tenant_id` column.
+- New shared types: `Db` and `TransactionSql` in `services/shared/src/db.ts`, for helpers that
+  should run on the pool or inside a transaction.
 
 ---
 

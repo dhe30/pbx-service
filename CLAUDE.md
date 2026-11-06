@@ -426,6 +426,9 @@ node_exporter 9100 and other exporters.
    -> IMPLEMENTED: infra/ansible/phase1-allinone.yml. Runbook, decisions taken beyond this spec,
       and the items still to verify on a real VM: docs/phase1.md.
 2. (Parallel) API + web locally via dev/docker-compose; staff creation writes subscriber rows.
+   -> API IN PROGRESS (Aaron): steps 1-3 done (skeleton, auth, tenant isolation). Contracts for
+      other tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3}.md.
+      Every tenant-scoped API route must follow the rules in docs/backend-step3.md.
 3. Everything as code: Ansible roles + StackScript; rebuild the all-in-one VM with one command.
 4. Split and replicate per §4.1, killing a node after each step: pbx x2 behind dispatcher;
    Patroni x3 + local DB proxies; app x2 behind HAProxy; edge x2 (Path, shared usrloc,

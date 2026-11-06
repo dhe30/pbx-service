@@ -29,6 +29,12 @@ export function registerErrorHandling(app: FastifyInstance): void {
         .send({ error: 'unavailable', message: 'Temporarily unavailable, please retry' });
     }
 
+    // Postgres rejected a malformed value (e.g. "abc" for a uuid column) that slipped past route
+    // validation. It's the client's input, not a server fault.
+    if ((err as { code?: string }).code === '22P02') {
+      return reply.status(400).send({ error: 'invalid_request', message: 'Malformed id or value' });
+    }
+
     // Fastify's own 4xx errors (schema validation, bad JSON, body too large, ...).
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500;
     if (status >= 400 && status < 500) {
