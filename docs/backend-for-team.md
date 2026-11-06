@@ -207,3 +207,62 @@ purpose). A taken email at signup returns `409 email_taken`.
 - Production: set `HOST` to the app node's private IP (default `127.0.0.1`).
 - Capacity: each login or signup hashes with argon2 (~64 MiB memory, ~50-100 ms CPU). Up to 4
   run at once per process, so budget roughly 256 MiB of extra memory per app node at peak.
+
+---
+
+## Outstanding backend items
+
+Everything backend-related that is still missing or undecided. Remove items as they're done.
+
+### Decisions needed from others
+
+- **Daniel:** extensions schema (column, format, who writes the migration, auto-assigned or
+  picked by owners). Needed before step 4.
+- **Justin:** fields in `GET /me`, and request/response shapes for each dashboard page. Needed
+  before `/me` and steps 4-7.
+- **Muhammad:** Garage in `dev/docker-compose.yml` (bucket, keys, endpoint matching production).
+  Needed before step 6; until then `/ready` is 503 locally.
+- **Muhammad:** who runs `dbmate` migrations during a deploy (once, before the new API version
+  starts). Needed before the first multi-node deploy.
+- **Muhammad / edge owner:** whether the edge HAProxy routes on `/ready` (a cluster-wide DB
+  outage then marks every app replica down). Needed before the edge HAProxy role.
+- **Muhammad:** Postgres `max_connections` sizing for API + ARI apps + Kamailio pools. Needed
+  before the Patroni setup.
+- **Course staff:** DID endpoint API shape and how purchases work (CLAUDE.md §3 A6). Needed
+  before step 8.
+
+### Not built yet
+
+- `GET /me` (postponed on purpose).
+- Step 4: staff management (`POST /staff`, `DELETE /staff/:id`, `GET /staff`) writing `users` +
+  Kamailio `subscriber` rows, and `GET /me/sip-credentials`.
+- Step 5: IVR menus, ring groups and mailboxes CRUD; `PUT /numbers/:id/route`.
+- Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
+- Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
+- Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
+  is known).
+- `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include
+  ffmpeg.
+
+### Gaps in what exists
+
+- **`npm run typecheck` skips `services/api/test/`** (the tsconfig only includes `src`). Test type
+  errors are only caught by running a separate check.
+- **Stale `services/shared/dist` breaks types silently.** Today the fix is a manual
+  `npm run build -w @pbx/shared`; a build step (or pointing the package at its sources in dev)
+  would remove the trap.
+- **No end-to-end test over a real socket or browser yet.** Auth is covered by `app.inject()`
+  tests only; a curl/browser run with the Vite proxy is still to do.
+- **`@types/node` is `^22`** while the project targets Node 24.
+
+### Known limitations to revisit (hardening phase)
+
+- **No login rate limiting.** `@fastify/rate-limit` isn't installed, and with several replicas it
+  needs shared state.
+- **Tokens can't be revoked before they expire** (stateless design): up to 15 min for access
+  tokens, 7 days for refresh tokens of a user who still exists.
+- **Cross-tenant references are checked by the API only.** Composite foreign keys (e.g.
+  `(fallback_mailbox_id, tenant_id) -> mailboxes (id, tenant_id)`) would make the database enforce
+  it too; needs a coordinated migration.
+- **SIP passwords are stored in plaintext** in `subscriber` (CLAUDE.md §6 course-scope decision);
+  future improvement is an encrypted copy + `ha1` only.
