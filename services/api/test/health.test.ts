@@ -1,19 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildApp, type AppDeps } from '../src/app.js';
+import { buildApp } from '../src/app.js';
 import { HttpError } from '../src/errors.js';
 import { loadConfig } from '../src/config.js';
+import { build, testConfig, unusedDb } from './helpers.js';
 
 const ok = async () => {};
 const fail = async () => {
   throw new Error('connection refused');
 };
-
-function build(deps: Partial<AppDeps> = {}) {
-  return buildApp(
-    { LOG_LEVEL: 'silent' },
-    { readinessChecks: { db: ok, objectStore: ok }, isDraining: () => false, ...deps },
-  );
-}
 
 describe('GET /health', () => {
   it('is 200 even when dependencies are down', async () => {
@@ -43,10 +37,11 @@ describe('GET /ready', () => {
     let aborted = false;
     const hang = (signal: AbortSignal) =>
       new Promise<void>(() => signal.addEventListener('abort', () => (aborted = true)));
-    const app = await buildApp(
-      { LOG_LEVEL: 'silent' },
-      { readinessChecks: { db: hang }, isDraining: () => false },
-    );
+    const app = await buildApp(testConfig, {
+      sql: unusedDb(),
+      readinessChecks: { db: hang },
+      isDraining: () => false,
+    });
     const started = Date.now();
     const res = await app.inject({ method: 'GET', url: '/ready' });
     expect(res.statusCode).toBe(503);

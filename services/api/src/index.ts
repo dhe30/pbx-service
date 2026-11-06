@@ -21,6 +21,7 @@ async function main(): Promise<void> {
 
   let draining = false;
   const app = await buildApp(cfg, {
+    sql,
     readinessChecks: {
       db: () => sql`select 1`,
       objectStore: (signal) => store.ping(signal),

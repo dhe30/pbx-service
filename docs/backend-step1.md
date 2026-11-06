@@ -1,6 +1,6 @@
 # Backend step 1: API server skeleton
 
-Owner: Aaron (Track 3 backend). Status: done (2026-11-06), not yet committed.
+Owner: Aaron (Track 3 backend). Status: done (2026-11-06).
 
 Step 1 of the backend plan: a Fastify server in `services/api` with config validation, structured
 logging, health/readiness/metrics endpoints, a common error format and graceful shutdown. No

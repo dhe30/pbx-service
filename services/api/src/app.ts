@@ -1,19 +1,28 @@
+import type { Sql } from '@pbx/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { registerAuth } from './auth.js';
 import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
+import { authRoutes } from './routes/auth.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
 
 // Builds the Fastify app without listening, so tests can drive it with app.inject().
-// index.ts wires the real dependencies; tests pass fakes.
+// index.ts wires the real dependencies; tests pass fakes or a test database.
 
 export interface AppDeps {
+  sql: Sql;
   /** Dependency checks for GET /ready (index.ts: db + objectStore). */
   readinessChecks: Record<string, ReadinessCheck>;
   isDraining: () => boolean;
 }
 
-export async function buildApp(cfg: Pick<Config, 'LOG_LEVEL'>, deps: AppDeps): Promise<FastifyInstance> {
+export type AppConfig = Pick<
+  Config,
+  'LOG_LEVEL' | 'JWT_SECRET' | 'ACCESS_TOKEN_TTL_SEC' | 'REFRESH_TOKEN_TTL_SEC' | 'COOKIE_SECURE'
+>;
+
+export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     // JSON logs to stdout (journald / docker). Never log cookies or auth headers.
     logger: {
@@ -30,6 +39,7 @@ export async function buildApp(cfg: Pick<Config, 'LOG_LEVEL'>, deps: AppDeps): P
   });
 
   registerErrorHandling(app);
+  await registerAuth(app, cfg);
 
   app.addHook('onResponse', async (req, reply) => {
     metrics.httpRequestDuration.observe(
@@ -39,8 +49,9 @@ export async function buildApp(cfg: Pick<Config, 'LOG_LEVEL'>, deps: AppDeps): P
   });
 
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
+  await app.register(authRoutes, { sql: deps.sql });
 
-  // Steps 2+ register auth, staff, numbers, ... routes here.
+  // Steps 3+ register staff, numbers, ... routes here (protected with { preHandler: authenticate }).
 
   return app;
 }

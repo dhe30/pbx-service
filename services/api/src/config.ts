@@ -22,6 +22,15 @@ const EnvSchema = z.object({
 
   /** Signs the auth cookie. Must be identical on every app-N replica (Ansible Vault). */
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
+  /** Access cookie lifetime: how long a copied/stolen token or a deleted user keeps working. */
+  ACCESS_TOKEN_TTL_SEC: z.coerce.number().int().min(60).max(3600).default(900),
+  /** Refresh cookie lifetime: how long a user stays logged in without activity. */
+  REFRESH_TOKEN_TTL_SEC: z.coerce.number().int().min(3600).max(30 * 86400).default(7 * 86400),
+  /**
+   * Secure flag on auth cookies (sent over HTTPS only). Keep true: browsers also accept Secure
+   * cookies on http://localhost. Set false only for plain-HTTP testing on another host.
+   */
+  COOKIE_SECURE: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   /** Course DID endpoint (CLAUDE.md §3 A6; API shape still unknown). */
   DID_PROVIDER_URL: z.string().url(),
   /** Returned to staff browsers by GET /me/sip-credentials. */
