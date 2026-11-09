@@ -5,6 +5,7 @@ import { authenticate, requireRole } from '../auth.js';
 import { HttpError } from '../errors.js';
 import { tenantOf } from '../tenancy.js';
 import { parse } from '../validation.js';
+import { withDoc, type OperationDoc } from '../openapi/document.js';
 
 // Caller blocklist (course spec §3). Calls from a listed number to any of the account's numbers
 // are rejected (SIP 403) and logged with CDR outcome `blocked`. Owner-only.
@@ -31,18 +32,58 @@ const phoneNumber = z
     return e164;
   });
 
-const BlockBody = z.object({ number: phoneNumber });
-const NumberParams = z.object({ number: phoneNumber });
+const BlockBody = z.object({
+  number: phoneNumber.describe('Caller number: +E.164, 10-digit US, 1 + 10 digits or 011 + international; separators ignored.'),
+});
+const NumberParams = z.object({
+  number: phoneNumber.describe('The blocked number in any accepted format (encode "+" as %2B).'),
+});
 
 interface BlockedNumber {
   number: string;
   createdAt: Date;
 }
 
+const BlockedSchema = z
+  .object({
+    number: z.string().describe('Blocked caller number, E.164.'),
+    createdAt: z.date().describe('When it was blocked.'),
+  })
+  .describe('A blocked caller.');
+
+const docs = {
+  list: {
+    tag: 'Blocklist',
+    auth: 'owner',
+    summary: 'List blocked numbers',
+    description: 'Newest first.',
+    responses: { 200: { description: 'Blocked numbers', schema: z.array(BlockedSchema).describe('Blocked numbers.') } },
+  },
+  block: {
+    tag: 'Blocklist',
+    auth: 'owner',
+    summary: 'Block a caller',
+    description: 'Calls from this number are rejected. Idempotent: blocking a blocked number returns it with 200.',
+    body: BlockBody,
+    responses: {
+      201: { description: 'Newly blocked', schema: BlockedSchema },
+      200: { description: 'Was already blocked', schema: BlockedSchema },
+    },
+  },
+  unblock: {
+    tag: 'Blocklist',
+    auth: 'owner',
+    summary: 'Unblock a caller',
+    params: NumberParams,
+    responses: { 204: { description: 'Unblocked' } },
+    errors: { 404: 'The number is not blocked (`not_found`).' },
+  },
+} satisfies Record<string, OperationDoc>;
+
 export const blockedNumberRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
 
-  app.get('/blocked-numbers', ownerOnly, async (req) => {
+  app.get('/blocked-numbers', withDoc(ownerOnly, docs.list), async (req) => {
     return withRetry(
       () => sql<BlockedNumber[]>`
         select number, created_at from blocked_numbers
@@ -51,7 +92,7 @@ export const blockedNumberRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app,
     );
   });
 
-  app.post('/blocked-numbers', ownerOnly, async (req, reply) => {
+  app.post('/blocked-numbers', withDoc(ownerOnly, docs.block), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { number } = parse(BlockBody, req.body);
     // Idempotent: blocking a number twice is not an error (safe for client retries). The no-op
@@ -66,7 +107,7 @@ export const blockedNumberRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app,
     return reply.status(inserted ? 201 : 200).send(blocked);
   });
 
-  app.delete('/blocked-numbers/:number', ownerOnly, async (req, reply) => {
+  app.delete('/blocked-numbers/:number', withDoc(ownerOnly, docs.unblock), async (req, reply) => {
     const { number } = parse(NumberParams, req.params);
     const rows = await withRetry(
       () => sql`

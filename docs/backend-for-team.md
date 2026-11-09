@@ -35,6 +35,13 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
 | 500 | `internal_error` | A bug; details are only in the server log |
 
+**API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
+every route with its body, parameters, responses and error codes, and a description for every
+field. Open it in any OpenAPI viewer (e.g. paste into editor.swagger.io) instead of relying on the
+tables below when in doubt. How routes document themselves: `services/api/src/openapi/document.ts`
+(each route passes `withDoc(opts, {...})`; `test/openapi.test.ts` fails if a route, parameter or
+field has no description).
+
 **Running the API locally:**
 
 ```sh

@@ -7,6 +7,7 @@ import { HttpError, isUniqueViolation } from '../errors.js';
 import { destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, destinationRefs, tenantOf, type Ref } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
+import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 
 // Extensions (course spec §3): "Number unique in the account (e.g. 101), name, SIP username and
 // password (returned by your API), voicemail box, and forwarding (always, busy, no answer) to an
@@ -37,28 +38,34 @@ export interface ExtensionOptions {
 const e164 = z.string().regex(/^\+[1-9][0-9]{6,14}$/, 'must be an E.164 number, e.g. +12015550123');
 
 const ExtensionBody = z.object({
-  number: z.string().regex(/^[0-9]{1,8}$/, 'must be 1-8 digits'),
+  number: z.string().regex(/^[0-9]{1,8}$/, 'must be 1-8 digits').describe('Extension number: 1-8 digits, unique in the account.'),
   name,
   /**
    * Voicemail box. Omitted on create: a mailbox "<name> (<number>)" is created for it. null: no
    * voicemail (unanswered calls hang up unless forwarded). On PUT, omitted = keep the current one.
    */
-  mailboxId: z.string().uuid().nullable().optional(),
+  mailboxId: z
+    .string()
+    .uuid()
+    .nullable()
+    .optional()
+    .describe('Voicemail box. Omitted on create: a new mailbox is created. null: no voicemail. Omitted on replace: unchanged.'),
   // Same bounds as the CHECK constraint on extensions.ring_timeout_sec.
-  ringTimeoutSec: z.number().int().min(5).max(120).default(20),
-  forwardAlways: ForwardDestinationSchema.nullable().default(null),
-  forwardBusy: ForwardDestinationSchema.nullable().default(null),
-  forwardNoAnswer: ForwardDestinationSchema.nullable().default(null),
+  ringTimeoutSec: z.number().int().min(5).max(120).default(20).describe('Seconds to ring before no-answer handling.'),
+  forwardAlways: ForwardDestinationSchema.nullable().default(null).describe('Forward every call (phones do not ring). null = off.'),
+  forwardBusy: ForwardDestinationSchema.nullable().default(null).describe('Forward when busy. null = off.'),
+  forwardNoAnswer: ForwardDestinationSchema.nullable().default(null).describe('Forward when not answered. null = off (voicemail).'),
   /** Rung together with the extension's devices; each is a charged outgoing leg. */
   externalNumbers: z
-    .array(e164)
+    .array(e164.describe('E.164 number.'))
     .max(10)
     .default([])
-    .refine((n) => new Set(n).size === n.length, 'must not contain duplicates'),
+    .refine((n) => new Set(n).size === n.length, 'must not contain duplicates')
+    .describe('Up to 10 external numbers rung together with the phones (each a billed outgoing call).'),
   /** Caller ID for outgoing calls: must be one of the account's numbers. */
-  callerIdNumber: e164.nullable().default(null),
+  callerIdNumber: e164.nullable().default(null).describe("Caller ID for outgoing calls: one of the account's numbers. null = the account's first number."),
   /** Web user whose softphone uses this extension by default. */
-  userId: nullableId,
+  userId: nullableId.describe('Web user whose softphone uses this extension by default. null = none.'),
 });
 type ExtensionBody = z.infer<typeof ExtensionBody>;
 
@@ -133,23 +140,57 @@ function numberTaken(err: unknown): never | void {
   }
 }
 
+const ExtensionSchema = z
+  .object({
+    id: z.string().uuid().describe('Extension id.'),
+    number: z.string().describe('Extension number, unique in the account (dial it from any phone of the account).'),
+    name: z.string().describe('Display name.'),
+    sipUsername: z.string().describe('SIP username for phones (register at the SIP domain; SRV records point to us).'),
+    sipPassword: z.string().optional().describe('SIP password. Only returned to the account owner.'),
+    mailboxId: z.string().uuid().nullable().describe('Voicemail box for unanswered calls and *98; null = none.'),
+    ringTimeoutSec: z.number().int().describe('Seconds to ring before no-answer handling.'),
+    forwardAlways: ForwardDestinationSchema.nullable().describe('Forward every call (phones do not ring); null = off.'),
+    forwardBusy: ForwardDestinationSchema.nullable().describe('Forward when busy; null = off.'),
+    forwardNoAnswer: ForwardDestinationSchema.nullable().describe('Forward when not answered (before voicemail); null = off.'),
+    externalNumbers: z.array(z.string().describe('E.164 number.')).describe('External numbers rung together with the phones.'),
+    callerIdNumber: z.string().nullable().describe("Caller ID for outgoing calls (one of the account's numbers); null = the account's first number."),
+    userId: z.string().uuid().nullable().describe('Web user whose softphone uses this extension by default.'),
+  })
+  .describe('An extension.');
+
+const docs = crudDocs({
+  tag: 'Extensions',
+  noun: 'extension',
+  plural: 'extensions',
+  schema: ExtensionSchema,
+  body: ExtensionBody,
+  params: IdParams,
+  listOrder: 'sorted by number',
+  auth: { read: 'user', write: 'owner' },
+  createErrors: { 409: 'Another extension already has this number (`number_taken`).' },
+  replaceErrors: { 409: 'Another extension already has this number (`number_taken`).' },
+  deleteDescription: 'Deletes its SIP account (its phones stop working). Its mailbox and voicemails stay.',
+  deleteErrors: { 409: `${IN_USE} (numbers, IVR digits, ring groups, business hours, other extensions' forwarding).` },
+});
+docs.create.description = 'Creates the extension, its SIP account and (unless mailboxId is given) a mailbox, in one step.';
+
 export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app, { sql, sipDomain }) => {
   const anyUser = { preHandler: [authenticate] };
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
 
-  app.get('/extensions', anyUser, async (req) => {
+  app.get('/extensions', withDoc(anyUser, docs.list), async (req) => {
     const rows = await withRetry(() => selectExtensions(sql, tenantOf(req), sipDomain, null));
     return rows.map((r) => present(req, r));
   });
 
-  app.get('/extensions/:id', anyUser, async (req) => {
+  app.get('/extensions/:id', withDoc(anyUser, docs.get), async (req) => {
     const { id } = parse(IdParams, req.params);
     const [row] = await withRetry(() => selectExtensions(sql, tenantOf(req), sipDomain, id));
     if (!row) throw notFound();
     return present(req, row);
   });
 
-  app.post('/extensions', ownerOnly, async (req, reply) => {
+  app.post('/extensions', withDoc(ownerOnly, docs.create), async (req, reply) => {
     const tenantId = tenantOf(req);
     const body = parse(ExtensionBody, req.body);
     // A username collision (2^64 space) is practically impossible, but cheap to handle.
@@ -193,7 +234,7 @@ export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app,
     }
   });
 
-  app.put('/extensions/:id', ownerOnly, async (req) => {
+  app.put('/extensions/:id', withDoc(ownerOnly, docs.replace), async (req) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     const body = parse(ExtensionBody, req.body);
@@ -222,7 +263,7 @@ export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app,
     }
   });
 
-  app.delete('/extensions/:id', ownerOnly, async (req, reply) => {
+  app.delete('/extensions/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     await withRetry(() =>

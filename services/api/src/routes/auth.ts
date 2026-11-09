@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, clearAuthCookies, readRefreshToken, setAuthCookies, type AuthUser } from '../auth.js';
 import { HttpError, isUniqueViolation } from '../errors.js';
+import { withDoc, type OperationDoc } from '../openapi/document.js';
 import { hashPassword, verifyPassword } from '../passwords.js';
 import { email, parse, password, timeZone } from '../validation.js';
 
@@ -18,7 +19,7 @@ import { email, parse, password, timeZone } from '../validation.js';
 // changes it.
 
 const SignupBody = z.object({
-  businessName: z.string().trim().min(1).max(100),
+  businessName: z.string().trim().min(1).max(100).describe('Business name, 1-100 characters.'),
   timezone: timeZone,
   email,
   password,
@@ -26,8 +27,78 @@ const SignupBody = z.object({
 
 const LoginBody = z.object({
   email,
-  password: z.string().min(1).max(128),
+  password: z.string().min(1).max(128).describe('Dashboard password.'),
 });
+
+const role = z.enum(['owner', 'staff']).describe('owner: manages the account. staff: dashboard + softphone only.');
+const AuthUserSchema = z.object({
+  userId: z.string().uuid().describe('Logged-in user.'),
+  tenantId: z.string().uuid().describe('The business (account) the user belongs to.'),
+  role,
+});
+const MeSchema = z.object({
+  user: z
+    .object({
+      id: z.string().uuid().describe('User id.'),
+      email: z.string().describe('Login email.'),
+      role,
+      createdAt: z.date().describe('When the user was created.'),
+    })
+    .describe('The logged-in user.'),
+  tenant: z
+    .object({
+      id: z.string().uuid().describe('Account id.'),
+      name: z.string().describe('Business name.'),
+      timezone: z.string().describe('IANA time zone (fixed at signup).'),
+      status: z
+        .enum(['active', 'past_due'])
+        .describe('past_due: an invoice is unpaid; outgoing calls are blocked until a new card pays it.'),
+      createdAt: z.date().describe('Signup time.'),
+    })
+    .describe("The user's business."),
+});
+
+const cookiesSet = { 'Set-Cookie': 'pbx_access (path /, 15 min) and pbx_refresh (path /auth, 7 days); httpOnly.' };
+const docs = {
+  signup: {
+    tag: 'Auth',
+    auth: 'public',
+    summary: 'Sign up a business',
+    description: 'Creates the business and its owner, and logs the owner in.',
+    body: SignupBody,
+    responses: { 201: { description: 'Created and logged in', schema: AuthUserSchema, headers: cookiesSet } },
+    errors: { 409: 'An account with this email already exists (`email_taken`).' },
+  },
+  login: {
+    tag: 'Auth',
+    auth: 'public',
+    summary: 'Log in',
+    body: LoginBody,
+    responses: { 200: { description: 'Logged in', schema: AuthUserSchema, headers: cookiesSet } },
+    errors: { 401: 'Wrong email or password (`invalid_credentials`; same answer for both).' },
+  },
+  refresh: {
+    tag: 'Auth',
+    auth: 'public',
+    summary: 'Renew the session',
+    description: 'Trades the refresh cookie for new access + refresh cookies. Call once after a 401, then retry.',
+    responses: { 200: { description: 'New cookies set', schema: AuthUserSchema, headers: cookiesSet } },
+    errors: { 401: 'No valid refresh cookie, or the user was deleted; log in again (`unauthorized`).' },
+  },
+  logout: {
+    tag: 'Auth',
+    auth: 'public',
+    summary: 'Log out',
+    description: 'Clears both auth cookies.',
+    responses: { 204: { description: 'Logged out' } },
+  },
+  me: {
+    tag: 'Auth',
+    auth: 'user',
+    summary: 'Current user and business',
+    responses: { 200: { description: 'The user and their business', schema: MeSchema } },
+  },
+} satisfies Record<string, OperationDoc>;
 
 interface MeRow {
   id: string;
@@ -42,7 +113,7 @@ interface MeRow {
 }
 
 export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
-  app.post('/auth/signup', async (req, reply) => {
+  app.post('/auth/signup', withDoc({}, docs.signup), async (req, reply) => {
     const body = parse(SignupBody, req.body);
     const passwordHash = await hashPassword(body.password);
 
@@ -74,7 +145,7 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
     return reply.status(201).send(user);
   });
 
-  app.post('/auth/login', async (req, reply) => {
+  app.post('/auth/login', withDoc({}, docs.login), async (req, reply) => {
     const body = parse(LoginBody, req.body);
     const [row] = await withRetry(
       () => sql<{ id: string; tenantId: string; role: UserRole; passwordHash: string }[]>`
@@ -93,7 +164,7 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
     return reply.send(user);
   });
 
-  app.post('/auth/refresh', async (req, reply) => {
+  app.post('/auth/refresh', withDoc({}, docs.refresh), async (req, reply) => {
     const token = readRefreshToken(req);
     if (!token) {
       clearAuthCookies(reply);
@@ -115,7 +186,7 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
     return reply.send(user);
   });
 
-  app.get('/me', { preHandler: [authenticate] }, async (req) => {
+  app.get('/me', withDoc({ preHandler: [authenticate] }, docs.me), async (req) => {
     const { userId, tenantId } = req.auth!;
     const [row] = await withRetry(
       () => sql<MeRow[]>`
@@ -139,7 +210,7 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
     };
   });
 
-  app.post('/auth/logout', async (_req, reply) => {
+  app.post('/auth/logout', withDoc({}, docs.logout), async (_req, reply) => {
     clearAuthCookies(reply);
     return reply.status(204).send();
   });

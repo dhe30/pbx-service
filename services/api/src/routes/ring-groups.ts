@@ -6,6 +6,7 @@ import { HttpError } from '../errors.js';
 import { destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, destinationRefs, tenantOf, type Ref } from '../tenancy.js';
 import { name, parse } from '../validation.js';
+import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 
 // Ring groups: extensions rung together or in order (backend step 5, ported to the course spec
 // data model in docs/spec-transition.md). Owner-only.
@@ -24,15 +25,16 @@ import { name, parse } from '../validation.js';
 
 const RingGroupBody = z.object({
   name,
-  strategy: z.enum(['all', 'sequential']).default('all'),
+  strategy: z.enum(['all', 'sequential']).default('all').describe('all: ring every member at once (first answer wins); sequential: in memberIds order.'),
   // Same bounds as the CHECK constraint on ring_groups.ring_timeout_sec.
-  ringTimeoutSec: z.number().int().min(5).max(120).default(20),
-  noAnswerDestination: DestinationSchema.nullable().default(null),
+  ringTimeoutSec: z.number().int().min(5).max(120).default(20).describe('all: total ring time; sequential: ring time per member (seconds).'),
+  noAnswerDestination: DestinationSchema.nullable().default(null).describe('Where the call goes when nobody answers. null = hang up.'),
   memberIds: z
-    .array(z.string().uuid())
+    .array(z.string().uuid().describe('Extension id.'))
     .max(50)
     .default([])
-    .refine((ids) => new Set(ids).size === ids.length, 'must not contain duplicates'),
+    .refine((ids) => new Set(ids).size === ids.length, 'must not contain duplicates')
+    .describe('Member extensions in ring order (no duplicates). Each rings its phones and external numbers.'),
 });
 type RingGroupBody = z.infer<typeof RingGroupBody>;
 
@@ -76,21 +78,43 @@ async function replaceMembers(tx: Db, groupId: string, memberIds: readonly strin
 
 const destJson = (tx: Db, d: Destination | null) => (d ? tx.json(d) : null);
 
+const RingGroupSchema = z
+  .object({
+    id: z.string().uuid().describe('Ring group id.'),
+    name: z.string().describe('Display name.'),
+    strategy: z.enum(['all', 'sequential']).describe('all: ring every member at once; sequential: one after another.'),
+    ringTimeoutSec: z.number().int().describe('all: total ring time; sequential: ring time per member.'),
+    noAnswerDestination: DestinationSchema.nullable().describe('Where the call goes when nobody answers; null = hang up.'),
+    memberIds: z.array(z.string().uuid().describe('Extension id.')).describe('Member extensions in ring order.'),
+  })
+  .describe('A ring group.');
+
+const docs = crudDocs({
+  tag: 'Ring groups',
+  noun: 'ring group',
+  plural: 'ring groups',
+  schema: RingGroupSchema,
+  body: RingGroupBody,
+  params: IdParams,
+  listOrder: 'sorted by name',
+  deleteErrors: { 409: `${IN_USE} (numbers, IVR digits, business hours, other ring groups).` },
+});
+
 export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
 
-  app.get('/ring-groups', ownerOnly, async (req) => {
+  app.get('/ring-groups', withDoc(ownerOnly, docs.list), async (req) => {
     return withRetry(() => selectGroups(sql, tenantOf(req), null));
   });
 
-  app.get('/ring-groups/:id', ownerOnly, async (req) => {
+  app.get('/ring-groups/:id', withDoc(ownerOnly, docs.get), async (req) => {
     const { id } = parse(IdParams, req.params);
     const [row] = await withRetry(() => selectGroups(sql, tenantOf(req), id));
     if (!row) throw notFound();
     return row;
   });
 
-  app.post('/ring-groups', ownerOnly, async (req, reply) => {
+  app.post('/ring-groups', withDoc(ownerOnly, docs.create), async (req, reply) => {
     const tenantId = tenantOf(req);
     const body = parse(RingGroupBody, req.body);
     const row = await withRetry(() =>
@@ -109,7 +133,7 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
     return reply.status(201).send(row);
   });
 
-  app.put('/ring-groups/:id', ownerOnly, async (req) => {
+  app.put('/ring-groups/:id', withDoc(ownerOnly, docs.replace), async (req) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     const body = parse(RingGroupBody, req.body);
@@ -130,7 +154,7 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
     );
   });
 
-  app.delete('/ring-groups/:id', ownerOnly, async (req, reply) => {
+  app.delete('/ring-groups/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     await withRetry(() =>

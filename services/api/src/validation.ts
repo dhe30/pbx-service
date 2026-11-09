@@ -19,11 +19,11 @@ export function parse<S extends z.ZodTypeAny>(schema: S, input: unknown): z.infe
 
 // Shared field rules (signup, login, staff creation).
 // Emails are stored lowercased: users.email is a plain case-sensitive UNIQUE column.
-export const email = z.string().trim().toLowerCase().email().max(254);
+export const email = z.string().trim().toLowerCase().email().max(254).describe('Login email (case-insensitive; stored lowercased).');
 // Dashboard passwords. The upper bound keeps argon2 work per request bounded.
-export const password = z.string().min(8, 'must be at least 8 characters').max(128);
+export const password = z.string().min(8, 'must be at least 8 characters').max(128).describe('Dashboard password, 8-128 characters.');
 // Display name of a mailbox, ring group or IVR menu.
-export const name = z.string().trim().min(1).max(100);
+export const name = z.string().trim().min(1).max(100).describe('Display name, 1-100 characters (trimmed).');
 // An optional reference to another row (greeting, owner, fallback mailbox, ...). Omitted = null.
 export const nullableId = z.string().uuid().nullable().default(null);
 // IANA time zone ("America/New_York"). Stored in its canonical spelling, so "america/new_york"
@@ -34,4 +34,5 @@ export const timeZone = z
   .min(1)
   .max(64)
   .refine(isValidTimeZone, 'must be an IANA time zone, e.g. America/New_York')
-  .transform((tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone);
+  .transform((tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone)
+  .describe('IANA time zone, e.g. "America/New_York". Fixed after signup: it sets billing periods and business hours.');

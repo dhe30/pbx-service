@@ -6,6 +6,7 @@ import { HttpError, isUniqueViolation } from '../errors.js';
 import { hashPassword } from '../passwords.js';
 import { IdParams, tenantOf } from '../tenancy.js';
 import { email, parse, password } from '../validation.js';
+import { withDoc, type OperationDoc } from '../openapi/document.js';
 
 // Staff accounts (dashboard logins) and the softphone's SIP credentials (backend step 4, ported
 // to the course spec: SIP accounts belong to EXTENSIONS now, see routes/extensions.ts).
@@ -30,7 +31,9 @@ export interface StaffOptions {
 }
 
 const CreateStaffBody = z.object({ email, password });
-const CredentialsQuery = z.object({ extensionId: z.string().uuid().optional() });
+const CredentialsQuery = z.object({
+  extensionId: z.string().uuid().optional().describe('Extension to use (GET /extensions). Default: the one assigned to this user.'),
+});
 
 interface StaffRow {
   id: string;
@@ -39,10 +42,69 @@ interface StaffRow {
   createdAt: Date;
 }
 
+const StaffSchema = z
+  .object({
+    id: z.string().uuid().describe('User id.'),
+    email: z.string().describe('Login email.'),
+    role: z.literal('staff').describe('Always "staff".'),
+    createdAt: z.date().describe('When the login was created.'),
+  })
+  .describe('A staff login.');
+
+const CredentialsSchema = z
+  .object({
+    wsUri: z.string().describe('SIP over WebSocket server for the softphone (SIP.js transport).'),
+    sipUri: z.string().describe('Address of record to register, sip:<username>@<SIP domain>.'),
+    username: z.string().describe('SIP digest username.'),
+    password: z.string().describe('SIP digest password. Keep in memory only.'),
+    extensionId: z.string().uuid().describe('Extension these credentials belong to.'),
+    extensionNumber: z.string().describe('Its extension number.'),
+  })
+  .describe('SIP credentials for the softphone.');
+
+const docs = {
+  create: {
+    tag: 'Staff',
+    auth: 'owner',
+    summary: 'Create a staff login',
+    description: 'A dashboard login for an employee. Phones and the softphone use extensions (POST /extensions).',
+    body: CreateStaffBody,
+    responses: { 201: { description: 'The staff login', schema: StaffSchema } },
+    errors: { 409: 'An account with this email already exists (`email_taken`).' },
+  },
+  list: {
+    tag: 'Staff',
+    auth: 'owner',
+    summary: 'List staff logins',
+    description: 'Oldest first.',
+    responses: { 200: { description: 'Staff logins', schema: z.array(StaffSchema).describe('Staff logins.') } },
+  },
+  remove: {
+    tag: 'Staff',
+    auth: 'owner',
+    summary: 'Delete a staff login',
+    description: 'An extension assigned to the user stays, unassigned.',
+    params: IdParams,
+    responses: { 204: { description: 'Deleted' } },
+    errors: { 404: 'No such staff member (`not_found`).' },
+  },
+  credentials: {
+    tag: 'Staff',
+    auth: 'user',
+    summary: 'SIP credentials for the softphone',
+    description:
+      "Credentials of one of the account's extensions, to register the browser softphone. Without " +
+      'extensionId: the extension assigned to the logged-in user. Sent with Cache-Control: no-store.',
+    query: CredentialsQuery,
+    responses: { 200: { description: 'Credentials for SIP.js', schema: CredentialsSchema } },
+    errors: { 404: 'No such extension, or none is assigned to this user (`not_found`).' },
+  },
+} satisfies Record<string, OperationDoc>;
+
 export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, sipWsUri, sipDomain }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
 
-  app.post('/staff', ownerOnly, async (req, reply) => {
+  app.post('/staff', withDoc(ownerOnly, docs.create), async (req, reply) => {
     const tenantId = tenantOf(req);
     const body = parse(CreateStaffBody, req.body);
     const passwordHash = await hashPassword(body.password);
@@ -63,7 +125,7 @@ export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, 
     }
   });
 
-  app.get('/staff', ownerOnly, async (req) => {
+  app.get('/staff', withDoc(ownerOnly, docs.list), async (req) => {
     return withRetry(
       () => sql<StaffRow[]>`
         select id, email, role, created_at
@@ -73,7 +135,7 @@ export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, 
     );
   });
 
-  app.delete('/staff/:id', ownerOnly, async (req, reply) => {
+  app.delete('/staff/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     // Owners and other tenants' users are "not found": this route only manages staff.
@@ -87,7 +149,7 @@ export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, 
     return reply.status(204).send();
   });
 
-  app.get('/me/sip-credentials', { preHandler: [authenticate] }, async (req, reply) => {
+  app.get('/me/sip-credentials', withDoc({ preHandler: [authenticate] }, docs.credentials), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { extensionId } = parse(CredentialsQuery, req.query);
     const [row] = await withRetry(

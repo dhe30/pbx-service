@@ -6,6 +6,7 @@ import { HttpError } from '../errors.js';
 import { assertGreeting, destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, tenantOf, type Ref } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
+import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 
 // Voicemail boxes (backend step 5). All routes are owner-only.
 //
@@ -22,8 +23,8 @@ import { name, nullableId, parse } from '../validation.js';
 
 const MailboxBody = z.object({
   name,
-  greetingMediaId: nullableId,
-  ownerUserId: nullableId,
+  greetingMediaId: nullableId.describe('Custom greeting: a media id of kind greeting (POST /media). null = standard greeting.'),
+  ownerUserId: nullableId.describe('User this mailbox belongs to (display only). null = shared mailbox.'),
 });
 type MailboxBody = z.infer<typeof MailboxBody>;
 
@@ -42,10 +43,31 @@ async function checkRefs(tx: Db, tenantId: string, body: MailboxBody): Promise<v
 
 const notFound = () => new HttpError(404, 'not_found', 'No such mailbox');
 
+const MailboxSchema = z
+  .object({
+    id: z.string().uuid().describe('Mailbox id.'),
+    name: z.string().describe('Display name.'),
+    greetingMediaId: z.string().uuid().nullable().describe('Custom greeting (media of kind greeting); null = standard greeting.'),
+    ownerUserId: z.string().uuid().nullable().describe('User the mailbox belongs to (display only); null = shared.'),
+  })
+  .describe('A voicemail box.');
+
+const docs = crudDocs({
+  tag: 'Mailboxes',
+  noun: 'mailbox',
+  plural: 'mailboxes',
+  schema: MailboxSchema,
+  body: MailboxBody,
+  params: IdParams,
+  listOrder: 'sorted by name',
+  deleteDescription: 'Also deletes its voicemails.',
+  deleteErrors: { 409: `${IN_USE} (IVR digits, numbers, ring groups, business hours, extensions using it as their voicemail).` },
+});
+
 export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
 
-  app.get('/mailboxes', ownerOnly, async (req) => {
+  app.get('/mailboxes', withDoc(ownerOnly, docs.list), async (req) => {
     return withRetry(
       () => sql<Mailbox[]>`
         select id, name, greeting_media_id, owner_user_id from mailboxes
@@ -54,7 +76,7 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     );
   });
 
-  app.get('/mailboxes/:id', ownerOnly, async (req) => {
+  app.get('/mailboxes/:id', withDoc(ownerOnly, docs.get), async (req) => {
     const { id } = parse(IdParams, req.params);
     const [row] = await withRetry(
       () => sql<Mailbox[]>`
@@ -65,7 +87,7 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     return row;
   });
 
-  app.post('/mailboxes', ownerOnly, async (req, reply) => {
+  app.post('/mailboxes', withDoc(ownerOnly, docs.create), async (req, reply) => {
     const tenantId = tenantOf(req);
     const body = parse(MailboxBody, req.body);
     const row = await withRetry(() =>
@@ -81,7 +103,7 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     return reply.status(201).send(row);
   });
 
-  app.put('/mailboxes/:id', ownerOnly, async (req) => {
+  app.put('/mailboxes/:id', withDoc(ownerOnly, docs.replace), async (req) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     const body = parse(MailboxBody, req.body);
@@ -100,7 +122,7 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     );
   });
 
-  app.delete('/mailboxes/:id', ownerOnly, async (req, reply) => {
+  app.delete('/mailboxes/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     await withRetry(() =>

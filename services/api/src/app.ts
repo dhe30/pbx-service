@@ -4,6 +4,7 @@ import { registerAuth } from './auth.js';
 import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
+import { collectOpenApi, withDoc } from './openapi/document.js';
 import { authRoutes } from './routes/auth.js';
 import { blockedNumberRoutes } from './routes/blocked-numbers.js';
 import { businessHoursRoutes } from './routes/business-hours.js';
@@ -36,6 +37,13 @@ export type AppConfig = Pick<
   | 'SIP_DOMAIN'
 >;
 
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** Routes without OpenAPI docs (test/openapi.test.ts requires none). */
+    openapiUndocumented: () => string[];
+  }
+}
+
 export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     // JSON logs to stdout (journald / docker). Never log cookies or auth headers.
@@ -61,6 +69,34 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
       reply.elapsedTime / 1000,
     );
   });
+
+  // Must run before any route is registered: records each route's config.openapi.
+  const openapi = collectOpenApi(app, {
+    title: 'PBX API',
+    version: '1.0.0',
+    description:
+      'Hosted virtual PBX for small businesses: signup and billing, extensions, call routing (IVR menus, ring ' +
+      'groups, business hours, number routing), voicemail and call history. Everything the web dashboard does ' +
+      'goes through this API.\n\n' +
+      'Authentication: POST /auth/signup or /auth/login sets an httpOnly access cookie (pbx_access, 15 min) and a ' +
+      'refresh cookie (pbx_refresh, path /auth). Send cookies back on every request; on 401 call POST /auth/refresh ' +
+      'once and retry. Request bodies are JSON. Errors are `{ "error": "<code>", "message": "<text>" }`. Ids of ' +
+      'another account answer 404 like unknown ids.',
+  });
+  app.get(
+    '/openapi.json',
+    withDoc(
+      {},
+      {
+        tag: 'Health',
+        auth: 'public',
+        summary: 'This OpenAPI 3.1 document',
+        responses: { 200: { description: 'OpenAPI 3.1 document (JSON)' } },
+      },
+    ),
+    async () => openapi.document(),
+  );
+  app.decorate('openapiUndocumented', () => openapi.undocumented());
 
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
   await app.register(authRoutes, { sql: deps.sql });
