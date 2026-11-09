@@ -1,5 +1,17 @@
 # Phase 1: all-in-one telephony VM
 
+> **2026-11-09: the telephony was rebuilt for the course spec.** The deploy steps below still
+> apply, but some of the content is superseded:
+> - the data model (extensions instead of staff users; `cdrs` instead of `calls`);
+> - decision 7 (one contact per user);
+> - the `pbx.local` domain;
+> - Kamailio's DB usage (registrations are now in memory + DMQ).
+>
+> See [spec-transition.md](spec-transition.md). The seed (`db/seeds/test_tenant.sql`) now creates
+> extensions 101 (alice) and 102 (bob), and the vault needs `vault_vendor_*`
+> (`group_vars/all/vault.yml.example`). The SQL check in §3 is now
+> `select started_at, from_number, outcome, direction from cdrs order by started_at desc limit 5`.
+
 Goal (CLAUDE.md §17): Kamailio + rtpengine + Asterisk + ARI app (+ Postgres + Garage) on one VM,
 with the final config structure. An inbound call (SIPp or a softphone acting as the carrier)
 reaches the IVR, rings a browser and a UDP phone, and recordings + voicemail land in the object

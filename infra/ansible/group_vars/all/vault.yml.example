@@ -16,3 +16,10 @@ vault_s3_secret_key: 214040ebe7680d848c1f25287d4b103f80300da9f60ad75e29e4767adbe
 # SIP passwords for the seeded test staff (alice = browser, bob = UDP phone / SIPp).
 vault_test_alice_password: test123
 vault_test_bob_password: test123
+
+# PSTN vendor digest credentials (Course Services tab -> US / International PSTN vendor).
+# Never commit the real values anywhere but the encrypted vault.yml.
+vault_vendor_us_user: CHANGE_ME
+vault_vendor_us_password: CHANGE_ME
+vault_vendor_intl_user: CHANGE_ME
+vault_vendor_intl_password: CHANGE_ME

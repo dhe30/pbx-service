@@ -2,3 +2,7 @@
 # systemd unit shipped by the rtpengine.dfx.at packages. Since the 2025 releases it is
 # "rtpengine-daemon" (older packages: "ngcp-rtpengine-daemon").
 rtpengine_service: rtpengine-daemon
+# B3: relay non-transcoded media in the kernel (table = 0). false = userspace only (table = -1).
+rtpengine_kernel_forwarding: true
+# Media worker threads; default = vCPUs.
+rtpengine_threads: "{{ ansible_processor_vcpus | default(2) }}"

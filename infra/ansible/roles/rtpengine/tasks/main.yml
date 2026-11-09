@@ -19,12 +19,13 @@
     content: "deb [signed-by=/usr/share/keyrings/dfx.at-rtpengine-archive-keyring.gpg] https://rtpengine.dfx.at/{{ rtpengine_release }} {{ ansible_distribution_release }} main\n"
     mode: "0644"
 
-# Daemon + CLI only: no kernel module (we run userspace forwarding, table = -1).
+# Daemon + CLI, plus (B3) the in-kernel forwarding module built by DKMS for the running kernel.
+# With the module, packets that need no transcoding (PCMU<->PCMU, SRTP<->RTP re-encryption) are
+# relayed in the kernel instead of userspace. If the module can't load, rtpengine logs it and
+# falls back to userspace forwarding (no --no-fallback), so a failed DKMS build never stops calls.
 - name: Install rtpengine
   ansible.builtin.apt:
-    name:
-      - rtpengine-daemon
-      - rtpengine-utils
+    name: "{{ ['rtpengine-daemon', 'rtpengine-utils'] + (['rtpengine-kernel-dkms', 'linux-headers-' ~ ansible_kernel] if rtpengine_kernel_forwarding else []) }}"
     install_recommends: false
     update_cache: true
 

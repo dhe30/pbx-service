@@ -48,6 +48,8 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
     ownerId: string;
     staffId: string;
     staff2Id: string;
+    ext1Id: string;
+    ext2Id: string;
     greetingId: string;
     recordingId: string;
     numberId: string;
@@ -61,11 +63,18 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
     const tenantId = t!.id;
     tenantIds.push(tenantId);
     const user = async (role: 'owner' | 'staff') => {
-      const sip = role === 'staff' ? `t${randomUUID().replaceAll('-', '')}` : null;
       const [u] = await sql<{ id: string }[]>`
-        insert into users (tenant_id, email, password_hash, role, sip_username)
-        values (${tenantId}, ${`${role}-${randomUUID()}@example.test`}, '!', ${role}, ${sip}) returning id`;
+        insert into users (tenant_id, email, password_hash, role)
+        values (${tenantId}, ${`${role}-${randomUUID()}@example.test`}, '!', ${role}) returning id`;
       return u!.id;
+    };
+    // Extensions are what rings (members, IVR "extension" targets). Rows only: no SIP account needed here.
+    let extNo = 100;
+    const extension = async () => {
+      const [e] = await sql<{ id: string }[]>`
+        insert into extensions (tenant_id, number, name, sip_username)
+        values (${tenantId}, ${String(++extNo)}, 'Ext', ${`t${randomUUID().replaceAll('-', '')}`}) returning id`;
+      return e!.id;
     };
     const media = async (kind: 'greeting' | 'recording') => {
       const [m] = await sql<{ id: string }[]>`
@@ -82,6 +91,8 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
       ownerId,
       staffId: await user('staff'),
       staff2Id: await user('staff'),
+      ext1Id: await extension(),
+      ext2Id: await extension(),
       greetingId: await media('greeting'),
       recordingId: await media('recording'),
       numberId: n!.id,
@@ -159,10 +170,13 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
 
     it('delete: 409 while an IVR menu or ring group uses it, then 204', async () => {
       const mb = await mailbox(a, { name: 'Busy' });
-      const rg = await call(a, 'POST', '/ring-groups', { name: 'Uses mailbox', fallbackMailboxId: mb });
+      const rg = await call(a, 'POST', '/ring-groups', {
+        name: 'Uses mailbox',
+        noAnswerDestination: { type: 'voicemail', id: mb },
+      });
       const ivr = await call(a, 'POST', '/ivr-menus', {
         name: 'Uses mailbox',
-        config: { options: {}, on_timeout: { action: 'voicemail', target: mb } },
+        config: { options: {}, timeout: { type: 'voicemail', id: mb } },
       });
 
       const refused = await call(a, 'DELETE', `/mailboxes/${mb}`);
@@ -185,8 +199,8 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
       const res = await call(a, 'POST', '/ring-groups', {
         name: 'Kitchen',
         strategy: 'sequential',
-        fallbackMailboxId: mb,
-        memberIds: [a.staff2Id, a.staffId],
+        noAnswerDestination: { type: 'voicemail', id: mb },
+        memberIds: [a.ext2Id, a.ext1Id],
       });
       expect(res.statusCode).toBe(201);
       const rg = res.json();
@@ -195,32 +209,32 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
         name: 'Kitchen',
         strategy: 'sequential',
         ringTimeoutSec: 20,
-        fallbackMailboxId: mb,
-        memberIds: [a.staff2Id, a.staffId],
+        noAnswerDestination: { type: 'voicemail', id: mb },
+        memberIds: [a.ext2Id, a.ext1Id],
       });
       expect((await call(a, 'GET', `/ring-groups/${rg.id}`)).json()).toEqual(rg);
 
-      const put = await call(a, 'PUT', `/ring-groups/${rg.id}`, { name: 'Kitchen', memberIds: [a.staffId] });
-      expect(put.json()).toMatchObject({ strategy: 'all', fallbackMailboxId: null, memberIds: [a.staffId] });
-      const rows = await sql`select user_id, position from ring_group_members where ring_group_id = ${rg.id}`;
-      expect(rows).toEqual([{ userId: a.staffId, position: 0 }]);
+      const put = await call(a, 'PUT', `/ring-groups/${rg.id}`, { name: 'Kitchen', memberIds: [a.ext1Id] });
+      expect(put.json()).toMatchObject({ strategy: 'all', noAnswerDestination: null, memberIds: [a.ext1Id] });
+      const rows = await sql`select extension_id, position from ring_group_members where ring_group_id = ${rg.id}`;
+      expect(rows).toEqual([{ extensionId: a.ext1Id, position: 0 }]);
 
       const empty = await call(a, 'PUT', `/ring-groups/${rg.id}`, { name: 'Empty' });
       expect(empty.json().memberIds).toEqual([]);
     });
 
-    it("rejects other tenants' members, users without a softphone, duplicates, bad bounds", async () => {
+    it("rejects other tenants' members and destinations, non-extension members, duplicates, bad bounds", async () => {
       const cases: [object, string][] = [
-        [{ name: 'X', memberIds: [a.staffId, b.staffId] }, 'memberIds.1: no such user'],
-        [{ name: 'X', memberIds: [a.ownerId] }, 'memberIds.0: user has no softphone (only staff can be called)'],
-        [{ name: 'X', fallbackMailboxId: await mailbox(b) }, 'fallbackMailboxId: no such mailbox'],
+        [{ name: 'X', memberIds: [a.ext1Id, b.ext1Id] }, 'memberIds.1: no such extension'],
+        [{ name: 'X', memberIds: [a.staffId] }, 'memberIds.0: no such extension'],
+        [{ name: 'X', noAnswerDestination: { type: 'voicemail', id: await mailbox(b) } }, 'noAnswerDestination.id: no such mailbox'],
       ];
       for (const [body, message] of cases) {
         const res = await call(a, 'POST', '/ring-groups', body);
         expect(res.statusCode).toBe(400);
         expect(res.json()).toEqual({ error: 'invalid_reference', message });
       }
-      const dup = await call(a, 'POST', '/ring-groups', { name: 'X', memberIds: [a.staffId, a.staffId] });
+      const dup = await call(a, 'POST', '/ring-groups', { name: 'X', memberIds: [a.ext1Id, a.ext1Id] });
       expect(dup.json()).toEqual({ error: 'invalid_request', message: 'memberIds: must not contain duplicates' });
       const timeout = await call(a, 'POST', '/ring-groups', { name: 'X', ringTimeoutSec: 4, strategy: 'random' });
       expect(timeout.json().message).toMatch(/strategy: .*ringTimeoutSec: /);
@@ -239,7 +253,7 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
       const rg = (await call(a, 'POST', '/ring-groups', { name: 'Routed' })).json().id;
       await call(a, 'POST', '/ivr-menus', {
         name: 'Front desk',
-        config: { options: { '1': { action: 'ring_group', target: rg } } },
+        config: { options: { '1': { type: 'ring_group', id: rg } } },
       });
       const res = await call(a, 'DELETE', `/ring-groups/${rg}`);
       expect(res.json()).toEqual({ error: 'in_use', message: 'Used by IVR menu "Front desk"; change that first' });
@@ -247,16 +261,19 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
   });
 
   describe('IVR menus', () => {
-    it('create, read back and re-save; config keeps on_timeout (snake_case) throughout', async () => {
+    it('create, read back and re-save; snake_case config keys (repeat_digit) survive throughout', async () => {
       const mb = await mailbox(a);
-      const rg = (await call(a, 'POST', '/ring-groups', { name: 'All', memberIds: [a.staffId] })).json().id;
+      const rg = (await call(a, 'POST', '/ring-groups', { name: 'All', memberIds: [a.ext1Id] })).json().id;
       const config = {
         options: {
-          '1': { action: 'ring_group', target: rg },
-          '2': { action: 'voicemail', target: mb },
-          '0': { action: 'user', target: a.staffId },
+          '1': { type: 'ring_group', id: rg },
+          '2': { type: 'voicemail', id: mb },
+          '0': { type: 'extension', id: a.ext1Id },
+          '9': { type: 'external', number: '+12015550123' },
         },
-        on_timeout: { action: 'voicemail', target: mb },
+        timeout: { type: 'voicemail', id: mb },
+        invalid: { type: 'hangup' },
+        repeat_digit: '*',
       };
       const res = await call(a, 'POST', '/ivr-menus', { name: 'Main', greetingMediaId: a.greetingId, config });
       expect(res.statusCode).toBe(201);
@@ -265,21 +282,35 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
       expect((await call(a, 'GET', `/ivr-menus/${menu.id}`)).json()).toEqual(menu);
 
       // Read it the way the ARI app does (shared createDb + parseIvrConfig): JSON keys must come
-      // back as stored, not camelCased (on_timeout, not onTimeout).
+      // back as stored, not camelCased (repeat_digit, not repeatDigit).
       const [row] = await sql`select config from ivr_menus where id = ${menu.id}`;
       expect(parseIvrConfig(row!.config)).toEqual(config);
 
-      // A dashboard edit sends back what GET returned; on_timeout must survive the round trip.
+      // A dashboard edit sends back what GET returned; everything must survive the round trip.
       const again = await call(a, 'PUT', `/ivr-menus/${menu.id}`, menu);
       expect(again.json().config).toEqual(config);
+    });
+
+    it('accepts the phase-1 format ({action, target}, on_timeout) and stores the new one', async () => {
+      const mb = await mailbox(a);
+      const res = await call(a, 'POST', '/ivr-menus', {
+        name: 'Legacy',
+        config: { options: { '2': { action: 'voicemail', target: mb } }, on_timeout: { action: 'voicemail', target: mb } },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().config).toEqual({
+        options: { '2': { type: 'voicemail', id: mb } },
+        timeout: { type: 'voicemail', id: mb },
+      });
     });
 
     it('rejects bad configs and references, naming the field', async () => {
       const bGroup = (await call(b, 'POST', '/ring-groups', { name: 'B' })).json().id;
       const cases: [object, number, string][] = [
-        [{ options: { '3': { action: 'ring_group', target: bGroup } } }, 400, 'config.options.3.target: no such ring group'],
-        [{ options: { '0': { action: 'user', target: a.ownerId } } }, 400, 'config.options.0.target: user has no softphone (only staff can be called)'],
-        [{ options: {}, on_timeout: { action: 'voicemail', target: randomUUID() } }, 400, 'config.on_timeout.target: no such mailbox'],
+        [{ options: { '3': { type: 'ring_group', id: bGroup } } }, 400, 'config.options.3.id: no such ring group'],
+        [{ options: { '0': { type: 'extension', id: b.ext1Id } } }, 400, 'config.options.0.id: no such extension'],
+        [{ options: {}, timeout: { type: 'voicemail', id: randomUUID() } }, 400, 'config.timeout.id: no such mailbox'],
+        [{ options: {}, invalid: { type: 'ivr_menu', id: randomUUID() } }, 400, 'config.invalid.id: no such IVR menu'],
       ];
       for (const [config, status, message] of cases) {
         const res = await call(a, 'POST', '/ivr-menus', { name: 'Bad', config });
@@ -310,23 +341,34 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
   describe('number routing', () => {
     it('routes a number to a menu; 409 deleting that menu; null unroutes', async () => {
       const menu = (await call(a, 'POST', '/ivr-menus', { name: 'Routed menu' })).json().id;
-      const res = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { ivrMenuId: menu });
+      const res = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { destination: { type: 'ivr_menu', id: menu } });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ id: a.numberId, status: 'assigned', ivrMenuId: menu });
+      expect(res.json()).toMatchObject({ id: a.numberId, status: 'assigned', destination: { type: 'ivr_menu', id: menu } });
 
       const [did] = await sql<{ did: string }[]>`select did from phone_numbers where id = ${a.numberId}`;
       const del = await call(a, 'DELETE', `/ivr-menus/${menu}`);
       expect(del.json()).toEqual({ error: 'in_use', message: `Used by phone number "${did!.did}"; change that first` });
 
       const off = await call(a, 'PUT', `/numbers/${a.numberId}/route`, {});
-      expect(off.json().ivrMenuId).toBeNull();
+      expect(off.json().destination).toBeNull();
       expect((await call(a, 'DELETE', `/ivr-menus/${menu}`)).statusCode).toBe(204);
+    });
+
+    it('routes to an extension or a ring group too; the phase-1 body { ivrMenuId } still works', async () => {
+      const ext = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { destination: { type: 'extension', id: a.ext1Id } });
+      expect(ext.json().destination).toEqual({ type: 'extension', id: a.ext1Id });
+      const menu = (await call(a, 'POST', '/ivr-menus', { name: 'Legacy route' })).json().id;
+      const legacy = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { ivrMenuId: menu });
+      expect(legacy.json().destination).toEqual({ type: 'ivr_menu', id: menu });
+      const bad = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { destination: { type: 'nope' } });
+      expect(bad.statusCode).toBe(400); // never silently unrouted
+      await call(a, 'PUT', `/numbers/${a.numberId}/route`, {});
     });
 
     it("another tenant's menu is 400; another tenant's or a released number is 404", async () => {
       const bMenu = (await call(b, 'POST', '/ivr-menus', { name: 'B menu' })).json().id;
       const foreignMenu = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { ivrMenuId: bMenu });
-      expect(foreignMenu.json()).toEqual({ error: 'invalid_reference', message: 'ivrMenuId: no such IVR menu' });
+      expect(foreignMenu.json()).toEqual({ error: 'invalid_reference', message: 'destination.id: no such IVR menu' });
 
       expect((await call(a, 'PUT', `/numbers/${b.numberId}/route`, {})).statusCode).toBe(404);
       const released = await makeTenant();
@@ -343,14 +385,14 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
     let pendingDelete: Promise<{ statusCode: number }> | undefined;
     await sql.begin(async (tx) => {
       // What PUT /ring-groups/:id does: check + lock the mailbox, then store the reference.
-      await assertOwned(tx, a.tenantId, [{ table: 'mailboxes', id: mb, field: 'fallbackMailboxId' }]);
+      await assertOwned(tx, a.tenantId, [{ table: 'mailboxes', id: mb, field: 'noAnswerDestination.id' }]);
       pendingDelete = call(a, 'DELETE', `/mailboxes/${mb}`).then((r) => {
         deleteDone = true;
         return r;
       });
       await new Promise((r) => setTimeout(r, 300));
       expect(deleteDone).toBe(false); // blocked on the FOR SHARE lock
-      await tx`update ring_groups set fallback_mailbox_id = ${mb} where id = ${rg}`;
+      await tx`update ring_groups set no_answer_destination = ${tx.json({ type: 'voicemail', id: mb })} where id = ${rg}`;
     });
     const res = await pendingDelete!;
     expect(res.statusCode).toBe(409);

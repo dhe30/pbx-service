@@ -6,6 +6,8 @@
 | `register.xml`    | a staff phone     | REGISTERs a staff user (digest auth) from a given local port         |
 | `uas_staff.xml`   | a staff phone     | Answers incoming calls on that port and echoes RTP back              |
 | `uas_staff_hold.xml` | a staff phone  | Same, plus holds the call after 3 s (`a=sendonly`) for `-d` ms, then resumes |
+| `uac_inbound_codec.xml` | the carrier | Same as `uac_inbound.xml` but offers ONE codec given with `-key` (codec matrix) |
+| `uac_device_call.xml` | a customer's phone | PLACES a call with digest auth (407): an extension number, `*98`, or a PSTN number |
 
 ## Setup
 
@@ -13,7 +15,10 @@
 - Copy `dtmf_2833_1.pcap` and `g711a.pcap` from SIPp's source tree (`pcap/` directory) into
   `loadtest/sipp/pcap/` (they are not committed).
 - `cp users.csv.example users.csv` and put bob's SIP password (from the vault) in it.
-- The machine's public IP must be in `carrier_cidrs` (`infra/ansible/group_vars/all/main.yml`),
+- The carrier scenarios must run from an address (and, for an `IP:port` entry, the source port,
+  e.g. `-p 5062`) listed in `carrier_cidrs` (`infra/ansible/group_vars/all/main.yml` or the
+  inventory). Phone scenarios (`register.xml`, `uas_*`, `uac_device_call.xml`) must use a
+  *different* port on the same machine, or they are treated as the carrier,
   otherwise Kamailio answers the INVITE with 403.
 
 ## Phase-1 end-to-end call (run from `loadtest/sipp/`)
@@ -50,7 +55,36 @@ While a call is held, on the VM: `asterisk -rx "core show channels"` shows the c
 running MusicOnHold, the ARI app logs `agent hold`, and `curl -s 127.0.0.1:9101/metrics | grep
 hold` shows `pbx_calls_on_hold 1`.
 
+## Codec matrix (a phone may support only one of PCMU, PCMA, G.729, G.723.1, Opus)
+
+The carrier offers one codec and bob's UAS (`uas_staff.xml`, PCMU) answers. rtpengine must
+transcode, and the call must have audio in both directions. For each row, first copy the
+matching RTP capture to `pcap/codec.pcap`.
+
+| Codec | `-key codec_pt` | `-key codec_map` |
+|---|---|---|
+| PCMU | 0 | PCMU/8000 |
+| PCMA | 8 | PCMA/8000 |
+| G.729 | 18 | G729/8000 |
+| G.723.1 | 4 | G723/8000 |
+| Opus | 96 | opus/48000/2 |
+
+```bash
+sipp -sf uac_inbound_codec.xml -key codec_pt 18 -key codec_map G729/8000 -s 15555550100 -p 5062 -m 1 $EDGE:5060
+```
+While it runs, `rtpengine-ctl list sessions all` on the edge shows the call being transcoded.
+
+## A phone placing calls (outgoing, internal, *98)
+
+```bash
+sipp -sf uac_device_call.xml -inf users.csv -s 101 -p 5072 -m 1 $EDGE:5060          # internal: rings alice
+sipp -sf uac_device_call.xml -inf users.csv -s 2015550123 -p 5072 -m 1 $EDGE:5060   # US vendor
+sipp -sf uac_device_call.xml -inf users.csv -s '*98' -p 5072 -m 1 $EDGE:5060        # voicemail menu
+```
+Expected: one `cdrs` row per call within a second of hangup (direction internal or outgoing).
+
 ## Load testing (phase 6)
 
-Same scenarios with `-r <calls/s> -l <max concurrent> -m <total>`. Add one UAC per codec
-(PCMU, G.723.1, G.729, Opus pcaps) and record capacity per pbx node and per rtpengine.
+Run the same scenarios with `-r <calls/s> -l <max concurrent> -m <total>`. Run the codec matrix
+under load and record the capacity per pbx node and per rtpengine. Transcoding CPU is the
+expected first limit (docs/spec-transition.md N1).

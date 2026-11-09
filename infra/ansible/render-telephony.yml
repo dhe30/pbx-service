@@ -1,0 +1,43 @@
+# Render every telephony template for a test inventory WITHOUT touching any host, so they can be
+# checked offline (telephony/tests/check-configs.sh: `kamailio -c` + content assertions in vitest).
+#
+#   ansible-playbook -i tests/render-inventory.ini render-telephony.yml -e @tests/render-vars.yml \
+#     -e render_dir=/tmp/pbx-render
+- name: Render telephony configs
+  hosts: edge:pbx
+  gather_facts: false
+  connection: local
+  vars:
+    ansible_processor_vcpus: 4
+    asterisk_sip_port: 5060   # role default (roles/asterisk/defaults)
+    rtpengine_kernel_forwarding: true
+    rtpengine_threads: 4
+  tasks:
+    - name: Output directory
+      ansible.builtin.file:
+        path: "{{ render_dir }}/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Edge configs
+      ansible.builtin.template:
+        src: "{{ repo_root }}/telephony/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/{{ item | basename }}"
+        mode: "0644"
+      loop: [kamailio/kamailio.cfg, kamailio/tls.cfg, kamailio/dispatcher.list, rtpengine/rtpengine.conf]
+      when: "'edge' in group_names"
+
+    - name: PBX configs
+      ansible.builtin.template:
+        src: "{{ repo_root }}/telephony/asterisk/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/{{ item }}"
+        mode: "0644"
+      loop: [pjsip.conf, extensions.conf, rtp.conf, modules.conf, musiconhold.conf, http.conf, ari.conf]
+      when: "'pbx' in group_names"
+
+    - name: ARI app environment
+      ansible.builtin.template:
+        src: roles/ari_app/templates/ari-app.env.j2
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/ari-app.env"
+        mode: "0644"
+      when: "'pbx' in group_names"

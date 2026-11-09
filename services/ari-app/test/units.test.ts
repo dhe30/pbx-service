@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { EventBus, onChannel, onChannels } from '../src/ari/events.js';
-import type { AriEvent } from '../src/ari/types.js';
+import { EventBus, chKey, onChannel, onPlaybackFinished, onWatched } from '../src/ari/events.js';
+import type { AriEvent, ChannelTransfer } from '../src/ari/types.js';
+import { referTarget } from '../src/conversation.js';
 import { didCandidates } from '../src/did.js';
-import { CallerHold } from '../src/hold.js';
-import { log } from '../src/log.js';
-import { metrics } from '../src/metrics.js';
+import { combineOutcomes, outcomeFromCause } from '../src/session.js';
 import { wavDurationMs } from '../src/wav.js';
 
 const chan = (id: string) => ({
@@ -51,12 +50,12 @@ describe('wavDurationMs', () => {
   });
 });
 
-describe('EventBus', () => {
+describe('EventBus (indexed, B7)', () => {
   it('buffers events that arrive before next() is awaited', async () => {
     const bus = new EventBus();
     const sub = bus.subscribe(onChannel('a', 'ChannelDtmfReceived'));
     bus.dispatch(dtmf('a', '1'));
-    bus.dispatch(dtmf('b', '9')); // other channel: ignored
+    bus.dispatch(dtmf('b', '9')); // other channel: not even offered to this subscription
     bus.dispatch(dtmf('a', '2'));
     expect((await sub.next())?.digit).toBe('1');
     expect((await sub.next())?.digit).toBe('2');
@@ -74,60 +73,74 @@ describe('EventBus', () => {
     sub.close();
   });
 
-  it('live channel sets see ids added after subscribing', async () => {
+  it('watch() adds channels after subscribing; close() removes every index entry', async () => {
     const bus = new EventBus();
-    const ids = new Set<string>();
-    const sub = bus.subscribe(onChannels(ids, 'ChannelDestroyed'));
+    const sub = bus.subscribe(onWatched('ChannelDestroyed'));
     expect(bus.dispatch(destroyed('x'))).toBe(false);
-    ids.add('x');
+    sub.watch(chKey('x'));
     expect(bus.dispatch(destroyed('x'))).toBe(true);
     expect((await sub.next())?.channel.id).toBe('x');
     sub.close();
     expect(bus.dispatch(destroyed('x'))).toBe(false);
+    expect(bus.size).toBe(0);
+  });
+
+  it('dispatch cost does not grow with unrelated calls', () => {
+    const bus = new EventBus();
+    let tested = 0;
+    for (let i = 0; i < 5000; i++) {
+      bus.subscribe({ keys: [chKey(`other-${i}`)], match: (e): e is AriEvent => (tested++, e.type === 'ChannelDestroyed') });
+    }
+    const mine = bus.subscribe(onChannel('mine', 'ChannelDestroyed'));
+    bus.dispatch(destroyed('mine'));
+    expect(tested).toBe(0); // the 5000 other calls' subscriptions were never consulted
+    mine.close();
+  });
+
+  it('routes PlaybackFinished by playback id and by target channel', () => {
+    const bus = new EventBus();
+    const byId = bus.subscribe(onPlaybackFinished('pb1'));
+    const byCh = bus.subscribe(onChannel('c1', 'PlaybackFinished'));
+    const ev: AriEvent = { type: 'PlaybackFinished', application: '', timestamp: '', playback: { id: 'pb1', media_uri: '', target_uri: 'channel:c1', state: 'done' } };
+    expect(bus.dispatch(ev)).toBe(true);
+    expect(byId).toBeTruthy();
+    byId.close();
+    byCh.close();
   });
 });
 
-describe('CallerHold', () => {
-  const fakeAri = (failing = false) => {
-    const calls: string[] = [];
-    return {
-      calls,
-      startMoh: async (ch: string, cls: string) => {
-        calls.push(`start ${ch} ${cls}`);
-        if (failing) throw new Error('ARI down');
-      },
-      stopMoh: async (ch: string) => {
-        calls.push(`stop ${ch}`);
-        if (failing) throw new Error('ARI down');
-      },
-    };
-  };
-  const quiet = log.child({}, { level: 'silent' });
-  const gauge = async () => (await metrics.callsOnHold.get()).values[0]?.value ?? 0;
-
-  it('plays MOH to the caller on hold and stops it on resume, ignoring repeats', async () => {
-    const ari = fakeAri();
-    const h = new CallerHold(ari, 'caller', 'default', quiet);
-    const before = await gauge();
-    await h.set(true);
-    await h.set(true); // duplicate ChannelHold
-    expect(h.isHeld).toBe(true);
-    expect(await gauge()).toBe(before + 1);
-    await h.set(false);
-    await h.set(true);
-    await h.set(false);
-    expect(ari.calls).toEqual(['start caller default', 'stop caller', 'start caller default', 'stop caller']);
-    expect(await gauge()).toBe(before);
+describe('outcomes (spec §5: answered, busy, no answer, failed, blocked)', () => {
+  it('maps Q.850 causes', () => {
+    expect(outcomeFromCause(17)).toBe('busy'); // 486
+    expect(outcomeFromCause(21)).toBe('busy'); // 603 decline
+    expect(outcomeFromCause(19)).toBe('no_answer');
+    expect(outcomeFromCause(20)).toBe('no_answer'); // 480 not registered
+    expect(outcomeFromCause(16)).toBe('no_answer'); // cancelled
+    expect(outcomeFromCause(38)).toBe('failed');
+    expect(outcomeFromCause(34)).toBe('failed');
+    expect(outcomeFromCause(1)).toBe('failed'); // 404
   });
+  it('combines several legs', () => {
+    expect(combineOutcomes(['busy', 'busy'], false)).toBe('busy');
+    expect(combineOutcomes(['busy', 'no_answer'], false)).toBe('no_answer');
+    expect(combineOutcomes(['failed'], false)).toBe('failed');
+    expect(combineOutcomes(['busy'], true)).toBe('no_answer');
+  });
+});
 
-  it('never throws when ARI fails, and end() resets the gauge', async () => {
-    const h = new CallerHold(fakeAri(true), 'caller', 'default', quiet);
-    const before = await gauge();
-    await expect(h.set(true)).resolves.toBeUndefined();
-    expect(await gauge()).toBe(before + 1);
-    h.end();
-    h.end();
-    expect(h.isHeld).toBe(false);
-    expect(await gauge()).toBe(before);
+describe('referTarget', () => {
+  const ev = (destination: string): ChannelTransfer => ({
+    type: 'ChannelTransfer',
+    application: '',
+    timestamp: '',
+    refer_to: { requested_destination: { destination } },
+    referred_by: { source_channel: chan('a') },
+  });
+  it('takes the user part of the Refer-To URI', () => {
+    expect(referTarget(ev('sip:102@group-4.cse356.compas.cs.stonybrook.edu'))).toBe('102');
+    expect(referTarget(ev('<sip:+12015550123@x;user=phone>'))).toBe('+12015550123');
+    expect(referTarget(ev('sip:%2B442071234567@x'))).toBe('+442071234567');
+    expect(referTarget(ev('2015550123'))).toBe('2015550123');
+    expect(referTarget(ev(''))).toBeNull();
   });
 });

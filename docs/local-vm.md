@@ -1,9 +1,20 @@
 # Phase 1 on a local VM (Windows + VirtualBox)
 
 The same all-in-one deploy as `docs/phase1.md`, on a VirtualBox VM on your Windows PC. Ansible
-runs in WSL (Ubuntu). At the end you call the test DID from a softphone on Windows (playing the
-carrier), hear the IVR, and answer in the browser as staff "alice". Then you test hold and call
-waiting.
+runs in WSL (Ubuntu). At the end you:
+1. call the test DID from a softphone on Windows (playing the carrier), hear the IVR, and answer
+   in the browser as extension 101 "alice";
+2. test hold and call waiting;
+3. use a second softphone as extension 102 "bob" to place calls: to an extension, `*98`, the
+   PSTN, and transfers.
+
+**What can't be tested locally** (course spec §1):
+- Real PSTN calls through the US/international vendors. The vendors can't reach the VM's
+  host-only IP, and their prepaid balances must be above $0.
+- Calls from the real carrier (they need a DIDWW number and trunk pointing at a public IP).
+
+Those need a cloud VM. Locally, calls to external numbers end with outcome `failed`, and the
+blocking rules (international without the add-on, past due) still work.
 
 ```
  Windows host (192.168.56.1)                         VirtualBox VM "pbx-aio" (Debian 13)
@@ -105,7 +116,9 @@ cd ~/pbx-service/infra/ansible
 ansible-galaxy collection install -r requirements.yml
 
 cp group_vars/all/vault.yml.example group_vars/all/vault.yml
-nano group_vars/all/vault.yml     # fill every CHANGE_ME (generation commands are in the file)
+nano group_vars/all/vault.yml     # fill every CHANGE_ME (generation commands are in the file);
+                                  # vault_vendor_*: any placeholder locally (the vendors are unreachable
+                                  # from the VM anyway). Real values only on a cloud deploy.
 ansible-vault encrypt group_vars/all/vault.yml
 
 ansible -i inventory/local-vm.ini all -m ping --ask-vault-pass   # expect "pong"
@@ -125,33 +138,39 @@ curl -s 127.0.0.1:9101/health            # {"ari":true,"db":true}
 ls /var/lib/asterisk/moh | head -3       # music-on-hold files (*.ulaw)
 ```
 
-## 4. Staff: the browser rings
+## 4. Extension 101: the browser rings
 
 1. In Chrome on Windows, open **https://192.168.56.10/webrtc-test** and accept the self-signed
    certificate warning (Advanced -> Proceed).
-2. Domain `pbx.local` (`sip_domain`), user `alice`, password = `vault_test_alice_password`.
+2. Domain `group-4.cse356.compas.cs.stonybrook.edu` (`sip_domain`; it's only a name here, no DNS
+   lookup happens), user `alice`, password = `vault_test_alice_password`.
    **Go online** -> allow the microphone -> status *registered as alice*.
 3. Check on the VM: `kamcmd ul.dump | grep -i alice`.
 
 ## 5. Carrier: call the DID and hear the IVR
 
+Kamailio treats SIP from the Windows host as **the carrier only if it comes from source port
+5062** (`carrier_cidrs="['192.168.56.1:5062']"` in the local inventory). From any other port it is
+treated as one of the account's phones (§7). So the carrier softphone must use port 5062.
+
 Install **MicroSIP** (microsip.org) on Windows. It can call an IP address without an account:
-- Settings: leave the account empty; DTMF method **RFC2833**; allow MicroSIP through Windows
-  Firewall on **both** private and public networks when asked (the host-only network may be
-  classed as "public"; without this you hear nothing).
+- Settings: leave the account empty; **Source port 5062**; DTMF method **RFC2833**; allow MicroSIP
+  through Windows Firewall on **both** private and public networks when asked (the host-only
+  network may be classed as "public"; without this you hear nothing).
 - Dial `sip:15555550100@192.168.56.10`.
 
 You should hear Asterisk's stock "hello world" greeting (the IVR menu prompt) and then:
 
-| Press | Result (seeded test tenant)                                 |
-|-------|-------------------------------------------------------------|
-| 0     | rings **alice in the browser** -> Answer -> two-way audio   |
-| 1     | rings alice + bob together (bob unregistered -> only alice) |
-| 2     | voicemail "Main" (beep, speak, hang up)                     |
-| none  | after 3 tries -> voicemail "Main"                           |
+| Press | Result (seeded test account)                                                  |
+|-------|-------------------------------------------------------------------------------|
+| 0     | rings extension 101: **alice in the browser** (all her devices) -> Answer -> two-way audio |
+| 1     | ring group "Everyone": 101 + 102 at once (only the registered ones ring)      |
+| 2     | voicemail "Main" (beep, speak, hang up)                                       |
+| *     | repeats the menu                                                              |
+| none  | after 3 tries -> voicemail "Main"                                             |
 
-Kamailio only accepts carrier INVITEs from `192.168.56.1` (`carrier_cidrs` in the local
-inventory). A 403 means the call came from another address: check `sngrep` on the VM.
+A 403 or 407 means Kamailio didn't see the call as coming from the carrier: check the source IP
+and port with `sngrep` on the VM.
 
 ## 6. Hold and call waiting
 
@@ -164,10 +183,11 @@ MicroSIP can hold several calls at once, so it can be both caller 1 and caller 2
 4. **Decline** a waiting call: that caller goes to alice's voicemail.
 5. Hold for more than 2 minutes, then resume: the call must still be up, with audio.
 
-Recording is on for the test tenant, so this covers "MOH with recording on". To test with
-recording off:
-`sudo -u postgres psql pbx -c "update tenant_settings set record_calls=false"`. The next
-playbook run re-applies the seed and turns recording back on.
+Recording (the add-on) is on for the test account, so this covers "MOH with recording on". To
+test with recording off:
+`sudo -u postgres psql pbx -c "update tenant_settings set record_calls=false"`. It takes effect
+on the next call (the change NOTIFYs the ARI app). The next playbook run re-applies the seed and
+turns recording back on.
 
 Watch it happen (VM):
 ```bash
@@ -178,7 +198,40 @@ sngrep                                     # the re-INVITEs: a=sendonly / a=recv
 ```
 Then tick the boxes in `docs/hold-call-waiting.md` §5.
 
-## 7. Known limitation: audio quality when Hyper-V is on
+## 7. Extension 102: a phone that places calls, transfers, *98
+
+You need a **second** softphone that is a registered phone, on a port other than 5062: a second
+MicroSIP (the portable build, run from another folder) or Zoiper.
+- Account: user `bob`, password `vault_test_bob_password`, domain
+  `group-4.cse356.compas.cs.stonybrook.edu`, **proxy/server `192.168.56.10`**, transport UDP,
+  source port e.g. **5070**, DTMF RFC2833.
+- Check on the VM: `kamcmd ul.dump | grep -i bob` (now both alice and bob are registered).
+
+| Bob dials | Expected |
+|---|---|
+| `101` | alice's browser rings (internal call); answer -> two-way audio |
+| `*98` | voicemail menu (Cisco Unity keys): `1` new messages, `3` `1` saved; during a message `1` restart, `2` save, `3` delete, `##` next; after it `1` replay, `2` save, `3` delete, `#` next |
+| `2015550123` | goes to the US vendor, which the local VM can't reach: call fails after a few seconds (CDR `failed`) |
+| `+442071234567` | rejected at once (403): the test account has no international add-on (CDR `blocked`). Same for `4165550123` (Canada) |
+| `999` | not an extension or a number: 404 |
+
+**Transfers** (bob as the agent):
+- **Blind:** carrier (§5) presses `1` -> bob answers -> bob uses *Transfer* to `101` -> alice
+  rings; the carrier and alice are connected, and bob drops.
+- **Attended:** carrier presses `1` -> bob answers -> bob *Hold* -> bob calls `101`, alice
+  answers -> bob completes the transfer -> carrier <-> alice, both of bob's calls end. This
+  needs the ARI transfer events (`journalctl -u pbx-ari-app | grep transfer`), the first thing
+  to [VERIFY] on a real Asterisk (docs/spec-transition.md §6).
+
+Check the records after each test (on the VM):
+```bash
+sudo -u postgres psql pbx -c "select started_at, direction, from_number, to_number, to_extension, outcome, voicemail, billable_sec, charge from cdrs order by created_at desc limit 10"
+sudo -u postgres psql pbx -c "select created_at, heard, caller_number from voicemails order by created_at desc limit 5"
+```
+A call shows up in `cdrs` within about a second of hanging up. External legs (transfers or
+forwards to a number) are separate rows with `parent_id` set.
+
+## 8. Known limitation: audio quality when Hyper-V is on
 
 If WSL2 (or Memory integrity) is enabled, Windows runs Hyper-V and VirtualBox falls back to
 its slow "NEM" mode (green turtle in the VM status bar; `VBox.log` says
@@ -197,7 +250,7 @@ For accurate local audio, turn Hyper-V off (`bcdedit /set hypervisorlaunchtype o
 integrity off, reboot; WSL then needs version 1: `wsl --set-version Ubuntu 1`). Undo with
 `bcdedit /set hypervisorlaunchtype auto`.
 
-## 8. Day-to-day
+## 9. Day-to-day
 - Change code on Windows -> rsync (§2) -> re-run the playbook. Only changed parts restart.
 - Snapshot the VM after the first good deploy (VirtualBox -> Take Snapshot), so you can roll
   back instead of rebuilding Asterisk.

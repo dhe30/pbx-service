@@ -30,20 +30,26 @@ describe('tenantOf / ivrConfigRefs (no DB)', () => {
     expect(res.json()).toEqual({ tenantId: mine });
   });
 
-  it('ivrConfigRefs lists every target with its field path', () => {
-    const [rg, mb, u] = [randomUUID(), randomUUID(), randomUUID()];
+  it('ivrConfigRefs lists every destination id with its field path (external / hangup have none)', () => {
+    const [rg, mb, ext, menu] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
     const refs = ivrConfigRefs({
-      options: { '1': { action: 'ring_group', target: rg }, '0': { action: 'user', target: u } },
-      on_timeout: { action: 'voicemail', target: mb },
+      options: {
+        '1': { type: 'ring_group', id: rg },
+        '0': { type: 'extension', id: ext },
+        '9': { type: 'external', number: '+12015550123' },
+      },
+      timeout: { type: 'voicemail', id: mb },
+      invalid: { type: 'ivr_menu', id: menu },
     });
     expect(refs).toEqual(
       expect.arrayContaining([
-        { table: 'ring_groups', id: rg, field: 'config.options.1.target' },
-        { table: 'users', id: u, field: 'config.options.0.target' },
-        { table: 'mailboxes', id: mb, field: 'config.on_timeout.target' },
+        { table: 'ring_groups', id: rg, field: 'config.options.1.id' },
+        { table: 'extensions', id: ext, field: 'config.options.0.id' },
+        { table: 'mailboxes', id: mb, field: 'config.timeout.id' },
+        { table: 'ivr_menus', id: menu, field: 'config.invalid.id' },
       ]),
     );
-    expect(refs).toHaveLength(3);
+    expect(refs).toHaveLength(4);
   });
 
   it('IdParams rejects non-uuid ids with 400', async () => {
@@ -179,13 +185,13 @@ describe.skipIf(!db)('tenant isolation (Postgres)', () => {
   it("assertOwned + ivrConfigRefs: an IVR config pointing at another tenant's ring group is rejected", async () => {
     const config = {
       options: {
-        '1': { action: 'ring_group' as const, target: a.ringGroupId },
-        '2': { action: 'ring_group' as const, target: b.ringGroupId },
+        '1': { type: 'ring_group' as const, id: a.ringGroupId },
+        '2': { type: 'ring_group' as const, id: b.ringGroupId },
       },
-      on_timeout: { action: 'voicemail' as const, target: a.mailboxId },
+      timeout: { type: 'voicemail' as const, id: a.mailboxId },
     };
     await expect(assertOwned(sql, a.tenantId, ivrConfigRefs(config))).rejects.toMatchObject({
-      message: 'config.options.2.target: no such ring group',
+      message: 'config.options.2.id: no such ring group',
     });
   });
 

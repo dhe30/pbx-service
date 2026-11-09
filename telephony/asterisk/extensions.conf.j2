@@ -5,9 +5,13 @@ static=yes
 writeprotect=yes
 
 [from-edge]
-; DIDs arrive as the Request-URI user, with or without a leading '+'.
-exten => _[+0-9].,1,NoOp(Inbound call to ${EXTEN} from ${CALLERID(num)})
- same => n,Stasis(pbx-app,inbound)
+; Every new call from Kamailio. Kamailio sets (and strips any forged copies of):
+;   X-PBX-Src:  carrier = PSTN call to one of our DIDs (Request-URI user = the DID)
+;               device  = a call placed by one of our phones (Request-URI user = what it dialed:
+;                         an extension number, *98, or a PSTN number)
+;   X-PBX-User: the authenticated SIP username of that phone (device calls only)
+exten => _[+*#0-9]!,1,NoOp(${PJSIP_HEADER(read,X-PBX-Src)} call to ${EXTEN} from ${CALLERID(num)})
+ same => n,Stasis(pbx-app,${PJSIP_HEADER(read,X-PBX-Src)},${PJSIP_HEADER(read,X-PBX-User)})
 ; Only reached if Stasis() failed (ARI app not connected). Cause 34 = congestion -> SIP 503, so
 ; Kamailio fails the call over to another pbx node.
  same => n,Hangup(34)

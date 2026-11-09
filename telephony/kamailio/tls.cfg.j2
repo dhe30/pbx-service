@@ -1,0 +1,13 @@
+# Kamailio TLS (phones registering via the _sips._tcp SRV record on port {{ kamailio_tls_port }}).
+# The certificate must be valid for {{ sip_domain }} (same name the SRV records point at).
+[server:default]
+method = TLSv1.2+
+verify_certificate = no
+require_certificate = no
+private_key = {{ kamailio_tls_key }}
+certificate = {{ kamailio_tls_cert }}
+
+[client:default]
+method = TLSv1.2+
+verify_certificate = no
+require_certificate = no

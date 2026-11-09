@@ -18,6 +18,8 @@
     "dev:up": "docker compose -f dev/docker-compose.yml up -d",
     "dev:down": "docker compose -f dev/docker-compose.yml down",
     "db:migrate": "dbmate --migrations-dir db/migrations up",
-    "db:kamailio": "bash dev/kamailio-schema.sh"
+    "test:configs": "sh telephony/tests/check-configs.sh",
+    "db:kamailio": "bash dev/kamailio-schema.sh",
+    "db:test-server": "node dev/pglite-server.mjs"
   }
 }

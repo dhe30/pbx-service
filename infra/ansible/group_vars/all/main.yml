@@ -12,16 +12,31 @@ dbmate_version: "v2.37.0"
 node_major: "24"                  # Node.js LTS (20 reached end of life in April 2026)
 
 # ---- Telephony ---------------------------------------------------------------------------------
-# One SIP domain for all tenants. Browsers register as <sip_username>@<sip_domain>; it only has to
-# match between the subscriber rows, the test page and Kamailio's alias. Use the app's DNS name
-# once there is one.
-sip_domain: "pbx.local"
+# One SIP domain for all accounts (course spec §3): phones register at <group>.cse356... and find
+# us through the _sip._udp / _sips._tcp SRV records published on the Group tab.
+sip_domain: "group-4.cse356.compas.cs.stonybrook.edu"
 
-# Carrier (DID provider) source addresses allowed to send INVITEs (IP or CIDR).
-# PHASE 1: put the public IP of the machine running SIPp / your test softphone here.
-carrier_cidrs: []
+# Carrier (DID provider) source addresses allowed to send INVITEs for our DIDs (Course Services tab:
+# "Your inbound trunks receive INVITEs from the carrier, 130.245.136.142").
+# Entries: "IP", "IP/bits", optionally ":port" to accept carrier calls only from that source port
+# (needed when the fake carrier and test phones run on the same machine, e.g. "192.168.56.1:5062").
+# Local testing: add the public IP of the machine running SIPp / your test softphone.
+carrier_cidrs: ["130.245.136.142/32"]
+# Sources of the course's simulated phones/customers: never rate-limited by pike (B2).
+# [VERIFY] the real ranges from Kamailio logs once traffic is on; 130.245.136.0/24 holds the carrier.
+trusted_tester_cidrs: ["130.245.136.0/24"]
+# PSTN vendors (Course Services tab). Asterisk sends vendor legs through the edge to these hosts.
+vendor_us_host: "us-vendor.cse356.compas.cs.stonybrook.edu"
+vendor_intl_host: "intl-vendor.cse356.compas.cs.stonybrook.edu"
+vendor_hosts: ["{{ vendor_us_host }}", "{{ vendor_intl_host }}"]
+# How the dialed number goes in the vendor Request-URI user: e164 (+12015550123) or e164_noplus.
+vendor_number_format: "e164"
 
 kamailio_ws_port: 8080
+# SIP over TLS for phones registered through _sips._tcp (SRTP-SDES media). Certificate for sip_domain.
+kamailio_tls_port: 5061
+kamailio_tls_cert: /etc/kamailio/tls/cert.pem
+kamailio_tls_key: /etc/kamailio/tls/key.pem
 # asterisk_sip_port: defaults to 5060 (asterisk role defaults). Set it as a HOST var to override
 # (the all-in-one inventory uses 5080 because Kamailio already owns 5060 there).
 ari_user: "pbxapp"
@@ -31,7 +46,9 @@ hold_max_sec: 1800
 
 # PJSIP trunk names toward the edges, in preference order: edge-a -> groups['edge'][0], ...
 edge_trunk_names: "{{ ['edge-a', 'edge-b', 'edge-c', 'edge-d'][:groups['edge'] | length] }}"
-rtpengine_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
+# rtpengine instances: dedicated media nodes when the inventory has a `media` group (B3: media CPU off
+# the signaling nodes), otherwise the edges.
+rtpengine_ips: "{{ (groups.get('media') or groups['edge']) | map('extract', hostvars, 'private_ip') | list }}"
 # Other edges, as seen from this host (empty for a single edge).
 edge_peer_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | reject('equalto', private_ip) | list }}"
 # Where the public listeners bind. Same as public_ip unless the provider NATs the public IP
@@ -46,13 +63,19 @@ db_kamailio_user: "kamailio"
 # front of the Patroni primary later (CLAUDE.md §4.3 #7).
 db_host: "127.0.0.1"
 kamailio_db_url: "postgres://{{ db_kamailio_user }}:{{ vault_db_kamailio_password }}@{{ db_host }}:5432/{{ db_name }}"
+# Kamailio only READS the database (auth, DID -> account). T1 adds a local proxy port that forwards to
+# any healthy member (replicas first) so auth survives a primary failover; until then, the primary.
+db_ro_port: 5432
+kamailio_db_ro_url: "postgres://{{ db_kamailio_user }}:{{ vault_db_kamailio_password }}@{{ db_host }}:{{ db_ro_port }}/{{ db_name }}"
 app_db_url: "postgres://{{ db_app_user }}:{{ vault_db_app_password }}@{{ db_host }}:5432/{{ db_name }}"
 
 # ---- Object store (Garage) ---------------------------------------------------------------------
 s3_bucket: "pbx-media"
 s3_region: "garage"
 s3_port: 3900
-garage_replication_factor: 1      # 3 once there are 3 db nodes
+# Copies of every object: one per db node, at most 3 (1 on the all-in-one VM, 3 on db-1..3).
+# Must be right before Garage stores data; changing it later is a migration.
+garage_replication_factor: "{{ [groups['db'] | length, 3] | min }}"
 s3_endpoint: "http://{{ hostvars[groups['db'][0]].private_ip }}:{{ s3_port }}"
 
 # ---- Test data (phase 1) -----------------------------------------------------------------------

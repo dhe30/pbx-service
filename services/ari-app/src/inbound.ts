@@ -1,87 +1,62 @@
-import type { IvrAction } from '@pbx/shared';
+import { normalizeCarrierNumber } from '@pbx/shared';
 import type { Ctx } from './ctx.js';
 import { didCandidates } from './did.js';
-import { runIvr } from './ivr.js';
 import { metrics } from './metrics.js';
-import type { InboundRoute } from './repo.js';
-import { connectToAgent, ringSequential, ringTargets } from './ring.js';
-import { HangupError, type CallSession } from './session.js';
-import { voicemail } from './voicemail.js';
+import { routeTo } from './router.js';
+import { HangupError, newLeg, type CallSession } from './session.js';
 
-// Inbound call flow (CLAUDE.md §10): DID lookup -> calls row -> answer -> IVR -> action.
+// A call from the PSTN to one of our DIDs (carrier -> Kamailio -> this Asterisk, X-PBX-Src: carrier).
+//
+// Post-dial delay (graded, p95): we send 180 Ringing BEFORE any lookup. The account config is
+// normally already in memory (ConfigCache), so routing starts within a few ms; nothing is written
+// to the database until the call ends (CdrWriter).
 
-export async function handleInbound(ctx: Ctx, s: CallSession): Promise<void> {
-  let answered = false;
+export async function handleCarrierCall(ctx: Ctx, s: CallSession): Promise<void> {
+  void ctx.ari.ring(s.primary).catch(() => {});
+  let failedBeforeAnswer = false;
   try {
-    const route = await ctx.repo.findInboundRoute(didCandidates(s.exten));
-    if (!route) {
+    const dids = didCandidates(s.exten);
+    const t = await ctx.cache.tenantForDid(dids);
+    const num = t && dids.map((d) => t.numbers.get(d)).find((n) => !!n);
+    if (!t || !num) {
       s.log.info({ exten: s.exten }, 'unknown DID');
-      await ctx.ari.hangupQuietly(s.channelId, 'unallocated'); // -> 404 to the carrier
+      await ctx.ari.hangupQuietly(s.primary, 'unallocated'); // -> 404 to the carrier
       return;
     }
-    s.tenantId = route.tenantId;
-    s.callId = await ctx.repo.insertCall({
-      tenantId: route.tenantId,
-      phoneNumberId: route.phoneNumberId,
-      callerNumber: s.callerNumber,
-      pbxNode: ctx.cfg.PBX_NODE,
+    s.tenant = t;
+    const caller = normalizeCarrierNumber(s.callerNumber);
+    const rates = await ctx.cache.getRates();
+    s.main = newLeg({
+      direction: 'incoming',
+      fromNumber: caller ?? (s.callerNumber || null),
+      toNumber: num.did,
+      did: num.did,
+      // Incoming toll-free: always per minute (we pay DIDWW per second of it too). Others are free.
+      chargeClass: num.kind === 'toll_free' ? 'toll_free_in' : 'incoming',
+      costPerMin: num.kind === 'toll_free' ? (num.incomingCostPerMin ?? rates.pricing.tollFreeInCostPerMin) : 0,
     });
-    s.log = s.log.child({ callId: s.callId });
-    s.check();
+    // Legs we place for this call (forward, simultaneous ring, IVR -> external) show the DID.
+    s.presentedNumber = num.did;
+    s.log = s.log.child({ callId: s.callId, tenant: t.id });
 
-    await ctx.ari.answer(s.channelId);
-    answered = true;
-    s.log.info({ from: s.callerNumber, did: s.exten }, 'call answered by IVR');
+    // "Caller blocklist. Listed callers are rejected."
+    if (caller && t.blocked.has(caller)) {
+      s.log.info({ caller }, 'blocked caller');
+      s.main.outcome = 'blocked';
+      metrics.blockedCalls.inc();
+      await ctx.ari.hangupQuietly(s.primary, 'rejected');
+      return;
+    }
 
-    const action = await runIvr(ctx, s, route);
-    if (action) await executeAction(ctx, s, route, action);
+    await routeTo(ctx, s, num.destination);
   } catch (err) {
     if (!(err instanceof HangupError)) {
-      s.disposition ??= 'failed';
-      s.log.error({ err }, 'call flow failed');
+      s.log.error({ err }, 'inbound call flow failed');
+      if (s.main) s.main.outcome ??= 'failed';
       // Before answer, 503 makes Kamailio retry the call on another pbx node.
-      if (!answered) await ctx.ari.hangupQuietly(s.channelId, 'congestion').catch(() => {});
+      failedBeforeAnswer = !s.answered;
     }
   } finally {
-    await ctx.ari.hangupQuietly(s.channelId).catch(() => {});
-    if (s.callId) {
-      const disposition = s.disposition ?? 'abandoned';
-      metrics.callsTotal.inc({ disposition });
-      await ctx.repo.finishCall(s.callId, disposition).catch((err) => s.log.error({ err }, 'finishCall failed'));
-    }
-    s.log.info({ disposition: s.disposition }, 'call ended');
-  }
-}
-
-async function executeAction(ctx: Ctx, s: CallSession, route: InboundRoute, action: IvrAction): Promise<void> {
-  const tenantId = route.tenantId;
-  switch (action.action) {
-    case 'voicemail':
-      return voicemail(ctx, s, action.target);
-
-    case 'ring_group': {
-      const group = await ctx.repo.getRingGroup(tenantId, action.target);
-      if (!group) {
-        s.log.warn({ groupId: action.target }, 'ring group not found');
-        return;
-      }
-      const ring = group.strategy === 'sequential' ? ringSequential : ringTargets;
-      const agent = await ring(ctx, s, group.members, group.ringTimeoutSec);
-      if (agent) return connectToAgent(ctx, s, agent, route.recordCalls);
-      if (group.fallbackMailboxId) return voicemail(ctx, s, group.fallbackMailboxId);
-      return;
-    }
-
-    case 'user': {
-      const user = await ctx.repo.getStaffUser(tenantId, action.target);
-      if (!user) {
-        s.log.warn({ userId: action.target }, 'user not found or has no SIP account');
-        return;
-      }
-      const agent = await ringTargets(ctx, s, [user], ctx.cfg.USER_RING_TIMEOUT_SEC);
-      if (agent) return connectToAgent(ctx, s, agent, route.recordCalls);
-      if (user.mailboxId) return voicemail(ctx, s, user.mailboxId);
-      return;
-    }
+    await ctx.ari.hangupQuietly(s.primary, failedBeforeAnswer ? 'congestion' : 'normal').catch(() => {});
   }
 }

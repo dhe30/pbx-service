@@ -1,4 +1,4 @@
-import type { Db, IvrAction, IvrConfig } from '@pbx/shared';
+import type { Db, Destination, IvrConfig } from '@pbx/shared';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { HttpError } from './errors.js';
@@ -14,19 +14,22 @@ import { HttpError } from './errors.js';
 //     select/update/delete on a tenant-owned table.
 //  2. Another tenant's row is "not found" (404), never 403, so ids can't be probed for existence.
 //     requireOwned() does this for a single id.
-//  3. Check every id a request wants to STORE (foreign keys, ids inside ivr_menus.config) with
+//  3. Check every id a request wants to STORE (foreign keys, ids inside Destination JSON) with
 //     assertOwned() before writing. The schema's foreign keys only check that the row exists, not
-//     that it belongs to the same tenant, and the IVR config JSON has no foreign keys at all.
+//     that it belongs to the same tenant, and Destination JSON (IVR configs, number routing, ring
+//     group no-answer, forwarding) has no foreign keys at all.
 
 /** Tables that have a tenant_id column. Used as SQL identifiers, so keep this a fixed allowlist. */
 export const TENANT_TABLES = [
   'users',
   'media',
   'mailboxes',
+  'extensions',
   'ring_groups',
   'ivr_menus',
+  'business_hours',
   'phone_numbers',
-  'calls',
+  'cdrs',
   'voicemails',
 ] as const;
 export type TenantTable = (typeof TENANT_TABLES)[number];
@@ -93,26 +96,33 @@ export async function assertOwned(sql: Db, tenantId: string, refs: readonly Ref[
   }
 }
 
-/** Table each IVR action's `target` points into. */
-const IVR_ACTION_TABLE: Record<IvrAction['action'], TenantTable> = {
+/**
+ * Table each Destination type's `id` points into (external / hangup carry no id). Destinations
+ * are the call-routing JSON shared with the ARI app (DestinationSchema in services/shared).
+ */
+export const DESTINATION_TABLE = {
+  extension: 'extensions',
   ring_group: 'ring_groups',
+  ivr_menu: 'ivr_menus',
   voicemail: 'mailboxes',
-  user: 'users',
-};
+  business_hours: 'business_hours',
+} as const satisfies Partial<Record<Destination['type'], TenantTable>>;
+export type DestinationWithId = keyof typeof DESTINATION_TABLE;
 
-/** Every id inside an IVR config, ready for assertOwned(). */
+/** The id a Destination stores, as a Ref for assertOwned() (none for external / hangup). */
+export function destinationRefs(dest: Destination | null | undefined, field: string): Ref[] {
+  if (!dest || !('id' in dest)) return [];
+  return [{ table: DESTINATION_TABLE[dest.type], id: dest.id, field: `${field}.id` }];
+}
+
+/** Every id inside an IVR config (options, timeout, invalid), ready for assertOwned(). */
 export function ivrConfigRefs(config: IvrConfig, field = 'config'): Ref[] {
   const refs: Ref[] = [];
-  for (const [digit, a] of Object.entries(config.options) as [string, IvrAction | undefined][]) {
-    if (a) refs.push({ table: IVR_ACTION_TABLE[a.action], id: a.target, field: `${field}.options.${digit}.target` });
+  for (const [digit, d] of Object.entries(config.options) as [string, Destination | undefined][]) {
+    refs.push(...destinationRefs(d, `${field}.options.${digit}`));
   }
-  if (config.on_timeout) {
-    refs.push({
-      table: IVR_ACTION_TABLE[config.on_timeout.action],
-      id: config.on_timeout.target,
-      field: `${field}.on_timeout.target`,
-    });
-  }
+  refs.push(...destinationRefs(config.timeout, `${field}.timeout`));
+  refs.push(...destinationRefs(config.invalid, `${field}.invalid`));
   return refs;
 }
 
@@ -124,10 +134,12 @@ const SINGULAR: Record<TenantTable, string> = {
   users: 'user',
   media: 'media file',
   mailboxes: 'mailbox',
+  extensions: 'extension',
   ring_groups: 'ring group',
   ivr_menus: 'IVR menu',
+  business_hours: 'business hours schedule',
   phone_numbers: 'phone number',
-  calls: 'call',
+  cdrs: 'call record',
   voicemails: 'voicemail',
 };
 

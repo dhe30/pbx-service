@@ -51,6 +51,14 @@
   when: kamailio_schema.stdout != 't'
   changed_when: true
 
+- name: Extra subscriber columns (tenant_id, extension_id; idempotent)
+  ansible.builtin.command: >-
+    psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U {{ db_kamailio_user }} -d {{ db_name }}
+    -f /opt/pbx/db/kamailio/pbx-subscriber-columns.sql
+  environment:
+    PGPASSWORD: "{{ vault_db_kamailio_password }}"
+  changed_when: false
+
 # ---- App schema (dbmate) ------------------------------------------------------------------
 
 - name: Install dbmate {{ dbmate_version }}
@@ -71,6 +79,15 @@
     DATABASE_URL: "{{ app_db_url }}?sslmode=disable"
   register: dbmate_up
   changed_when: "'Applying' in dbmate_up.stdout"
+
+# Kamailio reads DID -> account (for pbx-node affinity) through this view; nothing else in public.
+- name: Let Kamailio read the DID -> account view
+  ansible.builtin.command: >-
+    psql -X -q -v ON_ERROR_STOP=1 -d {{ db_name }}
+    -c "GRANT USAGE ON SCHEMA public TO {{ db_kamailio_user }}; GRANT SELECT ON public.kamailio_did_tenant TO {{ db_kamailio_user }};"
+  become: true
+  become_user: postgres
+  changed_when: false
 
 # ---- Test tenant (phase 1) ----------------------------------------------------------------
 
