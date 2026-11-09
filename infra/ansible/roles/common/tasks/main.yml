@@ -1,6 +1,30 @@
 ---
 # Baseline for every VM: packages, hostname, host firewall.
 
+# Background package managers grab the apt/dpkg lock at random times (PackageKit on desktop
+# installs, e.g. a VirtualBox unattended install; unattended-upgrades' apt timers on servers), and
+# an apt task that runs into the lock fails the deploy ("Could not get lock
+# /var/lib/dpkg/lock-frontend ... held by packagekitd"). These servers are only changed by Ansible:
+# stop and mask them before any apt task. Stopping PackageKit mid-refresh is safe.
+- name: Find installed services
+  ansible.builtin.service_facts:
+
+- name: Stop and mask background package managers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop:
+    - packagekit.service
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+    - apt-daily.service
+    - apt-daily-upgrade.service
+    - unattended-upgrades.service
+  when: item in ansible_facts.services or item.endswith('.timer')
+  failed_when: false
+
 - name: Install base packages
   ansible.builtin.apt:
     name:
