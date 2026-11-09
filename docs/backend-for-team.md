@@ -11,7 +11,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | 2 | Auth: signup (with time zone), login, refresh, logout (cookies + JWT), `GET /me` | Done |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
 | 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
-| 5 | IVR menus, ring groups, mailboxes, number routing | Done |
+| 5 | IVR menus, ring groups, mailboxes, number routing, business hours, caller blocklist | Done |
 | 6 | Greeting upload, media URLs | Next (needs Garage in dev) |
 | 7-8 | History/voicemail views, settings, number purchase | Planned |
 
@@ -157,6 +157,8 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 | Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }` |
 | IVR menus | `GET/POST /ivr-menus`, `GET/PUT/DELETE /ivr-menus/:id` | `{ id, name, greetingMediaId, timeoutSec, maxRetries, config }` |
 | Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination }` |
+| Business hours | `GET/POST /business-hours`, `GET/PUT/DELETE /business-hours/:id` | `{ id, name, schedule, openDestination, closedDestination, openNow }` |
+| Blocklist | `GET/POST /blocked-numbers`, `DELETE /blocked-numbers/:number` | `{ number, createdAt }` |
 
 - **`PUT` replaces the whole object**: omitted fields reset to defaults. Edit forms should send
   everything they got from `GET`.
@@ -171,7 +173,13 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 - `config` uses the ARI app's keys as-is:
   `{ options: { "1": Destination }, timeout, invalid, repeat_digit }` (snake_case `repeat_digit`).
   The phase-1 shape (`{ action, target }`, `on_timeout`) is still accepted on input.
-- `PUT /numbers/:id/route` still accepts the phase-1 body `{ ivrMenuId }`.
+- `PUT /numbers/:id/route` still accepts the phase-1 body `{ ivrMenuId }`. Phase-1
+  `{ action: "user" }` IVR targets are refused (400): pick an extension instead.
+- Business hours `schedule` = `{ intervals: [{ day: 0-6 (0 = Sunday), start: "09:00", end:
+  "17:00" }] }` in the account's time zone (`GET /me` → `tenant.timezone`). `openNow` is a
+  read-only preview to show next to the schedule.
+- Blocklist: send `number` in any format (`(201) 555-0100`, `+44...`); it comes back as E.164.
+  Blocking twice is fine (200). Encode `+` as `%2B` in the DELETE URL.
 - `409 in_use` on delete: show `message` (e.g. `Used by IVR menu "Main"; change that first`).
 - There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
 
@@ -291,8 +299,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Decisions needed from others
 
-- **Daniel:** extensions schema (column, format, who writes the migration, auto-assigned or
-  picked by owners). Step 4 shipped without it; needed before staff-to-staff calling.
 - **Justin:** whether `GET /me` has the fields the UI needs, and request/response shapes for each
   dashboard page. Needed before steps 6-7. (Staff and call configuration shapes are already built; say if they
   don't suit the UI.)
@@ -311,7 +317,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Not built yet
 
-- Staff extensions (step 4 follow-up, waiting on the schema decision with Daniel).
 - Changing a staff member's dashboard password (no reset or change-password route yet).
 - Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
 - Step 7: call history, voicemail inbox (list, mark heard, delete), settings.

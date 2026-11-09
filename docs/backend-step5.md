@@ -1,6 +1,48 @@
 # Backend step 5: mailboxes, ring groups, IVR menus, number routing
 
-Owner: Aaron (Track 3 backend). Status: done (2026-11-06).
+Owner: Aaron (Track 3 backend). Status: done (2026-11-06); updated for the course spec
+2026-11-09 (see the next section first).
+
+## Course-spec update (2026-11-09)
+
+What changed since the original step 5 (the sections after this one are the original text; where
+they disagree, this section wins):
+
+- **Destinations replace `{action, target}`** (ported by Daniel in `570cda8`). Every "where does
+  the call go" field is a `Destination` (`DestinationSchema` in `services/shared`):
+  `{type: extension|ring_group|ivr_menu|voicemail|business_hours, id}`, `{type: "external",
+  number: "+E.164"}` or `{type: "hangup"}`.
+  - IVR `config` = `{ options: { "<0-9*#>": Destination }, timeout?, invalid?, repeat_digit? }`.
+    Phase-1 `{action: ring_group|voicemail}` and `on_timeout` are still accepted and stored in
+    the new format. **`{action: "user"}` is now a 400** (users don't ring any more; the shared
+    parser would have stored it as `hangup` without telling anyone).
+  - Ring groups: `memberIds` are **extension** ids; `noAnswerDestination` replaces
+    `fallbackMailboxId`.
+  - `PUT /numbers/:id/route` takes `{ destination }` (phase-1 `{ ivrMenuId }` still accepted) and
+    returns `{ id, did, status, kind, destination }`.
+  - "Only staff can be rung" (rule 1 below) is gone: extensions ring, and any extension can.
+- **409 `in_use`** covers every place a Destination can be stored (`destinationUsages()` in
+  `src/references.ts`): IVR menus, phone numbers, ring group no-answer, business hours, extension
+  forwarding and extension mailboxes.
+- **New: business hours** (`src/routes/business-hours.ts`, owner-only):
+  - `GET/POST /business-hours`, `GET/PUT/DELETE /business-hours/:id`.
+  - Object `{ id, name, schedule, openDestination, closedDestination, openNow }`.
+  - `schedule` = `{ intervals: [{ day: 0-6 (0 = Sunday), start: "HH:MM", end: "HH:MM" }] }` in the
+    account's time zone; `end <= start` runs past midnight; `"24:00"` allowed; at most 70
+    intervals. Same schema and `isOpen()` as the ARI app.
+  - `openDestination` / `closedDestination` are required Destinations.
+  - `openNow` is a read-only preview (ignored on input), so `GET` → `PUT` round trips work.
+  - Delete: 409 while anything routes to it.
+- **New: caller blocklist** (`src/routes/blocked-numbers.ts`, owner-only):
+  - `GET /blocked-numbers` (newest first), `POST /blocked-numbers { number }`,
+    `DELETE /blocked-numbers/:number`. Object `{ number, createdAt }`.
+  - Input in any dialing format (+E.164, 10-digit US, 1+10, 011...; separators ignored); stored and
+    returned as E.164, the form the ARI app compares caller numbers in.
+  - `POST` is idempotent: 201 when newly blocked, 200 with the existing row otherwise.
+  - In the DELETE URL encode `+` as `%2B` (or use the 10-digit / 1+10 form for US numbers).
+- Tests: 23 in `test/call-config.test.ts` (business hours CRUD + `openNow` + validation +
+  tenant 404s + in-use both ways; blocklist normalization, idempotency, tenant separation; the
+  `{action:"user"}` 400; role checks on the new routes).
 
 Owners configure what happens to a call. CLAUDE.md §6 and §11.
 - A **phone number** routes to an **IVR menu**.

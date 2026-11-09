@@ -5,6 +5,8 @@ import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
 import { authRoutes } from './routes/auth.js';
+import { blockedNumberRoutes } from './routes/blocked-numbers.js';
+import { businessHoursRoutes } from './routes/business-hours.js';
 import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
 import { ivrMenuRoutes } from './routes/ivr-menus.js';
@@ -69,6 +71,8 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(ringGroupRoutes, { sql: deps.sql });
   await app.register(ivrMenuRoutes, { sql: deps.sql });
   await app.register(numberRoutes, { sql: deps.sql });
+  await app.register(businessHoursRoutes, { sql: deps.sql });
+  await app.register(blockedNumberRoutes, { sql: deps.sql });
 
   // Steps 6+ register media, voicemails, calls, settings routes here. Every tenant-scoped route
   // follows the rules in src/tenancy.ts (docs/backend-step3.md) and src/references.ts.

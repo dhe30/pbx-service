@@ -25,13 +25,42 @@ import { name, nullableId, parse } from '../validation.js';
 // Semantics (timeout, invalid input, repeat): docs/telephony-contract.md §3. The phase-1 format
 // ({action, target}, on_timeout) is still accepted on input and stored in the new format.
 
+/**
+ * Phase-1 `{action: "user", target}` pointed at a user, and users no longer ring (extensions do).
+ * The shared parser maps it to `{type: "hangup"}` (right for old rows the ARI app reads), but
+ * storing that silently would change what the owner asked for, so new input gets a 400.
+ */
+function rejectLegacyUserTargets(config: unknown, ctx: z.RefinementCtx): void {
+  if (typeof config !== 'object' || config === null) return;
+  const c = config as Record<string, unknown>;
+  const check = (value: unknown, path: (string | number)[]) => {
+    if (typeof value === 'object' && value !== null && (value as { action?: unknown }).action === 'user') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path,
+        message: 'phase-1 {"action":"user"} is no longer supported; use {"type":"extension","id":"<extension id>"}',
+      });
+    }
+  };
+  if (typeof c.options === 'object' && c.options !== null) {
+    for (const [digit, v] of Object.entries(c.options)) check(v, ['options', digit]);
+  }
+  for (const key of ['timeout', 'invalid', 'on_timeout']) check(c[key], [key]);
+}
+
+const IvrConfigInput = z
+  .unknown()
+  .transform((v) => v ?? { options: {} })
+  .superRefine(rejectLegacyUserTargets)
+  .pipe(IvrConfigSchema);
+
 const IvrMenuBody = z.object({
   name,
   greetingMediaId: nullableId,
   // Same bounds as the CHECK constraints on ivr_menus.
   timeoutSec: z.number().int().min(1).max(30).default(5),
   maxRetries: z.number().int().min(1).max(10).default(3),
-  config: IvrConfigSchema.default({ options: {} }),
+  config: IvrConfigInput,
 });
 type IvrMenuBody = z.infer<typeof IvrMenuBody>;
 
