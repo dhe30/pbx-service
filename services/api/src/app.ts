@@ -5,6 +5,7 @@ import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
 import { authRoutes } from './routes/auth.js';
+import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
 import { ivrMenuRoutes } from './routes/ivr-menus.js';
 import { mailboxRoutes } from './routes/mailboxes.js';
@@ -62,6 +63,7 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
   await app.register(authRoutes, { sql: deps.sql });
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
+  await app.register(extensionRoutes, { sql: deps.sql, sipDomain: cfg.SIP_DOMAIN });
 
   await app.register(mailboxRoutes, { sql: deps.sql });
   await app.register(ringGroupRoutes, { sql: deps.sql });

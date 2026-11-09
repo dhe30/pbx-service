@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { HttpError } from '../errors.js';
-import { assertGreeting, menusUsing, refuseIfUsed, usages } from '../references.js';
+import { assertGreeting, destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, tenantOf, type Ref } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
 
@@ -13,11 +13,12 @@ import { name, nullableId, parse } from '../validation.js';
 // GET    /mailboxes/:id    200 mailbox          404
 // POST   /mailboxes        201 mailbox          400
 // PUT    /mailboxes/:id    200 mailbox          400, 404   (full replace: omitted fields reset)
-// DELETE /mailboxes/:id    204                  404, 409 in_use (IVR menu or ring group fallback)
+// DELETE /mailboxes/:id    204                  404, 409 in_use (a voicemail destination or an extension's mailbox)
 //
 // mailbox = { id, name, greetingMediaId, ownerUserId }
-// ownerUserId: whose mailbox it is; the ARI app uses it as that user's no-answer fallback when an
-// IVR digit rings them directly. Deleting a mailbox deletes its voicemails (foreign key cascade).
+// ownerUserId: whose mailbox it is (display only). The call path uses extensions.mailbox_id as an
+// extension's no-answer fallback and for *98. Deleting a mailbox deletes its voicemails (foreign
+// key cascade).
 
 const MailboxBody = z.object({
   name,
@@ -106,16 +107,10 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
       sql.begin(async (tx) => {
         const [row] = await tx`select 1 from mailboxes where id = ${id} and tenant_id = ${tenantId} for update`;
         if (!row) throw notFound();
-        // ring_groups.fallback_mailbox_id would be set to NULL by the foreign key: unanswered
-        // calls would then hang up instead of going to voicemail. Refuse, like IVR references.
-        const groups = await tx<{ name: string }[]>`
-          select name from ring_groups
-           where tenant_id = ${tenantId} and fallback_mailbox_id = ${id}
-           order by name, id`;
-        refuseIfUsed([
-          ...usages('IVR menu', await menusUsing(tx, tenantId, 'voicemail', id)),
-          ...usages('ring group', groups.map((g) => g.name)),
-        ]);
+        // Voicemail destinations (IVR, ring group no-answer, numbers, business hours) and
+        // extensions.mailbox_id (an extension's no-answer fallback; the foreign key would set it to
+        // NULL) would silently turn "go to voicemail" into "hang up". Refuse instead.
+        refuseIfUsed(await destinationUsages(tx, tenantId, 'voicemail', id));
         await tx`delete from mailboxes where id = ${id} and tenant_id = ${tenantId}`;
       }),
     );

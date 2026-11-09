@@ -31,7 +31,9 @@ next call, within about a second. If a notification is lost, a snapshot is still
 
 ## 2. Extensions (spec §3)
 
-Create one, in **one transaction**:
+**Implemented in the API** (`services/api/src/routes/extensions.ts`: `GET/POST /extensions`,
+`GET/PUT/DELETE /extensions/:id`; credentials via `GET /me/sip-credentials?extensionId=`; API
+guide: [backend-for-team.md](backend-for-team.md)). What it does, in **one transaction**:
 ```sql
 insert into extensions (tenant_id, number, name, sip_username, mailbox_id, ring_timeout_sec,
                         forward_always, forward_busy, forward_no_answer, external_numbers,

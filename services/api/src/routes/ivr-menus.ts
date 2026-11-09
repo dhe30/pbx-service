@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { HttpError } from '../errors.js';
-import { assertGreeting, assertRingable, refuseIfUsed, usages } from '../references.js';
+import { assertGreeting, destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, ivrConfigRefs, tenantOf } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
 
@@ -13,15 +13,17 @@ import { name, nullableId, parse } from '../validation.js';
 // GET    /ivr-menus/:id    200 ivrMenu       404
 // POST   /ivr-menus        201 ivrMenu       400
 // PUT    /ivr-menus/:id    200 ivrMenu       400, 404   (full replace: omitted fields reset)
-// DELETE /ivr-menus/:id    204               404, 409 in_use (a phone number routes to it)
+// DELETE /ivr-menus/:id    204               404, 409 in_use (anything routing to it)
 //
 // ivrMenu = { id, name, greetingMediaId, timeoutSec, maxRetries, config }
-// config  = { options: { "<digit>": { action, target } }, on_timeout?: { action, target } }
+// config  = { options: { "<digit>": Destination }, timeout?: Destination, invalid?: Destination,
+//             repeat_digit?: "<digit>" }
 //   (IvrConfigSchema in services/shared, the same schema the ARI app reads it with; keys stay
 //    snake_case because the ARI app reads this JSON as stored)
-//   action: "ring_group" -> ring group id, "voicemail" -> mailbox id, "user" -> staff user id.
-// The ARI app plays the greeting, waits timeoutSec for a digit, replays up to maxRetries times,
-// then runs on_timeout (omitted = hang up).
+//   Destination = {"type": extension|ring_group|ivr_menu|voicemail|business_hours, "id"}
+//               | {"type":"external","number":"+E.164"} | {"type":"hangup"}
+// Semantics (timeout, invalid input, repeat): docs/telephony-contract.md §3. The phase-1 format
+// ({action, target}, on_timeout) is still accepted on input and stored in the new format.
 
 const IvrMenuBody = z.object({
   name,
@@ -48,7 +50,6 @@ const notFound = () => new HttpError(404, 'not_found', 'No such IVR menu');
 async function checkRefs(tx: Db, tenantId: string, body: IvrMenuBody): Promise<void> {
   const refs = ivrConfigRefs(body.config);
   await assertOwned(tx, tenantId, refs);
-  await assertRingable(tx, tenantId, refs); // "user" targets must have a softphone
   await assertGreeting(tx, tenantId, body.greetingMediaId, 'greetingMediaId');
 }
 
@@ -116,11 +117,9 @@ export const ivrMenuRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
       sql.begin(async (tx) => {
         const [row] = await tx`select 1 from ivr_menus where id = ${id} and tenant_id = ${tenantId} for update`;
         if (!row) throw notFound();
-        // phone_numbers.ivr_menu_id would be set to NULL by the foreign key, and the ARI app
-        // hangs up on calls to a number without a menu. Refuse; route the number elsewhere first.
-        const numbers = await tx<{ did: string }[]>`
-          select did from phone_numbers where tenant_id = ${tenantId} and ivr_menu_id = ${id} order by did`;
-        refuseIfUsed(usages('phone number', numbers.map((n) => n.did)));
+        // Numbers, other menus (sub-menus), ring groups or business hours may route here; the ARI
+        // app hangs up on calls whose destination is gone. Refuse; route them elsewhere first.
+        refuseIfUsed(await destinationUsages(tx, tenantId, 'ivr_menu', id));
         await tx`delete from ivr_menus where id = ${id} and tenant_id = ${tenantId}`;
       }),
     );

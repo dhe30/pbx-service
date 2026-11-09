@@ -99,22 +99,49 @@ purpose). A taken email at signup returns `409 email_taken`.
   instead of showing an error right away.
 - **Bodies must be JSON**: send `Content-Type: application/json`. Form posts get 415.
 
-### Staff endpoints (available now, step 4)
+> **Changed 2026-11-09 (course-spec port, PR from `phase1/telephony`):** SIP accounts moved from
+> staff users to **extensions**. Destinations (IVR options, number routing, ring group no-answer)
+> use `{ "type", "id" }` instead of `{ action, target }`. Ring group members are extensions. Why:
+> [spec-transition.md](spec-transition.md). Full contract: [telephony-contract.md](telephony-contract.md).
+
+### Staff endpoints (logins only)
 
 | Request | Who | Success response |
 |---|---|---|
-| `POST /staff` `{ "email", "password" }` | owner | `201 { "id", "email", "role": "staff", "sipUsername", "createdAt" }` |
+| `POST /staff` `{ "email", "password" }` | owner | `201 { "id", "email", "role": "staff", "createdAt" }` |
 | `GET /staff` | owner | `200 [ { same fields }, ... ]`, oldest first |
-| `DELETE /staff/:id` | owner | `204` |
-| `GET /me/sip-credentials` | staff | `200 { "wsUri", "sipUri", "username", "password" }` |
+| `DELETE /staff/:id` | owner | `204` (an extension assigned to them stays, unassigned) |
+| `GET /me/sip-credentials[?extensionId=]` | any user | `200 { "wsUri", "sipUri", "username", "password", "extensionId", "extensionNumber" }` |
 
 - The owner sets the staff member's first dashboard password (same rules as signup) and gives it
   to them; the staff member then logs in normally with `/auth/login`.
-- Errors: `409 email_taken` on create; `409 in_use` on delete while an IVR menu routes to that
-  person (show `message`, it names the menu); `404` if already deleted.
-- Softphone: after a staff login, fetch `/me/sip-credentials` and pass the fields to SIP.js
-  (`wsUri` = WebSocket server, `sipUri` = AOR, `username`/`password` = digest auth). Keep the
-  password in memory only, don't store it. Owners get `403` here: only staff have a softphone.
+- Errors: `409 email_taken` on create; `404` if already deleted.
+- **Softphone** (spec §4: "a logged-in user calls and answers as one of the account's
+  extensions", `data-testid="softphone-extension"`):
+  1. list `GET /extensions`;
+  2. fetch `/me/sip-credentials?extensionId=<chosen>` (without it: the extension assigned to
+     this user, `extensions.userId`, else 404);
+  3. pass the fields to SIP.js (`wsUri` = WebSocket server, `sipUri` = AOR, `username`/`password`
+     = digest auth).
+
+  Keep the password in memory only. Owners can use the softphone too.
+
+### Extension endpoints (spec §3)
+
+| Request | Who | Success response |
+|---|---|---|
+| `GET /extensions`, `GET /extensions/:id` | any user | extension(s), by number; `sipPassword` only for owners |
+| `POST /extensions` | owner | `201 extension` (creates its SIP account and, unless `mailboxId` is given or `null`, a mailbox) |
+| `PUT /extensions/:id` | owner | `200 extension` (full replace; omitted `mailboxId` = keep) |
+| `DELETE /extensions/:id` | owner | `204`; `409 in_use` while something routes to it |
+
+extension = `{ id, number, name, sipUsername, sipPassword, mailboxId, ringTimeoutSec, forwardAlways,
+forwardBusy, forwardNoAnswer, externalNumbers, callerIdNumber, userId }`.
+- `number`: 1–8 digits, unique in the account (`409 number_taken`).
+- `forward*`: `null`, `{ "type": "extension", "id" }` or `{ "type": "external", "number": "+E.164" }`.
+- `externalNumbers`: E.164 list, rung together with the extension's phones.
+- `callerIdNumber`: must be one of the account's numbers.
+- **Desk phones** register with `sipUsername` / `sipPassword` at the group domain (SRV records).
 
 ### Call configuration endpoints (available now, step 5)
 
@@ -123,16 +150,24 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 | Resource | Routes | Object |
 |---|---|---|
 | Mailboxes | `GET/POST /mailboxes`, `GET/PUT/DELETE /mailboxes/:id` | `{ id, name, greetingMediaId, ownerUserId }` |
-| Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, fallbackMailboxId, memberIds }` |
+| Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }` |
 | IVR menus | `GET/POST /ivr-menus`, `GET/PUT/DELETE /ivr-menus/:id` | `{ id, name, greetingMediaId, timeoutSec, maxRetries, config }` |
-| Number routing | `PUT /numbers/:id/route` `{ ivrMenuId }` | `{ id, did, status, ivrMenuId }` |
+| Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination }` |
 
 - **`PUT` replaces the whole object**: omitted fields reset to defaults. Edit forms should send
   everything they got from `GET`.
-- `memberIds` order is the ring order (matters for `strategy: "sequential"`). Only staff can be
-  members or IVR `user` targets; offer only `GET /staff` people in those pickers.
-- `config` uses the ARI app's keys as-is: `{ options: { "1": { action, target } }, on_timeout }`
-  (snake_case `on_timeout`, unlike the other fields).
+- **Destination** (number routing, IVR digits, ring group no-answer) is one of:
+  - `{ "type": "extension" | "ring_group" | "ivr_menu" | "voicemail" | "business_hours", "id" }`
+  - `{ "type": "external", "number": "+E.164" }`
+  - `{ "type": "hangup" }`
+
+  Formats and semantics: [telephony-contract.md](telephony-contract.md) §3.
+- `memberIds` are **extension** ids; their order is the ring order (matters for
+  `strategy: "sequential"`). Offer `GET /extensions` in that picker.
+- `config` uses the ARI app's keys as-is:
+  `{ options: { "1": Destination }, timeout, invalid, repeat_digit }` (snake_case `repeat_digit`).
+  The phase-1 shape (`{ action, target }`, `on_timeout`) is still accepted on input.
+- `PUT /numbers/:id/route` still accepts the phase-1 body `{ ivrMenuId }`.
 - `409 in_use` on delete: show `message` (e.g. `Used by IVR menu "Main"; change that first`).
 - There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
 
@@ -158,7 +193,7 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 
 - `404 not_found` on a detail page: show "not found"; the id may simply belong to another
   business.
-- `400 invalid_reference` on save: `message` starts with the field path (`config.options.2.target`,
+- `400 invalid_reference` on save: `message` starts with the field path (`config.options.2.id`,
   `memberIds.1`), so you can highlight the field. Usually means a picked item was deleted
   meanwhile; reload the options.
 
@@ -166,23 +201,19 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 
 ## Daniel (telephony: extensions / staff-to-staff calls)
 
-- **No extension column exists yet.** Staff calling each other probably needs a per-tenant
-  extension, e.g. `users.extension` unique per `(tenant_id, extension)`. Let's agree on:
-  - who writes the migration;
-  - the format (digits only? length?);
-  - whether the API assigns extensions automatically or owners pick them.
-- **Step 4 (staff) is done** (`docs/backend-step4.md`):
-  - `POST /staff` creates the `users` row and the Kamailio `subscriber` row in one transaction.
-    The SIP username is generated: `s` + 16 hex chars; the domain is `SIP_DOMAIN`.
-  - `DELETE /staff/:id` also deletes the user's `kamailio.location` rows, so their softphone
-    stops ringing at once.
-  - `GET /me/sip-credentials` returns `{ wsUri, sipUri, username, password }`.
-  - If extensions need `subscriber` changes (aliases) or a different username format, tell me.
-    The routes can take an `extension` field without breaking anything.
-- `users.sip_username` is **globally** unique (Kamailio looks staff up by username only,
-  `use_domain=0`), so a generated username can't be just an extension number.
-- The API doesn't write `calls`, `voicemails` or other ARI-app tables; it only reads them
-  (call history, voicemail inbox).
+- **Resolved 2026-11-09 (course-spec port):**
+  - **Extensions:** the `extensions` table, with a number unique per account (digits, 1–8) that
+    owners pick. The API routes are `routes/extensions.ts`.
+  - **SIP accounts:** `kamailio.subscriber` rows belong to extensions. The username is generated
+    (`x` + 16 hex chars). The row carries `tenant_id` + `extension_id`, which Kamailio uses to keep
+    an account's calls on one pbx node.
+  - **Registrations:** live in Kamailio memory (no `kamailio.location` rows to delete any more).
+  - **Staff:** `POST /staff` creates a login only.
+  - Contract: [telephony-contract.md](telephony-contract.md).
+- `extensions.sip_username` is **globally** unique (Kamailio looks phones up by username only,
+  `use_domain=0`), so a generated username can't be just the extension number.
+- The API doesn't write `cdrs` (replaces `calls`), `usage_periods` or recordings; it only reads
+  them (call history, invoices). Voicemails: the API marks them heard/deleted, the ARI app inserts.
 - **Tenant isolation is enforced in the API, not the database** (step 3). The foreign keys only
   check that a row exists, not that it's the same tenant's, and `ivr_menus.config` has none. The
   API checks before writing, but code that writes these tables directly (ARI app, seeds, your

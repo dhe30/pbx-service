@@ -29,6 +29,20 @@ The carrier sends SIP from `130.245.136.142`. The SIP domain is `group-4.cse356.
 
 ## 2. What changed, per component
 
+### API (`services/api`, ported after merging main's backend foundation #3)
+- **New:** `/extensions` CRUD, which creates the extension, its SIP account (`kamailio.subscriber`
+  with `tenant_id` / `extension_id`) and by default its mailbox, in one transaction.
+- **Changed:**
+  - `/staff` creates logins only;
+  - `/me/sip-credentials?extensionId=` works for any user of the account;
+  - ring group `memberIds` are extensions, `noAnswerDestination` replaces `fallbackMailboxId`;
+  - IVR `config` and `PUT /numbers/:id/route` use Destinations. The phase-1 inputs are still
+    accepted.
+- **In-use checks:** "still in use" (409) covers every place a destination can be stored
+  (`destinationUsages` in `references.ts`).
+- **Tests:** API tests updated plus a new `extensions.test.ts`. They can run without docker via
+  `node dev/pglite-server.mjs` (see its header).
+
 ### Database (migration `20261109000000_course_spec_telephony.sql`)
 - **New:** `extensions`, `business_hours`, `blocked_numbers`, `cdrs`, `rate_decks`, `call_pricing`
   (one row), `usage_periods`, and the view `kamailio_did_tenant`.

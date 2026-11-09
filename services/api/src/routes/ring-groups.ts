@@ -1,30 +1,33 @@
-import { withRetry, type Db, type Sql } from '@pbx/shared';
+import { DestinationSchema, withRetry, type Db, type Destination, type Sql } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { HttpError } from '../errors.js';
-import { assertRingable, menusUsing, refuseIfUsed, usages } from '../references.js';
-import { IdParams, assertOwned, tenantOf, type Ref } from '../tenancy.js';
-import { name, nullableId, parse } from '../validation.js';
+import { destinationUsages, refuseIfUsed } from '../references.js';
+import { IdParams, assertOwned, destinationRefs, tenantOf, type Ref } from '../tenancy.js';
+import { name, parse } from '../validation.js';
 
-// Ring groups: who rings when an IVR digit routes to the group (backend step 5). Owner-only.
+// Ring groups: extensions rung together or in order (backend step 5, ported to the course spec
+// data model in docs/spec-transition.md). Owner-only.
 //
 // GET    /ring-groups        200 [ringGroup]     sorted by name
 // GET    /ring-groups/:id    200 ringGroup       404
 // POST   /ring-groups        201 ringGroup       400
 // PUT    /ring-groups/:id    200 ringGroup       400, 404   (full replace, including members)
-// DELETE /ring-groups/:id    204                 404, 409 in_use (IVR menu)
+// DELETE /ring-groups/:id    204                 404, 409 in_use (anything routing to it)
 //
-// ringGroup = { id, name, strategy, ringTimeoutSec, fallbackMailboxId, memberIds }
-// strategy 'all' rings every member at once (first answer wins); 'sequential' rings them in
-// memberIds order, ringTimeoutSec each. No answer -> fallbackMailboxId (null = hang up).
+// ringGroup = { id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }
+// memberIds: EXTENSION ids, in ring order. Each member rings all of its devices and its external
+// numbers. strategy 'all' rings every member at once (first answer wins; ringTimeoutSec is the
+// total ring time); 'sequential' rings them in memberIds order, ringTimeoutSec each.
+// No answer -> noAnswerDestination (a Destination, docs/telephony-contract.md §3; null = hang up).
 
 const RingGroupBody = z.object({
   name,
   strategy: z.enum(['all', 'sequential']).default('all'),
   // Same bounds as the CHECK constraint on ring_groups.ring_timeout_sec.
   ringTimeoutSec: z.number().int().min(5).max(120).default(20),
-  fallbackMailboxId: nullableId,
+  noAnswerDestination: DestinationSchema.nullable().default(null),
   memberIds: z
     .array(z.string().uuid())
     .max(50)
@@ -38,7 +41,7 @@ interface RingGroup {
   name: string;
   strategy: 'all' | 'sequential';
   ringTimeoutSec: number;
-  fallbackMailboxId: string | null;
+  noAnswerDestination: Destination | null;
   memberIds: string[];
 }
 
@@ -47,9 +50,9 @@ const notFound = () => new HttpError(404, 'not_found', 'No such ring group');
 /** Ring groups with their members in ring order. `id` null = all of the tenant's groups. */
 function selectGroups(db: Db, tenantId: string, id: string | null) {
   return db<RingGroup[]>`
-    select rg.id, rg.name, rg.strategy, rg.ring_timeout_sec, rg.fallback_mailbox_id,
-           coalesce(array_agg(m.user_id order by m.position, m.user_id)
-                      filter (where m.user_id is not null), '{}') as member_ids
+    select rg.id, rg.name, rg.strategy, rg.ring_timeout_sec, rg.no_answer_destination,
+           coalesce(array_agg(m.extension_id order by m.position, m.extension_id)
+                      filter (where m.extension_id is not null), '{}') as member_ids
       from ring_groups rg
       left join ring_group_members m on m.ring_group_id = rg.id
      where rg.tenant_id = ${tenantId} ${id ? db`and rg.id = ${id}` : db``}
@@ -57,22 +60,21 @@ function selectGroups(db: Db, tenantId: string, id: string | null) {
      order by rg.name, rg.id`;
 }
 
-/** Checks every id the body stores (tenant, members have a softphone). Inside the write transaction. */
+/** Checks every id the body stores belongs to the tenant. Inside the write transaction. */
 async function checkRefs(tx: Db, tenantId: string, body: RingGroupBody): Promise<void> {
-  const refs: Ref[] = body.memberIds.map((id, i) => ({ table: 'users', id, field: `memberIds.${i}` }));
-  if (body.fallbackMailboxId) {
-    refs.push({ table: 'mailboxes', id: body.fallbackMailboxId, field: 'fallbackMailboxId' });
-  }
+  const refs: Ref[] = body.memberIds.map((id, i) => ({ table: 'extensions', id, field: `memberIds.${i}` }));
+  refs.push(...destinationRefs(body.noAnswerDestination, 'noAnswerDestination'));
   await assertOwned(tx, tenantId, refs);
-  await assertRingable(tx, tenantId, refs);
 }
 
 async function replaceMembers(tx: Db, groupId: string, memberIds: readonly string[]): Promise<void> {
   await tx`delete from ring_group_members where ring_group_id = ${groupId}`;
   if (memberIds.length === 0) return;
-  const rows = memberIds.map((userId, position) => ({ ringGroupId: groupId, userId, position }));
-  await tx`insert into ring_group_members ${tx(rows, 'ringGroupId', 'userId', 'position')}`;
+  const rows = memberIds.map((extensionId, position) => ({ ringGroupId: groupId, extensionId, position }));
+  await tx`insert into ring_group_members ${tx(rows, 'ringGroupId', 'extensionId', 'position')}`;
 }
+
+const destJson = (tx: Db, d: Destination | null) => (d ? tx.json(d) : null);
 
 export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
@@ -95,8 +97,9 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
       sql.begin(async (tx) => {
         await checkRefs(tx, tenantId, body);
         const [created] = await tx<{ id: string }[]>`
-          insert into ring_groups (tenant_id, name, strategy, ring_timeout_sec, fallback_mailbox_id)
-          values (${tenantId}, ${body.name}, ${body.strategy}, ${body.ringTimeoutSec}, ${body.fallbackMailboxId})
+          insert into ring_groups (tenant_id, name, strategy, ring_timeout_sec, no_answer_destination)
+          values (${tenantId}, ${body.name}, ${body.strategy}, ${body.ringTimeoutSec},
+                  ${destJson(tx, body.noAnswerDestination)})
           returning id`;
         await replaceMembers(tx, created!.id, body.memberIds);
         const [group] = await selectGroups(tx, tenantId, created!.id);
@@ -116,7 +119,7 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
         const [updated] = await tx`
           update ring_groups
              set name = ${body.name}, strategy = ${body.strategy}, ring_timeout_sec = ${body.ringTimeoutSec},
-                 fallback_mailbox_id = ${body.fallbackMailboxId}
+                 no_answer_destination = ${destJson(tx, body.noAnswerDestination)}, fallback_mailbox_id = null
            where id = ${id} and tenant_id = ${tenantId}
           returning id`;
         if (!updated) throw notFound();
@@ -134,7 +137,7 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
       sql.begin(async (tx) => {
         const [row] = await tx`select 1 from ring_groups where id = ${id} and tenant_id = ${tenantId} for update`;
         if (!row) throw notFound();
-        refuseIfUsed(usages('IVR menu', await menusUsing(tx, tenantId, 'ring_group', id)));
+        refuseIfUsed(await destinationUsages(tx, tenantId, 'ring_group', id));
         await tx`delete from ring_groups where id = ${id} and tenant_id = ${tenantId}`; // members cascade
       }),
     );
