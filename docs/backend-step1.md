@@ -33,7 +33,9 @@ All under `services/api/`.
 ## Configuration
 
 Required (see `.env.example`): `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
-`S3_SECRET_ACCESS_KEY`, `JWT_SECRET` (min 16 chars), `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`.
+`S3_SECRET_ACCESS_KEY`, `JWT_SECRET` (min 16 chars), `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`,
+`STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` (added 2026-11-09 with billing; see
+`docs/backend-card-signup.md`). Optional: `STRIPE_API_URL`, `STRIPE_JS_URL`.
 
 Optional, with defaults:
 

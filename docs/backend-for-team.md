@@ -1,7 +1,19 @@
 # Backend API: what the rest of the team needs to know
 
-From: Aaron (Track 3 backend). As of 2026-11-06.
-Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api/`.
+From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
+Details: `docs/backend-step1.md` to `docs/backend-step5.md`, `docs/backend-card-signup.md`. Code:
+`services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
+
+**What changed on 2026-11-09 (read this if you built against an earlier version):**
+- `POST /auth/signup` needs `timezone`, and returns `cardSetup` for the card form.
+- `GET /me` exists (user, business, time zone, `status`).
+- New: `/business-hours`, `/blocked-numbers`, `/billing`, `/billing/prices`, `/billing/card`,
+  `/billing/setup-intent`.
+- `POST /extensions` answers 402 until the plan is paid and 409 `extension_limit` past the plan.
+- `DELETE /staff/:id` no longer answers 409 `in_use` (staff logins are not routing targets).
+- Phase-1 IVR targets `{action: "user"}` are a 400 now.
+- New required config: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`. New migration:
+  `db/migrations/20261110000000_billing_card.sql` (run `npm run db:migrate`).
 
 ## Status
 
@@ -31,8 +43,10 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
+| 400 | `card_not_saved` | Card setup not confirmed with Stripe.js yet (`POST /billing/card`) |
 | 402 | `payment_required`, `payment_failed` | Plan not paid yet / a card charge was declined |
-| 409 | `email_taken`, `in_use`, `number_taken`, `extension_limit` | Conflict with existing data (`in_use`: can't delete, still used by an IVR menu, ring group or phone number; `message` names them) |
+| 409 | `email_taken`, `in_use`, `number_taken`, `extension_limit` | Conflict with existing data (`in_use`: can't delete, still used by call routing; `message` names what uses it) |
+| 502 | `payment_gateway_error` | The payment service failed. Safe to retry (billing calls are idempotent) |
 | 415 | | Body wasn't JSON (only `application/json` is accepted) |
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
 | 500 | `internal_error` | A bug; details are only in the server log |
@@ -55,7 +69,26 @@ npm run dev -w @pbx/api       # http://127.0.0.1:3000
 ```
 
 `/ready` reports 503 locally until an object store is added to `dev/docker-compose.yml`. That's
-expected; everything else works.
+expected; everything else works. The API won't start without the Stripe keys in `.env`; the
+`.env.example` placeholders are enough for local work (the gateway is only called on signup and
+billing).
+
+**Tests without Docker** (in-process Postgres with every migration applied):
+
+```sh
+node dev/pglite-server.mjs &   # listens on 127.0.0.1:55432
+TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres npm test -w @pbx/api -- --no-file-parallelism
+```
+
+Run the API tests sequentially (`--no-file-parallelism`): PGlite serves one connection at a time.
+Without a database the DB tests are skipped, not failed.
+
+**API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
+every route with its body, parameters, responses and error codes, and a description for every
+field. Open it in any OpenAPI viewer (e.g. paste into editor.swagger.io) instead of relying on the
+tables below when in doubt. How routes document themselves: `services/api/src/openapi/document.ts`
+(each route passes `withDoc(opts, {...})`; `test/openapi.test.ts` fails if a route, parameter or
+field has no description).
 
 **Schema changes.** The API, the ARI app and Kamailio all read the same tables. Please send
 migrations (`db/migrations/`, dbmate) through one reviewed PR at a time and tell the other
@@ -250,9 +283,11 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
   up instead of reaching `on_timeout`. Only column names are converted now; no ARI app code
   changed. Rebuild shared (`npm run build -w @pbx/shared`) and please recheck the on_timeout path
   on the phase-1 VM. Details: `docs/backend-step5.md`.
-- **The API refuses to delete what calls still depend on** (409 `in_use`): a staff member, mailbox
-  or ring group an IVR menu targets, a mailbox used as a ring group fallback, an IVR menu a number
-  routes to. Seeds or scripts that delete these rows directly should keep the same rule.
+- **The API refuses to delete what call routing still depends on** (409 `in_use`): a mailbox, ring
+  group, IVR menu, business hours schedule or extension that a Destination points at (IVR digits,
+  number routing, ring group no-answer, forwarding, extension mailboxes). Seeds or scripts that
+  delete these rows directly should keep the same rule. Staff logins are not routing targets, so
+  deleting one no longer checks anything.
 
 ---
 

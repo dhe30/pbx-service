@@ -40,6 +40,8 @@ they disagree, this section wins):
     returned as E.164, the form the ARI app compares caller numbers in.
   - `POST` is idempotent: 201 when newly blocked, 200 with the existing row otherwise.
   - In the DELETE URL encode `+` as `%2B` (or use the 10-digit / 1+10 form for US numbers).
+- Files added: `src/routes/business-hours.ts`, `src/routes/blocked-numbers.ts`. Changed: `src/routes/ivr-menus.ts`
+  (phase-1 `user` targets refused), `src/app.ts` (registration).
 - Tests: 23 in `test/call-config.test.ts` (business hours CRUD + `openNow` + validation +
   tenant 404s + in-use both ways; blocklist normalization, idempotency, tenant separation; the
   `{action:"user"}` 400; role checks on the new routes).
@@ -201,7 +203,9 @@ the IVR reaches its `on_timeout` action.
 
 ## Verification
 
-- 62 API tests pass (15 new), against the docker-compose Postgres. They cover:
+- Original step 5 (2026-11-06): 62 API tests passed (15 new), against the docker-compose Postgres.
+  The 2026-11-09 port and course-spec update are covered by the 90-test run in
+  `docs/backend-for-team.md` (`test/call-config.test.ts` has 23 tests now). They cover:
   - CRUD round trips for each resource; `PUT` reset semantics;
   - another tenant's ids are 404 on every route and are never listed;
   - cross-tenant references, non-staff members and IVR users, non-greeting media, duplicate
