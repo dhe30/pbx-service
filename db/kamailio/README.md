@@ -14,3 +14,6 @@ They are applied (in that order) by the `db_schema` Ansible role, as the `kamail
 the `kamailio` schema of the `pbx` database. The `kamailio` role's `search_path` is set to
 `kamailio`, so Kamailio sees unqualified table names. The app (`pbx_app` role) gets DML rights on
 these tables so the API can create/delete `subscriber` rows.
+
+Local dev: `npm run db:kamailio` (`dev/kamailio-schema.sh`) creates the same tables in the
+docker-compose Postgres, in schema `kamailio`. It is idempotent.

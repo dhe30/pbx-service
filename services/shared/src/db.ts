@@ -6,6 +6,10 @@ import postgres from 'postgres';
 // "read-only transaction" errors; callers on hot paths wrap queries in withRetry().
 
 export type Sql = postgres.Sql;
+/** The `tx` handed to `sql.begin(async (tx) => ...)`. */
+export type TransactionSql = postgres.TransactionSql;
+/** Anything you can run a query on: the pool or a transaction. Use for helpers that work in both. */
+export type Db = Sql | TransactionSql;
 
 export interface DbOptions {
   /** Max pool size. */
