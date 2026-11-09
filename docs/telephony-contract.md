@@ -22,6 +22,7 @@ Everything else is written by the API.
 | `call_pricing` (1 row), `rate_decks` | API / ops (`rates:import`) | rating every leg |
 | `cdrs`, `usage_periods` | **ARI app** (insert-only) | — (API reads them: history, search, invoices) |
 | `media` (kind recording/voicemail), `voicemails` | **ARI app** inserts; API and `*98` update/delete | — |
+| `billing_accounts`, `payments`, `tenant_settings.included_extensions` / `.extra_extensions` | API only | — (not read by telephony) |
 
 **Freshness:** every write to the account-config tables fires `NOTIFY pbx_config '<tenant id>'`
 (triggers), and every pbx node drops its cached copy of that account. Changes take effect on the

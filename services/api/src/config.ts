@@ -31,6 +31,15 @@ const EnvSchema = z.object({
    * cookies on http://localhost. Set false only for plain-HTTP testing on another host.
    */
   COOKIE_SECURE: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  /**
+   * Course payment gateway (Stripe clone). STRIPE_API_URL: REST API base ([VERIFY] the host);
+   * STRIPE_JS_URL: where browsers load Stripe.js from (the spec requires the gateway's copy).
+   * The secret key stays on the server; the publishable key is given to browsers.
+   */
+  STRIPE_API_URL: z.string().url().default('https://stripe.cse356.compas.cs.stonybrook.edu'),
+  STRIPE_JS_URL: z.string().url().default('https://stripe.cse356.compas.cs.stonybrook.edu/v3/'),
+  STRIPE_SECRET_KEY: z.string().min(1),
+  STRIPE_PUBLISHABLE_KEY: z.string().min(1),
   /** Course DID endpoint (CLAUDE.md §3 A6; API shape still unknown). */
   DID_PROVIDER_URL: z.string().url(),
   /** Returned to staff browsers by GET /me/sip-credentials. */

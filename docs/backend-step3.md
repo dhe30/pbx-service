@@ -2,6 +2,13 @@
 
 Owner: Aaron (Track 3 backend). Status: done (2026-11-06).
 
+> **Note (2026-11-09):** the rules below still hold, and the helpers in `src/tenancy.ts` are
+> unchanged. The code samples in this document show the step 3 version of the routes. Since then:
+> ring groups store `noAnswerDestination` (a Destination) instead of `fallbackMailboxId`, and
+> destinations are checked by `destinationRefs()` / `ivrConfigRefs()` (`src/tenancy.ts`). Routes
+> that store a Destination also refuse deletes with 409 `in_use` (`src/references.ts`).
+> `assertOwned()` now locks the rows it checks (`FOR SHARE`), as described in `backend-step5.md`.
+
 Every business row belongs to one tenant. A logged-in user must never read, change or point at
 another tenant's rows. Step 3 adds the helpers and rules that every route from step 4 on follows.
 No new endpoints.

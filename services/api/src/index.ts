@@ -1,6 +1,7 @@
 import { createDb } from '@pbx/shared';
 import { hostname } from 'node:os';
 import { buildApp } from './app.js';
+import { HttpStripeClient } from './billing/stripe.js';
 import { ConfigError, loadConfig } from './config.js';
 import { ObjectStore } from './object-store.js';
 
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
       objectStore: (signal) => store.ping(signal),
     },
     isDraining: () => draining,
+    stripe: new HttpStripeClient(cfg.STRIPE_API_URL, cfg.STRIPE_SECRET_KEY),
   });
 
   let shuttingDown = false;

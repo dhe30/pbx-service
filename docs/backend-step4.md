@@ -2,6 +2,21 @@
 
 Owner: Aaron (Track 3 backend). Status: done (2026-11-06).
 
+> **Superseded in part (2026-11-09, course spec).** Ported by Daniel in `570cda8`:
+> - SIP accounts belong to **extensions** now (`routes/extensions.ts`, `/extensions` CRUD; SIP
+>   username `x` + 16 hex). `POST /staff` creates a dashboard login only, and the staff object has
+>   no `sipUsername`.
+> - `GET /me/sip-credentials[?extensionId=]` works for **any** user and also returns
+>   `extensionId`, `extensionNumber`.
+> - `DELETE /staff/:id` no longer touches `kamailio.*` and has no 409; an extension assigned to
+>   the user stays, unassigned. Registrations live in Kamailio memory (`usrloc db_mode=0`), so
+>   there are no `location` rows to delete.
+> - `SIP_DOMAIN` is `group-4.cse356.compas.cs.stonybrook.edu`.
+>
+> Current contract: [backend-for-team.md](backend-for-team.md) and
+> [telephony-contract.md](telephony-contract.md) §2. The text below is the original step 4 design,
+> kept for its reasoning (generated usernames, plaintext password, one transaction).
+
 Owners create and delete staff accounts. Each staff member gets a dashboard login plus a
 generated SIP account (a Kamailio `subscriber` row), which the browser softphone fetches after
 login to register with Kamailio. Follows CLAUDE.md §6 and §11.

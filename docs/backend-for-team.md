@@ -1,17 +1,30 @@
 # Backend API: what the rest of the team needs to know
 
-From: Aaron (Track 3 backend). As of 2026-11-06.
-Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api/`.
+From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
+Details: `docs/backend-step1.md` to `docs/backend-step5.md`, `docs/backend-card-signup.md`. Code:
+`services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
+
+**What changed on 2026-11-09 (read this if you built against an earlier version):**
+- `POST /auth/signup` needs `timezone`, and returns `cardSetup` for the card form.
+- `GET /me` exists (user, business, time zone, `status`).
+- New: `/business-hours`, `/blocked-numbers`, `/billing`, `/billing/prices`, `/billing/card`,
+  `/billing/setup-intent`.
+- `POST /extensions` answers 402 until the plan is paid and 409 `extension_limit` past the plan.
+- `DELETE /staff/:id` no longer answers 409 `in_use` (staff logins are not routing targets).
+- Phase-1 IVR targets `{action: "user"}` are a 400 now.
+- New required config: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`. New migration:
+  `db/migrations/20261110000000_billing_card.sql` (run `npm run db:migrate`).
 
 ## Status
 
 | Step | What | State |
 |---|---|---|
 | 1 | Server skeleton: config, logging, `/health`, `/ready`, `/metrics`, error format, graceful shutdown | Done |
-| 2 | Auth: signup, login, refresh, logout (cookies + JWT) | Done, `GET /me` deliberately postponed |
+| 2 | Auth: signup (with time zone), login, refresh, logout (cookies + JWT), `GET /me` | Done |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
 | 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
-| 5 | IVR menus, ring groups, mailboxes, number routing | Done |
+| 5 | IVR menus, ring groups, mailboxes, number routing, business hours, caller blocklist | Done |
+| — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card at signup + first plan charge, extension limit | Done (2026-11-09) |
 | 6 | Greeting upload, media URLs | Next (needs Garage in dev) |
 | 7-8 | History/voicemail views, settings, number purchase | Planned |
 
@@ -30,10 +43,20 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
-| 409 | `email_taken`, `in_use` | Conflict with existing data (`in_use`: can't delete, still used by an IVR menu, ring group or phone number; `message` names them) |
+| 400 | `card_not_saved` | Card setup not confirmed with Stripe.js yet (`POST /billing/card`) |
+| 402 | `payment_required`, `payment_failed` | Plan not paid yet / a card charge was declined |
+| 409 | `email_taken`, `in_use`, `number_taken`, `extension_limit` | Conflict with existing data (`in_use`: can't delete, still used by call routing; `message` names what uses it) |
+| 502 | `payment_gateway_error` | The payment service failed. Safe to retry (billing calls are idempotent) |
 | 415 | | Body wasn't JSON (only `application/json` is accepted) |
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
 | 500 | `internal_error` | A bug; details are only in the server log |
+
+**API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
+every route with its body, parameters, responses and error codes, and a description for every
+field. Open it in any OpenAPI viewer (e.g. paste into editor.swagger.io) instead of relying on the
+tables below when in doubt. How routes document themselves: `services/api/src/openapi/document.ts`
+(each route passes `withDoc(opts, {...})`; `test/openapi.test.ts` fails if a route, parameter or
+field has no description).
 
 **Running the API locally:**
 
@@ -46,7 +69,26 @@ npm run dev -w @pbx/api       # http://127.0.0.1:3000
 ```
 
 `/ready` reports 503 locally until an object store is added to `dev/docker-compose.yml`. That's
-expected; everything else works.
+expected; everything else works. The API won't start without the Stripe keys in `.env`; the
+`.env.example` placeholders are enough for local work (the gateway is only called on signup and
+billing).
+
+**Tests without Docker** (in-process Postgres with every migration applied):
+
+```sh
+node dev/pglite-server.mjs &   # listens on 127.0.0.1:55432
+TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres npm test -w @pbx/api -- --no-file-parallelism
+```
+
+Run the API tests sequentially (`--no-file-parallelism`): PGlite serves one connection at a time.
+Without a database the DB tests are skipped, not failed.
+
+**API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
+every route with its body, parameters, responses and error codes, and a description for every
+field. Open it in any OpenAPI viewer (e.g. paste into editor.swagger.io) instead of relying on the
+tables below when in doubt. How routes document themselves: `services/api/src/openapi/document.ts`
+(each route passes `withDoc(opts, {...})`; `test/openapi.test.ts` fails if a route, parameter or
+field has no description).
 
 **Schema changes.** The API, the ARI app and Kamailio all read the same tables. Please send
 migrations (`db/migrations/`, dbmate) through one reviewed PR at a time and tell the other
@@ -68,18 +110,37 @@ stores is checked to belong to the same business. Rules and helpers: `docs/backe
 
 | Request | Success response |
 |---|---|
-| `POST /auth/signup` `{ "businessName", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner" }` + cookies |
+| `POST /auth/signup` `{ "businessName", "timezone", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner", "cardSetup" }` + cookies |
 | `POST /auth/login` `{ "email", "password" }` | `200 { "userId", "tenantId", "role" }` + cookies |
 | `POST /auth/refresh` (no body) | `200 { "userId", "tenantId", "role" }` + new cookies |
 | `POST /auth/logout` (no body) | `204` + cookies cleared |
+| `GET /me` | `200 { "user": { "id", "email", "role", "createdAt" }, "tenant": { "id", "name", "timezone", "status", "createdAt" } }` |
 
 Validation rules (show them in the forms):
 - `businessName`: 1-100 characters.
+- `timezone`: IANA name, e.g. `America/New_York` (offer a picker; the browser's own zone is
+  `Intl.DateTimeFormat().resolvedOptions().timeZone`). **Fixed after signup**: it sets billing
+  periods and business hours. Returned in its canonical spelling.
 - `email`: valid email, case-insensitive (stored lowercased).
 - `password`: 8-128 characters at signup.
 
 Error codes: wrong email and wrong password return the same `401 invalid_credentials` (on
 purpose). A taken email at signup returns `409 email_taken`.
+
+### Card at signup and billing (spec §1, §2)
+
+The signup form must also save a card. Card fields go to Stripe.js only, **never** to our API.
+1. `POST /auth/signup`. The response's `cardSetup` = `{ setupIntentId, clientSecret, publishableKey,
+   stripeJsUrl }` (`null` if the gateway failed: call `POST /billing/setup-intent`).
+2. Load Stripe.js from `stripeJsUrl`, `Stripe(publishableKey)`, card element,
+   `stripe.confirmCardSetup(clientSecret, { payment_method: { card } })` (handles 3-D Secure).
+3. `POST /billing/card { setupIntentId }` → `200` billing state; the plan is charged now,
+   prorated. `402 payment_failed` = card declined: restart from `POST /billing/setup-intent`.
+
+Other routes: `GET /billing/prices` (public; show the plan price on the signup page),
+`GET /billing` (card, `planPaidThrough`, extension usage). Until the plan is paid,
+`POST /extensions` answers `402 payment_required`; past the plan's limit it answers
+`409 extension_limit`. Details and the decisions taken: [backend-card-signup.md](backend-card-signup.md).
 
 ### How sessions work
 
@@ -153,6 +214,8 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 | Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }` |
 | IVR menus | `GET/POST /ivr-menus`, `GET/PUT/DELETE /ivr-menus/:id` | `{ id, name, greetingMediaId, timeoutSec, maxRetries, config }` |
 | Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination }` |
+| Business hours | `GET/POST /business-hours`, `GET/PUT/DELETE /business-hours/:id` | `{ id, name, schedule, openDestination, closedDestination, openNow }` |
+| Blocklist | `GET/POST /blocked-numbers`, `DELETE /blocked-numbers/:number` | `{ number, createdAt }` |
 
 - **`PUT` replaces the whole object**: omitted fields reset to defaults. Edit forms should send
   everything they got from `GET`.
@@ -167,25 +230,18 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 - `config` uses the ARI app's keys as-is:
   `{ options: { "1": Destination }, timeout, invalid, repeat_digit }` (snake_case `repeat_digit`).
   The phase-1 shape (`{ action, target }`, `on_timeout`) is still accepted on input.
-- `PUT /numbers/:id/route` still accepts the phase-1 body `{ ivrMenuId }`.
+- `PUT /numbers/:id/route` still accepts the phase-1 body `{ ivrMenuId }`. Phase-1
+  `{ action: "user" }` IVR targets are refused (400): pick an extension instead.
+- Business hours `schedule` = `{ intervals: [{ day: 0-6 (0 = Sunday), start: "09:00", end:
+  "17:00" }] }` in the account's time zone (`GET /me` → `tenant.timezone`). `openNow` is a
+  read-only preview to show next to the schedule.
+- Blocklist: send `number` in any format (`(201) 555-0100`, `+44...`); it comes back as E.164.
+  Blocking twice is fine (200). Encode `+` as `%2B` in the DELETE URL.
 - `409 in_use` on delete: show `message` (e.g. `Used by IVR menu "Main"; change that first`).
 - There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
 
 ### Not available yet
 
-- `GET /me` (current user + tenant name). Until then, keep `{ userId, tenantId, role }` from the
-  login/signup/refresh response. Tell me what fields you need in `/me`.
-  Proposed GET /me (not built yet; feedback welcome)
-  {
-    "user": {
-      "id": "uuid",
-      "email": "owner@tonys.test",
-      "role": "owner",
-      "sipUsername": null,
-      "extension": null
-    },
-    "tenant": 
-  {
 - All other dashboard endpoints (CLAUDE.md §11). I'll share request/response shapes before
   building each group; tell me early if a shape doesn't suit the UI.
 
@@ -227,9 +283,11 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
   up instead of reaching `on_timeout`. Only column names are converted now; no ARI app code
   changed. Rebuild shared (`npm run build -w @pbx/shared`) and please recheck the on_timeout path
   on the phase-1 VM. Details: `docs/backend-step5.md`.
-- **The API refuses to delete what calls still depend on** (409 `in_use`): a staff member, mailbox
-  or ring group an IVR menu targets, a mailbox used as a ring group fallback, an IVR menu a number
-  routes to. Seeds or scripts that delete these rows directly should keep the same rule.
+- **The API refuses to delete what call routing still depends on** (409 `in_use`): a mailbox, ring
+  group, IVR menu, business hours schedule or extension that a Destination points at (IVR digits,
+  number routing, ring group no-answer, forwarding, extension mailboxes). Seeds or scripts that
+  delete these rows directly should keep the same rule. Staff logins are not routing targets, so
+  deleting one no longer checks anything.
 
 ---
 
@@ -284,7 +342,9 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 ### Config and secrets (for Ansible / Vault)
 
 - Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
-  `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`. The
+  `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`,
+  `STRIPE_SECRET_KEY` (Vault), `STRIPE_PUBLISHABLE_KEY`. Optional: `STRIPE_API_URL`,
+  `STRIPE_JS_URL` (defaults: the course gateway). The
   process refuses to start, listing the missing ones, if any are absent.
 - **`JWT_SECRET` must be identical on every app node** (otherwise logins break when HAProxy
   switches replicas) and at least 16 characters; keep it in Vault.
@@ -300,10 +360,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Decisions needed from others
 
-- **Daniel:** extensions schema (column, format, who writes the migration, auto-assigned or
-  picked by owners). Step 4 shipped without it; needed before staff-to-staff calling.
-- **Justin:** fields in `GET /me`, and request/response shapes for each dashboard page. Needed
-  before `/me` and steps 6-7. (Staff and call configuration shapes are already built; say if they
+- **Justin:** whether `GET /me` has the fields the UI needs, and request/response shapes for each
+  dashboard page. Needed before steps 6-7. (Staff and call configuration shapes are already built; say if they
   don't suit the UI.)
 - **Daniel:** confirm on the phase-1 VM that an IVR `on_timeout` action now runs (fixed in
   `services/shared` in step 5; see the Daniel section above).
@@ -315,16 +373,22 @@ Everything backend-related that is still missing or undecided. Remove items as t
   outage then marks every app replica down). Needed before the edge HAProxy role.
 - **Muhammad:** Postgres `max_connections` sizing for API + ARI apps + Kamailio pools. Needed
   before the Patroni setup.
+- **Team:** the plan contents and prices chosen in `services/api/src/billing/catalog.ts`
+  ($19 / 7 days, 2 extensions, 100 US minutes; see [backend-card-signup.md](backend-card-signup.md)).
+  Number prices must be checked against DIDWW's fees.
+- **Course staff:** the payment gateway's API base URL (assumed
+  `https://stripe.cse356.compas.cs.stonybrook.edu`); and whether grader tools keep cookies (the API
+  authenticates with cookies only).
 - **Course staff:** DID endpoint API shape and how purchases work (CLAUDE.md §3 A6). Needed
   before step 8.
 
 ### Not built yet
 
-- `GET /me` (postponed on purpose).
-- Staff extensions (step 4 follow-up, waiting on the schema decision with Daniel).
 - Changing a staff member's dashboard password (no reset or change-password route yet).
 - Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
 - Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
+- Billing: buying extra extensions / numbers / add-ons, weekly invoices, past due and recovery
+  (billing-flows §3-§5).
 - Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
   is known).
 - `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include

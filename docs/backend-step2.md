@@ -4,8 +4,10 @@ Owner: Aaron (Track 3 backend). Status: done (2026-11-06), commit `2d7fd20`.
 
 Signup, login, token refresh and logout, plus the helpers every later route uses to require a
 logged-in user (`authenticate`) or a role (`requireRole`). Follows CLAUDE.md §11: signed JWT in an
-httpOnly cookie, stateless across replicas, short expiry + refresh. `GET /me` is deliberately
-postponed.
+httpOnly cookie, stateless across replicas, short expiry + refresh.
+
+**Updated 2026-11-09 for the course spec:** signup takes the business's `timezone`, and `GET /me`
+exists (see "Course-spec update" below).
 
 ## Files
 
@@ -24,12 +26,14 @@ All under `services/api/`.
 
 | Request | Success | Errors |
 |---|---|---|
-| `POST /auth/signup` `{ businessName, email, password }` | `201 { userId, tenantId, role: "owner" }` + cookies | 400 `invalid_request`, 409 `email_taken` |
+| `POST /auth/signup` `{ businessName, timezone, email, password }` | `201 { userId, tenantId, role: "owner" }` + cookies | 400 `invalid_request`, 409 `email_taken` |
 | `POST /auth/login` `{ email, password }` | `200 { userId, tenantId, role }` + cookies | 400, 401 `invalid_credentials` |
 | `POST /auth/refresh` | `200 { userId, tenantId, role }` + new cookies | 401 `unauthorized` (cookies cleared) |
 | `POST /auth/logout` | `204`, cookies cleared | |
+| `GET /me` | `200 { user: { id, email, role, createdAt }, tenant: { id, name, timezone, status, createdAt } }` | 401 (also once the user is deleted) |
 
-Validation: `businessName` 1-100 chars; `email` valid, stored lowercased; `password` 8-128 chars.
+Validation: `businessName` 1-100 chars; `timezone` an IANA name (`America/New_York`), stored in
+its canonical spelling; `email` valid, stored lowercased; `password` 8-128 chars.
 
 ## Using it in a route
 
@@ -66,8 +70,17 @@ app.get('/staff', { preHandler: [authenticate, requireRole('owner')] }, async (r
 - Not run: an end-to-end curl session (declined during the session). The same flows are covered
   by `app.inject()` tests, which go through Fastify's real request handling but not a socket.
 
+## Course-spec update (2026-11-09)
+
+- **Time zone at signup** (spec §1: "time zone (fixed after signup; governs billing periods and
+  business hours)"). Required. Stored in `tenants.timezone`, which the ARI app reads for business
+  hours and billing periods. Before this, every account got the column default
+  `America/New_York`. There is no route that changes it, on purpose.
+- **`GET /me`**: the user and their business. `tenant.status` is `active` or `past_due` (the API
+  has to report it; past due blocks outgoing calls). Billing fields are added with the card flow.
+- 2 more tests (`timezone` required and canonicalized, `/me` incl. 401 after the user is deleted).
+
 ## Open items
 
-- `GET /me` and its response shape (agree with Justin).
 - Login rate limiting (`@fastify/rate-limit` not installed; with several replicas it needs
   shared state). Hardening phase.

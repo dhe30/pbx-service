@@ -1,10 +1,15 @@
 import type { Sql } from '@pbx/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth.js';
+import type { StripeClient } from './billing/stripe.js';
 import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
+import { collectOpenApi, withDoc } from './openapi/document.js';
 import { authRoutes } from './routes/auth.js';
+import { billingRoutes } from './routes/billing.js';
+import { blockedNumberRoutes } from './routes/blocked-numbers.js';
+import { businessHoursRoutes } from './routes/business-hours.js';
 import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
 import { ivrMenuRoutes } from './routes/ivr-menus.js';
@@ -21,6 +26,8 @@ export interface AppDeps {
   /** Dependency checks for GET /ready (index.ts: db + objectStore). */
   readinessChecks: Record<string, ReadinessCheck>;
   isDraining: () => boolean;
+  /** Payment gateway (index.ts: HttpStripeClient; tests: a fake). */
+  stripe: StripeClient;
 }
 
 export type AppConfig = Pick<
@@ -32,7 +39,16 @@ export type AppConfig = Pick<
   | 'COOKIE_SECURE'
   | 'SIP_WS_URI'
   | 'SIP_DOMAIN'
+  | 'STRIPE_PUBLISHABLE_KEY'
+  | 'STRIPE_JS_URL'
 >;
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** Routes without OpenAPI docs (test/openapi.test.ts requires none). */
+    openapiUndocumented: () => string[];
+  }
+}
 
 export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
@@ -60,8 +76,38 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
     );
   });
 
+  // Must run before any route is registered: records each route's config.openapi.
+  const openapi = collectOpenApi(app, {
+    title: 'PBX API',
+    version: '1.0.0',
+    description:
+      'Hosted virtual PBX for small businesses: signup and billing, extensions, call routing (IVR menus, ring ' +
+      'groups, business hours, number routing), voicemail and call history. Everything the web dashboard does ' +
+      'goes through this API.\n\n' +
+      'Authentication: POST /auth/signup or /auth/login sets an httpOnly access cookie (pbx_access, 15 min) and a ' +
+      'refresh cookie (pbx_refresh, path /auth). Send cookies back on every request; on 401 call POST /auth/refresh ' +
+      'once and retry. Request bodies are JSON. Errors are `{ "error": "<code>", "message": "<text>" }`. Ids of ' +
+      'another account answer 404 like unknown ids.',
+  });
+  app.get(
+    '/openapi.json',
+    withDoc(
+      {},
+      {
+        tag: 'Health',
+        auth: 'public',
+        summary: 'This OpenAPI 3.1 document',
+        responses: { 200: { description: 'OpenAPI 3.1 document (JSON)' } },
+      },
+    ),
+    async () => openapi.document(),
+  );
+  app.decorate('openapiUndocumented', () => openapi.undocumented());
+
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
-  await app.register(authRoutes, { sql: deps.sql });
+  const cardSetup = { stripe: deps.stripe, publishableKey: cfg.STRIPE_PUBLISHABLE_KEY, stripeJsUrl: cfg.STRIPE_JS_URL };
+  await app.register(authRoutes, { sql: deps.sql, ...cardSetup });
+  await app.register(billingRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
   await app.register(extensionRoutes, { sql: deps.sql, sipDomain: cfg.SIP_DOMAIN });
 
@@ -69,6 +115,8 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(ringGroupRoutes, { sql: deps.sql });
   await app.register(ivrMenuRoutes, { sql: deps.sql });
   await app.register(numberRoutes, { sql: deps.sql });
+  await app.register(businessHoursRoutes, { sql: deps.sql });
+  await app.register(blockedNumberRoutes, { sql: deps.sql });
 
   // Steps 6+ register media, voicemails, calls, settings routes here. Every tenant-scoped route
   // follows the rules in src/tenancy.ts (docs/backend-step3.md) and src/references.ts.

@@ -3,7 +3,7 @@ import type { Sql } from '@pbx/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
-import { build, connectTestDb, testConfig } from './helpers.js';
+import { build, connectTestDb, testConfig, payPlan } from './helpers.js';
 
 // Course spec §3 "Extensions": number unique in the account, name, SIP username and password
 // (returned by the API), voicemail box, forwarding (always, busy, no answer) to an extension or
@@ -42,6 +42,7 @@ describe.skipIf(!db || !hasKamailio)('extensions + SIP credentials (Postgres)', 
       insert into users (tenant_id, email, password_hash, role)
       values (${t!.id}, ${`staff-${randomUUID()}@example.test`}, '!', 'staff') returning id`;
     tenants.push(t!.id);
+    await payPlan(sql, t!.id);
     const did = `+1201${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`;
     await sql`insert into phone_numbers (did, tenant_id, provider_ref) values (${did}, ${t!.id}, 'test')`;
     return {

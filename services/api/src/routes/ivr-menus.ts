@@ -6,6 +6,7 @@ import { HttpError } from '../errors.js';
 import { assertGreeting, destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, ivrConfigRefs, tenantOf } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
+import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 
 // IVR menus: what a caller hears and which digit goes where (backend step 5). Owner-only.
 //
@@ -25,13 +26,42 @@ import { name, nullableId, parse } from '../validation.js';
 // Semantics (timeout, invalid input, repeat): docs/telephony-contract.md §3. The phase-1 format
 // ({action, target}, on_timeout) is still accepted on input and stored in the new format.
 
+/**
+ * Phase-1 `{action: "user", target}` pointed at a user, and users no longer ring (extensions do).
+ * The shared parser maps it to `{type: "hangup"}` (right for old rows the ARI app reads), but
+ * storing that silently would change what the owner asked for, so new input gets a 400.
+ */
+function rejectLegacyUserTargets(config: unknown, ctx: z.RefinementCtx): void {
+  if (typeof config !== 'object' || config === null) return;
+  const c = config as Record<string, unknown>;
+  const check = (value: unknown, path: (string | number)[]) => {
+    if (typeof value === 'object' && value !== null && (value as { action?: unknown }).action === 'user') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path,
+        message: 'phase-1 {"action":"user"} is no longer supported; use {"type":"extension","id":"<extension id>"}',
+      });
+    }
+  };
+  if (typeof c.options === 'object' && c.options !== null) {
+    for (const [digit, v] of Object.entries(c.options)) check(v, ['options', digit]);
+  }
+  for (const key of ['timeout', 'invalid', 'on_timeout']) check(c[key], [key]);
+}
+
+const IvrConfigInput = z
+  .unknown()
+  .transform((v) => v ?? { options: {} })
+  .superRefine(rejectLegacyUserTargets)
+  .pipe(IvrConfigSchema);
+
 const IvrMenuBody = z.object({
   name,
-  greetingMediaId: nullableId,
+  greetingMediaId: nullableId.describe('Greeting played before waiting for a key (media of kind greeting). null = none.'),
   // Same bounds as the CHECK constraints on ivr_menus.
-  timeoutSec: z.number().int().min(1).max(30).default(5),
-  maxRetries: z.number().int().min(1).max(10).default(3),
-  config: IvrConfigSchema.default({ options: {} }),
+  timeoutSec: z.number().int().min(1).max(30).default(5).describe('Seconds to wait for a key after the greeting.'),
+  maxRetries: z.number().int().min(1).max(10).default(3).describe('Plays without a valid key before going to config.timeout.'),
+  config: IvrConfigInput.describe('What each key does. Omitted: no keys.'),
 });
 type IvrMenuBody = z.infer<typeof IvrMenuBody>;
 
@@ -53,18 +83,40 @@ async function checkRefs(tx: Db, tenantId: string, body: IvrMenuBody): Promise<v
   await assertGreeting(tx, tenantId, body.greetingMediaId, 'greetingMediaId');
 }
 
+const IvrMenuSchema = z
+  .object({
+    id: z.string().uuid().describe('IVR menu id.'),
+    name: z.string().describe('Display name.'),
+    greetingMediaId: z.string().uuid().nullable().describe('Greeting played before waiting for a key; null = none.'),
+    timeoutSec: z.number().int().describe('Seconds to wait for a key after the greeting.'),
+    maxRetries: z.number().int().describe('Plays without a valid key before the timeout destination.'),
+    config: IvrConfigInput.describe('What each key does.'),
+  })
+  .describe('An IVR (auto-attendant) menu.');
+
+const docs = crudDocs({
+  tag: 'IVR menus',
+  noun: 'IVR menu',
+  plural: 'IVR menus',
+  schema: IvrMenuSchema,
+  body: IvrMenuBody,
+  params: IdParams,
+  listOrder: 'sorted by name',
+  deleteErrors: { 409: `${IN_USE} (numbers, other menus, ring groups, business hours).` },
+});
+
 export const ivrMenuRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
   const cols = sql.unsafe(COLUMNS); // fixed string, no user input
 
-  app.get('/ivr-menus', ownerOnly, async (req) => {
+  app.get('/ivr-menus', withDoc(ownerOnly, docs.list), async (req) => {
     return withRetry(
       () => sql<IvrMenu[]>`
         select ${cols} from ivr_menus where tenant_id = ${tenantOf(req)} order by name, id`,
     );
   });
 
-  app.get('/ivr-menus/:id', ownerOnly, async (req) => {
+  app.get('/ivr-menus/:id', withDoc(ownerOnly, docs.get), async (req) => {
     const { id } = parse(IdParams, req.params);
     const [row] = await withRetry(
       () => sql<IvrMenu[]>`select ${cols} from ivr_menus where id = ${id} and tenant_id = ${tenantOf(req)}`,
@@ -73,7 +125,7 @@ export const ivrMenuRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     return row;
   });
 
-  app.post('/ivr-menus', ownerOnly, async (req, reply) => {
+  app.post('/ivr-menus', withDoc(ownerOnly, docs.create), async (req, reply) => {
     const tenantId = tenantOf(req);
     const body = parse(IvrMenuBody, req.body);
     const row = await withRetry(() =>
@@ -90,7 +142,7 @@ export const ivrMenuRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     return reply.status(201).send(row);
   });
 
-  app.put('/ivr-menus/:id', ownerOnly, async (req) => {
+  app.put('/ivr-menus/:id', withDoc(ownerOnly, docs.replace), async (req) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     const body = parse(IvrMenuBody, req.body);
@@ -110,7 +162,7 @@ export const ivrMenuRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
     );
   });
 
-  app.delete('/ivr-menus/:id', ownerOnly, async (req, reply) => {
+  app.delete('/ivr-menus/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
     await withRetry(() =>

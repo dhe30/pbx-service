@@ -33,7 +33,9 @@ All under `services/api/`.
 ## Configuration
 
 Required (see `.env.example`): `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
-`S3_SECRET_ACCESS_KEY`, `JWT_SECRET` (min 16 chars), `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`.
+`S3_SECRET_ACCESS_KEY`, `JWT_SECRET` (min 16 chars), `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`,
+`STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` (added 2026-11-09 with billing; see
+`docs/backend-card-signup.md`). Optional: `STRIPE_API_URL`, `STRIPE_JS_URL`.
 
 Optional, with defaults:
 
@@ -109,3 +111,26 @@ npm run dev:up                # Postgres (needs Docker Desktop WSL integration)
 npm run db:migrate
 npm run dev -w @pbx/api       # http://127.0.0.1:3000/health
 ```
+
+## Course-spec update (2026-11-09): `GET /openapi.json`
+
+The course spec requires an OpenAPI 3.1 document at `/openapi.json` with a description for every
+operation, parameter and field, and that everything the web does is possible through the API.
+
+- `src/openapi/document.ts`: an `onRoute` hook (registered in `buildApp` before any route)
+  collects each route's `config.openapi` (`withDoc(opts, doc)`; `crudDocs()` for the usual five
+  CRUD routes). Standard errors (400 / 401 / 403 / 503) are added from the doc's `auth` and
+  inputs; route-specific ones (404, 409) are listed per route.
+- `src/openapi/json-schema.ts`: converts the **same zod schemas the routes validate with** to
+  JSON Schema 2020-12 (`.describe()` -> `description`), so the document can't drift from
+  validation. Written in-house (about 150 lines): zod's built-in `toJSONSchema` only supports zod
+  v4 schemas, and this avoids adding `zod-to-json-schema`. Unsupported zod types throw.
+- `src/openapi/components.ts`: hand-written schemas for the shared call-routing types
+  (`Destination`, `ForwardDestination`, `IvrConfig`, `WeeklySchedule`) and `Error`. Keep them in
+  sync with `services/shared/src/ivr-config.ts`.
+- Response schemas are zod objects next to each route, used only for the document. They can
+  drift from what the handler returns; keep them updated with the route.
+- Auth is documented as the `cookieAuth` security scheme (cookie `pbx_access`).
+- `test/openapi.test.ts`: every route documented, unique operation ids, and no operation,
+  parameter, field or component without a description.
+- Not done: validating the document with an external OpenAPI linter.

@@ -26,6 +26,13 @@ describe('call configuration routes without a DB', () => {
       ['PUT', `/ivr-menus/${randomUUID()}`],
       ['DELETE', `/ivr-menus/${randomUUID()}`],
       ['PUT', `/numbers/${randomUUID()}/route`],
+      ['GET', '/business-hours'],
+      ['POST', '/business-hours'],
+      ['PUT', `/business-hours/${randomUUID()}`],
+      ['DELETE', `/business-hours/${randomUUID()}`],
+      ['GET', '/blocked-numbers'],
+      ['POST', '/blocked-numbers'],
+      ['DELETE', '/blocked-numbers/%2B12015550123'],
     ] as const;
     for (const [method, url] of routes) {
       const anon = await app.inject({ method, url, payload: {} });
@@ -304,6 +311,15 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
       });
     });
 
+    it('rejects phase-1 {action:"user"} targets instead of silently storing "hang up"', async () => {
+      const res = await call(a, 'POST', '/ivr-menus', {
+        name: 'Legacy user',
+        config: { options: { '4': { action: 'user', target: a.staffId } } },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().message).toMatch(/^config\.options\.4: phase-1 \{"action":"user"\} is no longer supported/);
+    });
+
     it('rejects bad configs and references, naming the field', async () => {
       const bGroup = (await call(b, 'POST', '/ring-groups', { name: 'B' })).json().id;
       const cases: [object, number, string][] = [
@@ -374,6 +390,111 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
       const released = await makeTenant();
       await sql`update phone_numbers set status = 'released' where id = ${released.numberId}`;
       expect((await call(released, 'PUT', `/numbers/${released.numberId}/route`, {})).statusCode).toBe(404);
+    });
+  });
+
+  describe('business hours', () => {
+    const weekdays = { intervals: [1, 2, 3, 4, 5].map((day) => ({ day, start: '09:00', end: '17:00' })) };
+
+    it('create, read, replace; openNow follows the account time zone', async () => {
+      const mb = await mailbox(a);
+      const body = {
+        name: 'Office',
+        schedule: weekdays,
+        openDestination: { type: 'extension', id: a.ext1Id },
+        closedDestination: { type: 'voicemail', id: mb },
+      };
+      const res = await call(a, 'POST', '/business-hours', body);
+      expect(res.statusCode).toBe(201);
+      const hours = res.json();
+      expect(hours).toEqual({ id: expect.any(String), ...body, openNow: expect.any(Boolean) });
+      expect((await call(a, 'GET', `/business-hours/${hours.id}`)).json()).toEqual(hours);
+      expect((await call(a, 'GET', '/business-hours')).json().map((h: { id: string }) => h.id)).toContain(hours.id);
+
+      // Always open / never open, independent of the test's clock.
+      const always = { intervals: [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, start: '00:00', end: '24:00' })) };
+      const put = await call(a, 'PUT', `/business-hours/${hours.id}`, { ...hours, schedule: always });
+      expect(put.statusCode).toBe(200);
+      expect(put.json()).toMatchObject({ schedule: always, openNow: true });
+      const never = await call(a, 'PUT', `/business-hours/${hours.id}`, { ...hours, schedule: { intervals: [] } });
+      expect(never.json().openNow).toBe(false);
+
+      // Stored the way the ARI app reads it (snake_case columns, JSON as given).
+      const [row] = await sql`select schedule, open_destination from business_hours where id = ${hours.id}`;
+      expect(row).toEqual({ schedule: { intervals: [] }, openDestination: { type: 'extension', id: a.ext1Id } });
+    });
+
+    it('validates schedule and destinations; other tenants get 404', async () => {
+      const ok = { name: 'X', schedule: weekdays, openDestination: { type: 'hangup' }, closedDestination: { type: 'hangup' } };
+      const bad = await call(a, 'POST', '/business-hours', { ...ok, schedule: { intervals: [{ day: 7, start: '9:00', end: '17:00' }] } });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json().message).toMatch(/schedule\.intervals\.0\.day/);
+      expect(bad.json().message).toMatch(/schedule\.intervals\.0\.start: HH:MM/);
+      const missing = await call(a, 'POST', '/business-hours', { name: 'X', schedule: weekdays });
+      expect(missing.json().message).toMatch(/openDestination: Required/);
+      const foreign = await call(a, 'POST', '/business-hours', { ...ok, closedDestination: { type: 'extension', id: b.ext1Id } });
+      expect(foreign.json()).toEqual({ error: 'invalid_reference', message: 'closedDestination.id: no such extension' });
+
+      const id = (await call(a, 'POST', '/business-hours', ok)).json().id;
+      expect((await call(b, 'GET', `/business-hours/${id}`)).statusCode).toBe(404);
+      expect((await call(b, 'PUT', `/business-hours/${id}`, ok)).statusCode).toBe(404);
+      expect((await call(b, 'DELETE', `/business-hours/${id}`)).statusCode).toBe(404);
+      expect((await call(b, 'GET', '/business-hours')).json()).toEqual([]);
+    });
+
+    it('a number can route to it; deleting it is refused while used, deleting its targets too', async () => {
+      const mb = await mailbox(a, { name: 'After hours' });
+      const hours = (
+        await call(a, 'POST', '/business-hours', {
+          name: 'Routed hours',
+          schedule: weekdays,
+          openDestination: { type: 'hangup' },
+          closedDestination: { type: 'voicemail', id: mb },
+        })
+      ).json();
+      const route = await call(a, 'PUT', `/numbers/${a.numberId}/route`, { destination: { type: 'business_hours', id: hours.id } });
+      expect(route.statusCode).toBe(200);
+
+      const del = await call(a, 'DELETE', `/business-hours/${hours.id}`);
+      expect(del.statusCode).toBe(409);
+      expect(del.json().message).toMatch(/^Used by phone number "\+1555/);
+      const delMailbox = await call(a, 'DELETE', `/mailboxes/${mb}`);
+      expect(delMailbox.json()).toEqual({ error: 'in_use', message: 'Used by business hours "Routed hours"; change that first' });
+
+      await call(a, 'PUT', `/numbers/${a.numberId}/route`, { destination: null });
+      expect((await call(a, 'DELETE', `/business-hours/${hours.id}`)).statusCode).toBe(204);
+      expect((await call(a, 'GET', `/business-hours/${hours.id}`)).statusCode).toBe(404);
+    });
+  });
+
+  describe('blocked numbers', () => {
+    it('normalizes, is idempotent, lists newest first, unblocks; tenants are separate', async () => {
+      const first = await call(a, 'POST', '/blocked-numbers', { number: '(201) 555-0100' });
+      expect(first.statusCode).toBe(201);
+      expect(first.json()).toEqual({ number: '+12015550100', createdAt: expect.any(String) });
+      const again = await call(a, 'POST', '/blocked-numbers', { number: '+12015550100' });
+      expect(again.statusCode).toBe(200);
+      expect(again.json()).toEqual(first.json());
+      expect((await call(a, 'POST', '/blocked-numbers', { number: '011 44 20 7946 0000' })).json().number).toBe('+442079460000');
+
+      const list = (await call(a, 'GET', '/blocked-numbers')).json();
+      expect(list.map((r: { number: string }) => r.number)).toEqual(['+442079460000', '+12015550100']);
+      expect((await call(b, 'GET', '/blocked-numbers')).json()).toEqual([]);
+      expect((await call(b, 'DELETE', '/blocked-numbers/%2B12015550100')).statusCode).toBe(404);
+
+      expect((await call(a, 'DELETE', '/blocked-numbers/%2B12015550100')).statusCode).toBe(204);
+      expect((await call(a, 'DELETE', '/blocked-numbers/2015550100')).statusCode).toBe(404);
+      expect((await call(a, 'DELETE', '/blocked-numbers/12015550100')).statusCode).toBe(404);
+      expect((await call(a, 'DELETE', '/blocked-numbers/442079460000')).statusCode).toBe(400); // not a dialable format
+      expect((await call(a, 'DELETE', '/blocked-numbers/%2B442079460000')).statusCode).toBe(204);
+    });
+
+    it('rejects things that are not phone numbers', async () => {
+      for (const number of ['101', 'abc', '+0123', '']) {
+        const res = await call(a, 'POST', '/blocked-numbers', { number });
+        expect(res.statusCode, number).toBe(400);
+        expect(res.json().message).toMatch(/^number: must be a phone number/);
+      }
     });
   });
 

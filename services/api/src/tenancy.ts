@@ -47,7 +47,7 @@ export function tenantOf(req: FastifyRequest): string {
 }
 
 /** `:id` route params: `const { id } = parse(IdParams, req.params)`. Not a uuid -> 400. */
-export const IdParams = z.object({ id: z.string().uuid() });
+export const IdParams = z.object({ id: z.string().uuid().describe('Id of the resource (uuid).') });
 
 const isUuid = (s: string) => z.string().uuid().safeParse(s).success;
 
