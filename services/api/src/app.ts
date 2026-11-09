@@ -1,11 +1,13 @@
 import type { Sql } from '@pbx/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth.js';
+import type { StripeClient } from './billing/stripe.js';
 import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
 import { collectOpenApi, withDoc } from './openapi/document.js';
 import { authRoutes } from './routes/auth.js';
+import { billingRoutes } from './routes/billing.js';
 import { blockedNumberRoutes } from './routes/blocked-numbers.js';
 import { businessHoursRoutes } from './routes/business-hours.js';
 import { extensionRoutes } from './routes/extensions.js';
@@ -24,6 +26,8 @@ export interface AppDeps {
   /** Dependency checks for GET /ready (index.ts: db + objectStore). */
   readinessChecks: Record<string, ReadinessCheck>;
   isDraining: () => boolean;
+  /** Payment gateway (index.ts: HttpStripeClient; tests: a fake). */
+  stripe: StripeClient;
 }
 
 export type AppConfig = Pick<
@@ -35,6 +39,8 @@ export type AppConfig = Pick<
   | 'COOKIE_SECURE'
   | 'SIP_WS_URI'
   | 'SIP_DOMAIN'
+  | 'STRIPE_PUBLISHABLE_KEY'
+  | 'STRIPE_JS_URL'
 >;
 
 declare module 'fastify' {
@@ -99,7 +105,9 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   app.decorate('openapiUndocumented', () => openapi.undocumented());
 
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
-  await app.register(authRoutes, { sql: deps.sql });
+  const cardSetup = { stripe: deps.stripe, publishableKey: cfg.STRIPE_PUBLISHABLE_KEY, stripeJsUrl: cfg.STRIPE_JS_URL };
+  await app.register(authRoutes, { sql: deps.sql, ...cardSetup });
+  await app.register(billingRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
   await app.register(extensionRoutes, { sql: deps.sql, sipDomain: cfg.SIP_DOMAIN });
 

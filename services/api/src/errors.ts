@@ -1,5 +1,6 @@
 import { isTransientDbError } from '@pbx/shared';
 import type { FastifyError, FastifyInstance } from 'fastify';
+import { StripeError } from './billing/stripe.js';
 
 // One error shape for every route: { error: <machine-readable code>, message: <human text> }.
 // Routes signal expected failures with `throw new HttpError(404, 'not_found', 'No such number')`.
@@ -17,6 +18,13 @@ export function registerErrorHandling(app: FastifyInstance): void {
   app.setErrorHandler((err: FastifyError | HttpError, req, reply) => {
     if (err instanceof HttpError) {
       return reply.status(err.statusCode).send({ error: err.code, message: err.message });
+    }
+
+    // The payment gateway failed (unreachable, 5xx, rejected request). Not the client's fault; the
+    // billing routes are idempotent, so retrying is safe.
+    if (err instanceof StripeError) {
+      req.log.error({ err: err.message, status: err.status }, 'payment gateway error');
+      return reply.status(502).send({ error: 'payment_gateway_error', message: 'The payment service failed; please retry' });
     }
 
     // DB failover in progress (10-30 s): tell the client to retry instead of reporting a bug.

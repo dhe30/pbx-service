@@ -428,7 +428,9 @@ node_exporter 9100 and other exporters.
       and the items still to verify on a real VM: docs/phase1.md.
 2. (Parallel) API + web locally via dev/docker-compose; staff creation writes subscriber rows.
    -> API IN PROGRESS (Aaron): steps 1-5 done (skeleton, auth, tenant isolation, staff + SIP
-      credentials, mailboxes / ring groups / IVR menus / number routing). Contracts for other
+      credentials, mailboxes / ring groups / IVR menus / number routing), plus the course-spec
+      updates (time zone + GET /me, business hours, blocklist, /openapi.json, signup card + first
+      plan charge, extension limit: docs/backend-card-signup.md). Contracts for other
       tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5}.md.
       Local dev also needs `npm run db:kamailio`.
       Every tenant-scoped API route must follow the rules in docs/backend-step3.md.

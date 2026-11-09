@@ -141,7 +141,17 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     const res = await signup(email.toUpperCase());
     expect(res.statusCode).toBe(201);
     const body = res.json();
-    expect(body).toEqual({ userId: expect.any(String), tenantId: expect.any(String), role: 'owner' });
+    expect(body).toEqual({
+      userId: expect.any(String),
+      tenantId: expect.any(String),
+      role: 'owner',
+      cardSetup: {
+        setupIntentId: expect.any(String),
+        clientSecret: expect.any(String),
+        publishableKey: 'pk_test_fake',
+        stripeJsUrl: 'https://stripe.test/v3/',
+      },
+    });
 
     const access = cookie(res, ACCESS_COOKIE);
     const refresh = cookie(res, REFRESH_COOKIE);
@@ -151,8 +161,9 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     const [user] = await sql`select email, role, password_hash from users where id = ${body.userId}`;
     expect(user).toMatchObject({ email, role: 'owner' }); // stored lowercased
     expect(user!.passwordHash).toMatch(/^\$argon2id\$/);
-    const [settings] = await sql`select record_calls from tenant_settings where tenant_id = ${body.tenantId}`;
-    expect(settings).toEqual({ recordCalls: false });
+    const [settings] = await sql`
+      select record_calls, included_extensions, included_us_minutes from tenant_settings where tenant_id = ${body.tenantId}`;
+    expect(settings).toEqual({ recordCalls: false, includedExtensions: 2, includedUsMinutes: 100 }); // the plan
     const [tenant] = await sql`select timezone, status from tenants where id = ${body.tenantId}`;
     expect(tenant).toEqual({ timezone: 'America/Chicago', status: 'active' }); // canonical spelling
   });

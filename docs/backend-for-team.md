@@ -12,6 +12,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
 | 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
 | 5 | IVR menus, ring groups, mailboxes, number routing, business hours, caller blocklist | Done |
+| — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card at signup + first plan charge, extension limit | Done (2026-11-09) |
 | 6 | Greeting upload, media URLs | Next (needs Garage in dev) |
 | 7-8 | History/voicemail views, settings, number purchase | Planned |
 
@@ -30,7 +31,8 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
-| 409 | `email_taken`, `in_use` | Conflict with existing data (`in_use`: can't delete, still used by an IVR menu, ring group or phone number; `message` names them) |
+| 402 | `payment_required`, `payment_failed` | Plan not paid yet / a card charge was declined |
+| 409 | `email_taken`, `in_use`, `number_taken`, `extension_limit` | Conflict with existing data (`in_use`: can't delete, still used by an IVR menu, ring group or phone number; `message` names them) |
 | 415 | | Body wasn't JSON (only `application/json` is accepted) |
 | 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
 | 500 | `internal_error` | A bug; details are only in the server log |
@@ -75,7 +77,7 @@ stores is checked to belong to the same business. Rules and helpers: `docs/backe
 
 | Request | Success response |
 |---|---|
-| `POST /auth/signup` `{ "businessName", "timezone", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner" }` + cookies |
+| `POST /auth/signup` `{ "businessName", "timezone", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner", "cardSetup" }` + cookies |
 | `POST /auth/login` `{ "email", "password" }` | `200 { "userId", "tenantId", "role" }` + cookies |
 | `POST /auth/refresh` (no body) | `200 { "userId", "tenantId", "role" }` + new cookies |
 | `POST /auth/logout` (no body) | `204` + cookies cleared |
@@ -91,6 +93,21 @@ Validation rules (show them in the forms):
 
 Error codes: wrong email and wrong password return the same `401 invalid_credentials` (on
 purpose). A taken email at signup returns `409 email_taken`.
+
+### Card at signup and billing (spec §1, §2)
+
+The signup form must also save a card. Card fields go to Stripe.js only, **never** to our API.
+1. `POST /auth/signup`. The response's `cardSetup` = `{ setupIntentId, clientSecret, publishableKey,
+   stripeJsUrl }` (`null` if the gateway failed: call `POST /billing/setup-intent`).
+2. Load Stripe.js from `stripeJsUrl`, `Stripe(publishableKey)`, card element,
+   `stripe.confirmCardSetup(clientSecret, { payment_method: { card } })` (handles 3-D Secure).
+3. `POST /billing/card { setupIntentId }` → `200` billing state; the plan is charged now,
+   prorated. `402 payment_failed` = card declined: restart from `POST /billing/setup-intent`.
+
+Other routes: `GET /billing/prices` (public; show the plan price on the signup page),
+`GET /billing` (card, `planPaidThrough`, extension usage). Until the plan is paid,
+`POST /extensions` answers `402 payment_required`; past the plan's limit it answers
+`409 extension_limit`. Details and the decisions taken: [backend-card-signup.md](backend-card-signup.md).
 
 ### How sessions work
 
@@ -290,7 +307,9 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 ### Config and secrets (for Ansible / Vault)
 
 - Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
-  `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`. The
+  `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`,
+  `STRIPE_SECRET_KEY` (Vault), `STRIPE_PUBLISHABLE_KEY`. Optional: `STRIPE_API_URL`,
+  `STRIPE_JS_URL` (defaults: the course gateway). The
   process refuses to start, listing the missing ones, if any are absent.
 - **`JWT_SECRET` must be identical on every app node** (otherwise logins break when HAProxy
   switches replicas) and at least 16 characters; keep it in Vault.
@@ -319,6 +338,12 @@ Everything backend-related that is still missing or undecided. Remove items as t
   outage then marks every app replica down). Needed before the edge HAProxy role.
 - **Muhammad:** Postgres `max_connections` sizing for API + ARI apps + Kamailio pools. Needed
   before the Patroni setup.
+- **Team:** the plan contents and prices chosen in `services/api/src/billing/catalog.ts`
+  ($19 / 7 days, 2 extensions, 100 US minutes; see [backend-card-signup.md](backend-card-signup.md)).
+  Number prices must be checked against DIDWW's fees.
+- **Course staff:** the payment gateway's API base URL (assumed
+  `https://stripe.cse356.compas.cs.stonybrook.edu`); and whether grader tools keep cookies (the API
+  authenticates with cookies only).
 - **Course staff:** DID endpoint API shape and how purchases work (CLAUDE.md §3 A6). Needed
   before step 8.
 
@@ -327,6 +352,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - Changing a staff member's dashboard password (no reset or change-password route yet).
 - Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
 - Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
+- Billing: buying extra extensions / numbers / add-ons, weekly invoices, past due and recovery
+  (billing-flows §3-§5).
 - Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
   is known).
 - `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include

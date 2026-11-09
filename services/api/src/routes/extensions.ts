@@ -16,7 +16,7 @@ import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 //
 // GET    /extensions          any user   200 [extension]   sorted by number (sipPassword: owner only)
 // GET    /extensions/:id      any user   200 extension     404
-// POST   /extensions          owner      201 extension     400, 409 number_taken
+// POST   /extensions          owner      201 extension     400, 402 payment_required, 409 number_taken | extension_limit
 // PUT    /extensions/:id      owner      200 extension     400, 404, 409 number_taken
 // DELETE /extensions/:id      owner      204               404, 409 in_use (something routes to it)
 //
@@ -132,6 +132,33 @@ async function checkRefs(tx: Db, tenantId: string, body: ExtensionBody): Promise
   }
 }
 
+/**
+ * Course spec §2 / billing-flows §3: "The API must refuse to create more than the plan includes
+ * plus the extensions bought", and the plan must be paid (signup card) before extensions are
+ * added. Locks the account's settings row so concurrent creates can't both take the last slot.
+ */
+async function assertCanAddExtension(tx: Db, tenantId: string): Promise<void> {
+  const [limits] = await tx<{ allowed: number; planPaidThrough: Date | null }[]>`
+    select ts.included_extensions + ts.extra_extensions as allowed, ba.plan_paid_through
+      from tenant_settings ts
+      left join billing_accounts ba on ba.tenant_id = ts.tenant_id
+     where ts.tenant_id = ${tenantId}
+       for update of ts`;
+  if (!limits?.planPaidThrough) {
+    throw new HttpError(402, 'payment_required', 'Save a card and pay the plan first (POST /billing/card)');
+  }
+  const [{ used }] = (await tx`select count(*)::int as used from extensions where tenant_id = ${tenantId}`) as unknown as [
+    { used: number },
+  ];
+  if (used >= limits.allowed) {
+    throw new HttpError(
+      409,
+      'extension_limit',
+      `Your plan allows ${limits.allowed} extensions and all are in use; buy an additional extension or delete one`,
+    );
+  }
+}
+
 const json = (tx: Db, v: ForwardDestination | null) => (v ? tx.json(v) : null);
 
 function numberTaken(err: unknown): never | void {
@@ -167,7 +194,10 @@ const docs = crudDocs({
   params: IdParams,
   listOrder: 'sorted by number',
   auth: { read: 'user', write: 'owner' },
-  createErrors: { 409: 'Another extension already has this number (`number_taken`).' },
+  createErrors: {
+    402: 'The plan is not paid yet (`payment_required`): save a card first (POST /billing/card).',
+    409: 'Another extension already has this number (`number_taken`), or the plan limit is reached (`extension_limit`; see GET /billing).',
+  },
   replaceErrors: { 409: 'Another extension already has this number (`number_taken`).' },
   deleteDescription: 'Deletes its SIP account (its phones stop working). Its mailbox and voicemails stay.',
   deleteErrors: { 409: `${IN_USE} (numbers, IVR digits, ring groups, business hours, other extensions' forwarding).` },
@@ -199,6 +229,7 @@ export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app,
       try {
         const ext = await withRetry(() =>
           sql.begin(async (tx) => {
+            await assertCanAddExtension(tx, tenantId);
             await checkRefs(tx, tenantId, body);
             let mailboxId = body.mailboxId ?? null;
             if (body.mailboxId === undefined) {

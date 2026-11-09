@@ -3,7 +3,7 @@ import type { Sql } from '@pbx/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
-import { build, connectTestDb } from './helpers.js';
+import { build, connectTestDb, payPlan } from './helpers.js';
 
 // Staff = dashboard logins. SIP accounts belong to extensions (extensions.test.ts).
 
@@ -41,6 +41,7 @@ describe.skipIf(!db)('staff (Postgres)', () => {
       insert into users (tenant_id, email, password_hash, role)
       values (${t!.id}, ${`owner-${randomUUID()}@example.test`}, '!', 'owner') returning id`;
     tenants.push(t!.id);
+    await payPlan(sql, t!.id);
     const cookie = app.jwt.sign({ sub: u!.id, tid: t!.id, role: 'owner', typ: 'access' });
     return { tenantId: t!.id, ownerId: u!.id, cookies: { [ACCESS_COOKIE]: cookie } };
   }

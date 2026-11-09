@@ -118,12 +118,15 @@ describe('loadConfig', () => {
     DID_PROVIDER_URL: 'http://127.0.0.1:4000',
     SIP_WS_URI: 'wss://localhost/ws',
     SIP_DOMAIN: 'pbx.local',
+    STRIPE_SECRET_KEY: 'sk_test_x',
+    STRIPE_PUBLISHABLE_KEY: 'pk_test_x',
   };
 
   it('applies defaults', () => {
     const cfg = loadConfig(valid);
     expect(cfg.PORT).toBe(3000);
     expect(cfg.HOST).toBe('127.0.0.1');
+    expect(cfg.STRIPE_JS_URL).toBe('https://stripe.cse356.compas.cs.stonybrook.edu/v3/');
   });
 
   it('lists every bad variable without echoing secret values', () => {

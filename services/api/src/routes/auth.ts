@@ -2,6 +2,9 @@ import { withRetry, type Sql, type UserRole } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, clearAuthCookies, readRefreshToken, setAuthCookies, type AuthUser } from '../auth.js';
+import { startCardSetup, type CardSetup } from '../billing/account.js';
+import { PLAN } from '../billing/catalog.js';
+import type { StripeClient } from '../billing/stripe.js';
 import { HttpError, isUniqueViolation } from '../errors.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
 import { hashPassword, verifyPassword } from '../passwords.js';
@@ -36,6 +39,20 @@ const AuthUserSchema = z.object({
   tenantId: z.string().uuid().describe('The business (account) the user belongs to.'),
   role,
 });
+const SignupSchema = AuthUserSchema.extend({
+  cardSetup: z
+    .object({
+      setupIntentId: z.string().describe('Stripe SetupIntent id; send it to POST /billing/card after confirming.'),
+      clientSecret: z
+        .string()
+        .describe('The SetupIntent client_secret: pass it to Stripe.js stripe.confirmCardSetup() to save the card.'),
+      publishableKey: z.string().describe('Stripe publishable key for Stripe(publishableKey).'),
+      stripeJsUrl: z.string().describe('Load Stripe.js from this URL (the course payment gateway).'),
+    })
+    .nullable()
+    .describe('Card setup for the new account. null if the payment gateway failed: call POST /billing/setup-intent.'),
+});
+
 const MeSchema = z.object({
   user: z
     .object({
@@ -64,9 +81,13 @@ const docs = {
     tag: 'Auth',
     auth: 'public',
     summary: 'Sign up a business',
-    description: 'Creates the business and its owner, and logs the owner in.',
+    description:
+      'Creates the business and its owner, and logs the owner in. Then save the card: in the browser, load Stripe.js ' +
+      'from cardSetup.stripeJsUrl, call stripe.confirmCardSetup(cardSetup.clientSecret, { payment_method: { card } }) ' +
+      'and send the SetupIntent id to POST /billing/card, which charges the plan prorated to the end of the first ' +
+      'period. Card numbers never go to this API. See GET /billing/prices for the plan price.',
     body: SignupBody,
-    responses: { 201: { description: 'Created and logged in', schema: AuthUserSchema, headers: cookiesSet } },
+    responses: { 201: { description: 'Created and logged in', schema: SignupSchema, headers: cookiesSet } },
     errors: { 409: 'An account with this email already exists (`email_taken`).' },
   },
   login: {
@@ -112,7 +133,14 @@ interface MeRow {
   tenantCreatedAt: Date;
 }
 
-export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
+export interface AuthRouteOptions {
+  sql: Sql;
+  stripe: StripeClient;
+  publishableKey: string;
+  stripeJsUrl: string;
+}
+
+export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sql, stripe, publishableKey, stripeJsUrl }) => {
   app.post('/auth/signup', withDoc({}, docs.signup), async (req, reply) => {
     const body = parse(SignupBody, req.body);
     const passwordHash = await hashPassword(body.password);
@@ -125,7 +153,9 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
         sql.begin(async (tx) => {
           const [tenant] = await tx<{ id: string }[]>`
             insert into tenants (name, timezone) values (${body.businessName}, ${body.timezone}) returning id`;
-          await tx`insert into tenant_settings (tenant_id) values (${tenant!.id})`;
+          await tx`
+            insert into tenant_settings (tenant_id, included_extensions, included_us_minutes)
+            values (${tenant!.id}, ${PLAN.includedExtensions}, ${PLAN.includedUsMinutes})`;
           const [owner] = await tx<{ id: string }[]>`
             insert into users (tenant_id, email, password_hash, role)
             values (${tenant!.id}, ${body.email}, ${passwordHash}, 'owner')
@@ -141,8 +171,17 @@ export const authRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql })
     }
 
     req.log.info({ userId: user.userId, tenantId: user.tenantId }, 'tenant signed up');
+    // Card setup happens after the account exists (the Stripe customer carries its id). If the
+    // gateway fails, signup still succeeds; the client then calls POST /billing/setup-intent.
+    let cardSetup: (CardSetup & { publishableKey: string; stripeJsUrl: string }) | null = null;
+    try {
+      cardSetup = { ...(await startCardSetup(sql, stripe, user.tenantId)), publishableKey, stripeJsUrl };
+    } catch (err) {
+      req.log.warn({ err, tenantId: user.tenantId }, 'card setup failed at signup');
+    }
+
     setAuthCookies(reply, user);
-    return reply.status(201).send(user);
+    return reply.status(201).send({ ...user, cardSetup });
   });
 
   app.post('/auth/login', withDoc({}, docs.login), async (req, reply) => {
