@@ -1,0 +1,10 @@
+# Dummy secrets for offline rendering (render-telephony.yml). NOT real credentials.
+vault_db_app_password: test-app-pw
+vault_db_kamailio_password: test-kam-pw
+vault_ari_password: test-ari-pw
+vault_s3_access_key: GK000000000000000000000000
+vault_s3_secret_key: "0000000000000000000000000000000000000000000000000000000000000000"
+vault_vendor_us_user: test-us-user
+vault_vendor_us_password: test-us-pw
+vault_vendor_intl_user: test-intl-user
+vault_vendor_intl_password: test-intl-pw

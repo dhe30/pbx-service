@@ -20,6 +20,8 @@
       - kamailio-postgres-modules
       - kamailio-websocket-modules
       - kamailio-extra-modules
+      - kamailio-tls-modules
+      - kamailio-utils-modules
     update_cache: true
 
 - name: Dispatcher list (pbx nodes)
@@ -30,6 +32,40 @@
     group: kamailio
     mode: "0640"
   notify: Reload dispatcher
+
+# TLS for phones using the _sips._tcp SRV record. PHASE 1: self-signed; production: a real
+# certificate for sip_domain (same issuance as HAProxy's), dropped at the same paths.
+- name: TLS directory
+  ansible.builtin.file:
+    path: /etc/kamailio/tls
+    state: directory
+    owner: root
+    group: kamailio
+    mode: "0750"
+
+- name: Self-signed TLS certificate for {{ sip_domain }} (if none provided)
+  ansible.builtin.command: >-
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN={{ sip_domain }}"
+    -addext "subjectAltName=DNS:{{ sip_domain }}"
+    -keyout {{ kamailio_tls_key }} -out {{ kamailio_tls_cert }}
+  args:
+    creates: "{{ kamailio_tls_cert }}"
+
+- name: TLS key readable by Kamailio
+  ansible.builtin.file:
+    path: "{{ kamailio_tls_key }}"
+    owner: root
+    group: kamailio
+    mode: "0640"
+
+- name: Kamailio TLS config
+  ansible.builtin.template:
+    src: "{{ repo_root }}/telephony/kamailio/tls.cfg.j2"
+    dest: /etc/kamailio/tls.cfg
+    owner: root
+    group: kamailio
+    mode: "0640"
+  notify: Restart kamailio
 
 - name: Kamailio config (contains the DB password)
   ansible.builtin.template:

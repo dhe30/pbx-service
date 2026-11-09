@@ -70,10 +70,14 @@ Stable names. Values may change only through the owning track.
 | `s3_endpoint` | phase 1: `http://<db-1 private_ip>:3900`. **T1 changes it to `http://127.0.0.1:3900`** (local S3 proxy) | T1 | ari_app, api |
 | `s3_bucket`, `s3_region` | `pbx-media`, `garage` | T1 | ari_app, api |
 | `garage_replication_factor` | number of db hosts, max 3 (1 all-in-one, 3 split); must be right before data is stored | T1 | objectstore |
-| `sip_domain` | `pbx.local` (until there's a DNS name) | T2 | kamailio, api (SIP creds), web |
-| `carrier_cidrs` | provider source IPs | T2 | kamailio |
+| `sip_domain` | `group-4.cse356.compas.cs.stonybrook.edu` (was `pbx.local`; course spec) | T2 | kamailio, api (SIP creds), web |
+| `carrier_cidrs` | `130.245.136.142/32` (Course Services tab) | T2 | kamailio |
+| `trusted_tester_cidrs` | course simulator ranges, exempt from pike (B2) | T2 | kamailio |
+| `vendor_us_host`, `vendor_intl_host`, `vendor_hosts`, `vendor_number_format` | PSTN vendors | T2 | kamailio, asterisk, ari_app |
+| `kamailio_tls_port` / `kamailio_tls_cert` / `kamailio_tls_key` | 5061, certificate for `sip_domain` | T2 | kamailio |
+| `db_ro_port`, `kamailio_db_ro_url` | read-only DB access for Kamailio (see §5) | T1 (port) / T2 | kamailio |
 | `kamailio_ws_port` | 8080 | T2 | kamailio, edge_haproxy |
-| `edge_trunk_names`, `rtpengine_ips`, `edge_peer_ips` | derived from `groups['edge']` | T2 | asterisk, ari_app, kamailio |
+| `edge_trunk_names`, `rtpengine_ips`, `edge_peer_ips` | derived from `groups['edge']` (`rtpengine_ips` from `groups['media']` when that group exists) | T2 | asterisk, ari_app, kamailio |
 | `ari_user`, `hold_max_sec` | `pbxapp`, 1800 | T2 | asterisk, ari_app |
 | `*_version` pins | see file | owner of the component | roles |
 
@@ -86,8 +90,9 @@ lets the whole cluster reach every private port.
 | Port | Service | Host | Binds | Clients |
 |---|---|---|---|---|
 | 22/tcp | SSH | all | all | admins |
-| 5060/udp | Kamailio (carrier, SIP phones) | edge | public_ip | internet (carrier, phones) |
-| 5060/udp | Kamailio (internal) | edge | private_ip | pbx, peer edge |
+| 5060/udp | Kamailio (carrier, vendors, SIP phones) | edge | public_ip | internet (carrier, vendors, phones) |
+| 5061/tcp | Kamailio SIP over TLS (`_sips._tcp` phones) | edge | public_ip | internet (phones) |
+| 5060/udp | Kamailio (internal + DMQ registration replication) | edge | private_ip | pbx, peer edge |
 | 443/tcp | HAProxy HTTPS + WSS | edge | public_ip | browsers |
 | 8080/tcp | Kamailio WebSocket | edge | private_ip | HAProxy on any edge |
 | 30000-40000/udp | rtpengine media (external) | edge | public_ip | internet |
@@ -126,8 +131,16 @@ lets the whole cluster reach every private port.
   updated one at a time.
 - **Failover behaviour clients must survive:** connections drop once; writes fail for up to
   ~30 s; then the same address works again. Clients reconnect and retry, never exit or hang.
-  Kamailio usrloc (`db_mode=3`) must keep running. T1 verifies this; T2/T3 keep their DB code
-  retry-safe.
+  T1 verifies this; T2/T3 keep their DB code retry-safe.
+- **Kamailio only reads (2026-11-09):** registrations are in memory (usrloc `db_mode=0` + DMQ),
+  so Kamailio no longer writes to Postgres. It reads `subscriber` (auth) and the view
+  `public.kamailio_did_tenant` through `kamailio_db_ro_url` = `127.0.0.1:<db_ro_port>`.
+  **T1:** add a second local proxy port (e.g. 5433) that forwards to any healthy member,
+  replicas first (Patroni `/replica`, then `/health`), and set `db_ro_port` to it. Until then
+  it is 5432 (the primary).
+- **Schema contract with the API (T3):** [telephony-contract.md](telephony-contract.md). The
+  migration `20261109000000_course_spec_telephony.sql` replaced `calls` with `cdrs` and moved
+  SIP accounts from users to `extensions`; see [spec-transition.md](spec-transition.md).
 
 ## 6. Object store contract
 

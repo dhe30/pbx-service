@@ -28,10 +28,16 @@
   serial: 1
   roles: [asterisk, ari_app]
 
+# rtpengine runs on dedicated media nodes when the inventory has a "media" group (B3), else on the edges.
+- hosts: "{{ 'media' if groups.get('media') else 'edge' }}"
+  become: true
+  serial: 1
+  roles: [rtpengine]
+
 - hosts: edge
   become: true
   serial: 1
-  roles: [kamailio, rtpengine, edge_haproxy]
+  roles: [kamailio, edge_haproxy]
 
 - hosts: mon
   become: true

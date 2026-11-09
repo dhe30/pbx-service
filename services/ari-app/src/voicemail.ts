@@ -4,32 +4,42 @@ import type { Ctx } from './ctx.js';
 import { playOnce } from './playback.js';
 import type { CallSession } from './session.js';
 
-// Voicemail is implemented here, not with app_voicemail, so messages go to the object store and
-// Postgres instead of a pbx node's disk (CLAUDE.md §4.3 #6).
+// Leaving a voicemail: "Callers hear the greeting and leave a message." Implemented here, not with
+// app_voicemail, so messages go to the object store and Postgres instead of a pbx node's disk.
 
 const DEFAULT_GREETING = 'sound:vm-intro'; // "Please leave your message after the tone..."
 const GOODBYE = 'sound:vm-goodbye';
 const MAX_SILENCE_SEC = 5;
 
-export async function voicemail(ctx: Ctx, s: CallSession, mailboxId: string): Promise<void> {
-  if (!s.tenantId) return;
-  const mailbox = await ctx.repo.getMailbox(s.tenantId, mailboxId);
+export async function leaveVoicemail(ctx: Ctx, s: CallSession, mailboxId: string): Promise<void> {
+  const t = s.tenant;
+  if (!t) return;
+  const mailbox = t.mailboxes.get(mailboxId);
   if (!mailbox) {
     s.log.warn({ mailboxId }, 'voicemail: mailbox not found');
     return;
   }
+  await s.ensureAnswered(ctx.ari);
+  if (s.main) s.main.voicemail = true;
 
-  const greeting = mailbox.greetingMediaId ? await ctx.greetings.soundUri(s.tenantId, mailbox.greetingMediaId) : null;
+  const greeting = mailbox.greetingMediaId ? await ctx.media.soundUri(t.id, mailbox.greetingMediaId) : null;
   await playOnce(ctx, s, greeting ?? DEFAULT_GREETING);
   s.check();
 
   const mediaId = randomUUID();
   const name = `vm-${mediaId}`;
-  await ctx.uploader.begin(name, { kind: 'voicemail', mediaId, tenantId: s.tenantId, callId: s.callId, mailboxId });
+  await ctx.uploader.begin(name, {
+    kind: 'voicemail',
+    mediaId,
+    tenantId: t.id,
+    callId: s.callId,
+    mailboxId,
+    callerNumber: s.main?.fromNumber ?? s.callerNumber,
+  });
   const done = ctx.bus.subscribe(onRecordingDone(name));
   try {
     try {
-      await ctx.ari.recordChannel(s.channelId, {
+      await ctx.ari.recordChannel(s.primary, {
         name,
         maxDurationSeconds: ctx.cfg.VOICEMAIL_MAX_SEC,
         maxSilenceSeconds: MAX_SILENCE_SEC,
@@ -41,7 +51,6 @@ export async function voicemail(ctx: Ctx, s: CallSession, mailboxId: string): Pr
       s.check(); // caller already gone -> HangupError, otherwise a real failure
       throw err;
     }
-    s.disposition = 'voicemail';
     s.log.info({ name }, 'voicemail: recording');
 
     // Deliberately NOT tied to the caller's hangup signal: most callers hang up to end the

@@ -21,8 +21,10 @@ export function createDb(url: string, opts: DbOptions = {}): Sql {
     idle_timeout: 30,
     // Recycle connections so a pool never stays pinned to a demoted primary for long.
     max_lifetime: 60 * 10,
-    // snake_case columns -> camelCase fields on returned rows.
-    transform: postgres.camel,
+    // snake_case columns -> camelCase fields on returned rows. COLUMN NAMES ONLY: postgres.camel
+    // would also camelCase every key inside jsonb values (ivr config "on_timeout" -> "onTimeout",
+    // "repeat_digit" -> "repeatDigit"), silently breaking the zod-validated config contract.
+    transform: { column: { from: postgres.toCamel, to: postgres.fromCamel } },
     connection: { application_name: opts.applicationName ?? 'pbx' },
     onnotice: () => {},
   });

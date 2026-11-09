@@ -8,8 +8,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run --passWithNoTests",
+    "rates:import": "tsx scripts/import-rates.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
@@ -20,6 +21,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@electric-sql/pglite-socket": "^0.0.22",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.12",
     "tsx": "^4.16.0",

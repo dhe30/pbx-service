@@ -20,6 +20,8 @@ export interface SpoolMeta {
   tenantId: string;
   callId: string | null;
   mailboxId: string | null;
+  /** Voicemail: who left it (voicemails.caller_number). */
+  callerNumber?: string | null;
   createdAt: string;
   /** Set when ARI reported RecordingFinished. */
   ready: boolean;
@@ -40,8 +42,8 @@ export class Uploader {
 
   constructor(
     private readonly spoolDir: string,
-    private readonly repo: Repo,
-    private readonly store: ObjectStore,
+    private readonly repo: Pick<Repo, 'saveUploadedRecording'>,
+    private readonly store: Pick<ObjectStore, 'putFile'>,
     private readonly log: Logger,
   ) {}
 

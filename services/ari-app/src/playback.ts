@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import type { AriEvent, ChannelDtmfReceived, PlaybackFinished } from './ari/types.js';
-import { onPlaybackFinished } from './ari/events.js';
-import type { Ctx } from './ctx.js';
+import { chKey, onPlaybackFinished, onWatched } from './ari/events.js';
+import type { ChannelDtmfReceived, PlaybackFinished } from './ari/types.js';
+import { ms, type Ctx } from './ctx.js';
 import type { CallSession } from './session.js';
 
 // Safety net: no prompt we play is anywhere near this long.
@@ -12,7 +12,7 @@ export async function playOnce(ctx: Ctx, s: CallSession, media: string): Promise
   const playbackId = randomUUID();
   const done = ctx.bus.subscribe(onPlaybackFinished(playbackId));
   try {
-    await ctx.ari.play(s.channelId, media, playbackId);
+    await ctx.ari.play(s.primary, media, playbackId);
     await done.next({ signal: s.signal, timeoutMs: MAX_PROMPT_MS });
   } finally {
     done.close();
@@ -20,39 +20,63 @@ export async function playOnce(ctx: Ctx, s: CallSession, media: string): Promise
 }
 
 /**
- * Play prompts (DTMF interrupts them), then wait up to `timeoutMs` for a digit.
- * Returns the first digit pressed, or null if none.
+ * A digit reader for one channel: buffers every DTMF digit from creation until close(), so digits
+ * typed quickly (e.g. "##" in voicemail, or a digit right as a prompt ends) are never lost.
  */
-export async function playAndCollect(ctx: Ctx, s: CallSession, media: string[], timeoutMs: number): Promise<string | null> {
-  // One subscription for both digits and "prompt finished" so nothing is missed between awaits.
-  const target = `channel:${s.channelId}`;
-  const sub = ctx.bus.subscribe(
-    (e: AriEvent): e is ChannelDtmfReceived | PlaybackFinished =>
-      (e.type === 'ChannelDtmfReceived' && e.channel.id === s.channelId) ||
-      (e.type === 'PlaybackFinished' && e.playback.target_uri === target),
-  );
-  try {
+export class DigitReader {
+  private readonly sub;
+
+  constructor(
+    private readonly ctx: Ctx,
+    private readonly s: CallSession,
+  ) {
+    this.sub = ctx.bus.subscribe(onWatched('ChannelDtmfReceived', 'PlaybackFinished'));
+    this.sub.watch(chKey(s.primary));
+  }
+
+  /**
+   * Play prompts in order; a digit interrupts them and is returned. Then wait up to `waitSec` for
+   * a digit. Returns null if none.
+   */
+  async prompt(media: string[], waitSec: number): Promise<string | null> {
     for (const m of media) {
       const playbackId = randomUUID();
-      await ctx.ari.play(s.channelId, m, playbackId);
+      await this.ctx.ari.play(this.s.primary, m, playbackId);
       for (;;) {
-        const ev = await sub.next({ signal: s.signal, timeoutMs: MAX_PROMPT_MS });
+        const ev = await this.sub.next({ signal: this.s.signal, timeoutMs: MAX_PROMPT_MS });
         if (!ev) break;
         if (ev.type === 'ChannelDtmfReceived') {
-          await ctx.ari.stopPlayback(playbackId);
+          await this.ctx.ari.stopPlayback(playbackId);
           return ev.digit;
         }
-        if (ev.playback.id === playbackId) break; // this prompt is done; play the next
+        if ((ev as PlaybackFinished).playback.id === playbackId) break; // prompt done: next one
       }
     }
-    const deadline = Date.now() + timeoutMs;
+    return this.digit(waitSec);
+  }
+
+  /** Next digit within `waitSec` (already-buffered digits return immediately), else null. */
+  async digit(waitSec: number): Promise<string | null> {
+    const deadline = Date.now() + ms(this.ctx, waitSec);
     for (;;) {
-      const ev = await sub.next({ signal: s.signal, timeoutMs: deadline - Date.now() });
+      const ev = await this.sub.next({ signal: this.s.signal, timeoutMs: deadline - Date.now() });
       if (!ev) return null;
-      if (ev.type === 'ChannelDtmfReceived') return ev.digit;
+      if (ev.type === 'ChannelDtmfReceived') return (ev as ChannelDtmfReceived).digit;
       // a late PlaybackFinished from a stopped prompt: ignore
     }
+  }
+
+  close(): void {
+    this.sub.close();
+  }
+}
+
+/** Play prompts (DTMF interrupts them), then wait up to `waitSec` for a digit. */
+export async function playAndCollect(ctx: Ctx, s: CallSession, media: string[], waitSec: number): Promise<string | null> {
+  const r = new DigitReader(ctx, s);
+  try {
+    return await r.prompt(media, waitSec);
   } finally {
-    sub.close();
+    r.close();
   }
 }

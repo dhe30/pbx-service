@@ -1,31 +1,70 @@
 #!KAMAILIO
 #
 # Kamailio edge config, rendered per edge node by Ansible (role: kamailio).
-# Spec: CLAUDE.md §7. Kamailio only handles SIGNALING; all audio goes through rtpengine.
+# Spec: CLAUDE.md §7 + docs/spec-transition.md. Kamailio only handles SIGNALING; all audio goes
+# through rtpengine.
 #
 # Who talks to us:
-#   carrier  -> udp public:5060   INVITEs for our DIDs                  (FLT_CARRIER)
-#   pbx-N    -> udp private:5060  Asterisk ringing staff, in-dialog     (FLT_PBX)
-#   peer edge-> udp private:5060  INVITE for a browser connected there  (FLT_PEER)
-#   browsers -> ws  private:{{ kamailio_ws_port }} via HAProxy (which terminates wss:// TLS)
-#   SIP phones / SIPp UAS -> udp public:5060  REGISTER as staff
+#   carrier   -> udp public:5060    INVITEs for our DIDs                        (FLT_CARRIER)
+#   pbx-N     -> udp private:5060   Asterisk ringing phones, vendor legs, in-dialog (FLT_PBX)
+#   peer edge -> udp private:5060   INVITE for a phone connected there; DMQ      (FLT_PEER)
+#   phones    -> udp public:5060    REGISTER / INVITE (desk phones, _sip._udp SRV)
+#   phones    -> tls public:{{ kamailio_tls_port }}   REGISTER / INVITE (_sips._tcp SRV), SRTP-SDES media
+#   browsers  -> ws  private:{{ kamailio_ws_port }}   via HAProxy (which terminates wss:// TLS)
+#   vendors   <- udp public:5060    outgoing PSTN legs (Asterisk -> us -> vendor; digest auth by Asterisk)
 #
-# Call legs (marked with an RR param so in-dialog requests get the right rtpengine flags):
-#   leg=carrier   : carrier <-> rtpengine <-> Asterisk   (Asterisk always gets plain RTP, PCMU)
-#   leg=staff_ws  : Asterisk <-> rtpengine <-> browser (DTLS-SRTP/ICE)
-#   leg=staff_udp : Asterisk <-> rtpengine <-> SIP phone (plain RTP)
-# Hold/resume = in-dialog re-INVITE (a=sendonly / a=sendrecv), see route[INDLG_SDP] and
-# docs/hold-call-waiting.md.
+# Call legs (Record-Route ;leg= tag, so in-dialog requests get the right rtpengine flags):
+#   carrier   : carrier   <-> rtpengine <-> Asterisk   plain RTP
+#   vendor    : vendor    <-> rtpengine <-> Asterisk   plain RTP
+#   staff_udp : SIP phone <-> rtpengine <-> Asterisk   plain RTP
+#   staff_tls : SIP phone <-> rtpengine <-> Asterisk   SRTP (SDES, RFC 4568) toward the phone
+#   staff_ws  : browser   <-> rtpengine <-> Asterisk   DTLS-SRTP + ICE toward the browser
+# Asterisk ALWAYS gets plain RTP with PCMU (+ telephone-event). Toward everyone else rtpengine
+# offers PCMU, PCMA, G.729, G.723.1 and Opus, so a phone that supports only one of them still
+# works ("A phone may support only one of PCMU, PCMA, G.729, G.723.1, or Opus"); rtpengine
+# transcodes only when the far side didn't pick PCMU.
 
 ####### Defines ########
 
 #!define FLT_CARRIER 1
 #!define FLT_PBX 2
 #!define FLT_PEER 3
-#!define FLT_STAFF_SRC 4
-#!define FLT_STAFF_WS 5
+#!define FLT_DEVICE_SRC 4
+#!define FLT_TRUSTED 6
 
-#!define DBURL "{{ kamailio_db_url }}"
+# Branch flags (per forked branch toward a phone)
+#!define FLB_WS 1
+#!define FLB_TLS 2
+
+#!define DBURL_RO "{{ kamailio_db_ro_url }}"
+
+{# ---- rtpengine flag sets (one place; every offer/answer below uses these) ---- #}
+{% set BASE = "replace-origin replace-session-connection" %}
+{% set TO_PBX_CODECS = "codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event" %}
+{% set TO_FAR_CODECS = "codec-transcode=PCMA codec-transcode=G729 codec-transcode=G723 codec-transcode=opus" %}
+{% set F = {
+  'plain': {
+    'far_offer':   "direction=external direction=internal " ~ BASE ~ " ICE=remove RTP/AVP " ~ TO_PBX_CODECS,
+    'far_answer':  BASE ~ " ICE=remove RTP/AVP",
+    'pbx_offer':   "direction=internal direction=external " ~ BASE ~ " ICE=remove RTP/AVP " ~ TO_FAR_CODECS,
+    'pbx_answer':  BASE ~ " ICE=remove RTP/AVP",
+  },
+  'tls': {
+    'far_offer':   "direction=external direction=internal " ~ BASE ~ " ICE=remove DTLS=off RTP/AVP " ~ TO_PBX_CODECS,
+    'far_answer':  BASE ~ " ICE=remove DTLS=off RTP/SAVP",
+    'pbx_offer':   "direction=internal direction=external " ~ BASE ~ " ICE=remove DTLS=off RTP/SAVP " ~ TO_FAR_CODECS,
+    'pbx_answer':  BASE ~ " ICE=remove DTLS=off RTP/AVP",
+  },
+  'ws': {
+    'far_offer':   "direction=external direction=internal " ~ BASE ~ " ICE=remove DTLS=off rtcp-mux-demux RTP/AVP " ~ TO_PBX_CODECS,
+    'far_answer':  BASE ~ " ICE=force DTLS=passive SDES-off rtcp-mux-accept RTP/SAVPF",
+    'pbx_offer':   "direction=internal direction=external " ~ BASE ~ " ICE=force DTLS=passive SDES-off rtcp-mux-offer generate-mid RTP/SAVPF",
+    'pbx_answer':  BASE ~ " ICE=remove DTLS=off rtcp-mux-demux RTP/AVP",
+  },
+} %}
+{# far_*: the request came from the carrier/vendor/phone side and goes to Asterisk.
+   pbx_*: the request came from Asterisk and goes to the carrier/vendor/phone.
+   *_offer flags go on the request's SDP, *_answer flags on the reply's SDP. #}
 
 ####### Global parameters #########
 
@@ -35,8 +74,12 @@ log_facility=LOG_LOCAL0
 log_prefix="{$mt $hdr(CSeq) $ci} "
 
 fork=yes
-children=8
-tcp_children=4
+# Workers per UDP socket / for TCP+TLS+WS. Nothing on the request path blocks on the database any
+# more (registrations are in memory), so these mostly absorb bursts (B1).
+children={{ kamailio_children | default(16) }}
+tcp_children={{ kamailio_tcp_children | default(16) }}
+tcp_max_connections={{ kamailio_tcp_max_connections | default(16384) }}
+tls_max_connections={{ kamailio_tcp_max_connections | default(16384) }}
 
 # Pick the outgoing socket by routing table (public vs private interface).
 mhomed=1
@@ -44,6 +87,8 @@ auto_aliases=no
 
 {% if public_bind_ip != private_ip %}
 listen=udp:{{ public_bind_ip }}:5060{% if public_bind_ip != public_ip %} advertise {{ public_ip }}:5060{% endif %}
+
+listen=tls:{{ public_bind_ip }}:{{ kamailio_tls_port }}{% if public_bind_ip != public_ip %} advertise {{ public_ip }}:{{ kamailio_tls_port }}{% endif %}
 
 {% endif %}
 listen=udp:{{ private_ip }}:5060
@@ -53,7 +98,9 @@ listen=tcp:{{ private_ip }}:{{ kamailio_ws_port }}
 alias="{{ sip_domain }}"
 alias="{{ public_ip }}"
 
-# WebSocket connections are long-lived; HAProxy has a matching tunnel timeout.
+enable_tls=yes
+
+# TCP/TLS/WS connections are long-lived (phones keep them for their registration).
 tcp_accept_no_cl=yes
 tcp_connection_lifetime=3605
 tcp_keepalive=yes
@@ -63,6 +110,7 @@ user_agent_header="User-Agent: pbx-edge"
 
 ####### Modules Section ########
 
+loadmodule "tls.so"
 loadmodule "jsonrpcs.so"
 loadmodule "kex.so"
 loadmodule "corex.so"
@@ -79,6 +127,8 @@ loadmodule "xlog.so"
 loadmodule "sanity.so"
 loadmodule "ctl.so"
 loadmodule "db_postgres.so"
+loadmodule "sqlops.so"
+loadmodule "htable.so"
 loadmodule "usrloc.so"
 loadmodule "registrar.so"
 loadmodule "path.so"
@@ -91,6 +141,11 @@ loadmodule "ipops.so"
 loadmodule "pike.so"
 loadmodule "xhttp.so"
 loadmodule "websocket.so"
+loadmodule "dmq.so"
+loadmodule "dmq_usrloc.so"
+
+# ----- tls (phones registering over _sips._tcp) -----
+modparam("tls", "config", "/etc/kamailio/tls.cfg")
 
 # ----- tm -----
 modparam("tm", "failure_reply_mode", 3)
@@ -103,29 +158,59 @@ modparam("rr", "append_fromtag", 1)
 # Two Record-Route headers when the in/out sockets differ (public<->private, ws<->udp).
 modparam("rr", "enable_double_rr", 1)
 
-# ----- usrloc / registrar: registrations shared by all edges through Postgres -----
-modparam("usrloc", "db_url", DBURL)
-modparam("usrloc", "db_mode", 3)          # DB-only: every edge sees every registration
+# ----- database: READ-ONLY connection, auth + DID lookups only (B1) -----
+# Points at the local DB proxy's "any healthy member" port (replicas preferred), so a Patroni
+# failover does not stop authentication. Nothing in Kamailio writes to Postgres any more.
+modparam("db_postgres", "timeout", 2)
+modparam("sqlops", "sqlcon", "ro=>{{ kamailio_db_ro_url }}")
+
+# ----- usrloc / registrar: in memory, replicated to the other edges with DMQ (B1) -----
+# Phase 1 used db_mode=3: every REGISTER and every lookup was a round trip to the Patroni primary,
+# and a primary failover stopped all registrations and all calls to phones.
+modparam("usrloc", "db_mode", 0)
 modparam("usrloc", "use_domain", 0)       # one SIP domain; sip_username is globally unique
-modparam("usrloc", "timer_interval", 60)
+modparam("usrloc", "timer_interval", 30)
 
 modparam("registrar", "use_path", 1)
 modparam("registrar", "path_mode", 0)     # store Path even if the client doesn't support it
 modparam("registrar", "path_use_received", 0)
 modparam("registrar", "default_expires", 300)
 modparam("registrar", "min_expires", 60)
-modparam("registrar", "max_expires", 300)
+modparam("registrar", "max_expires", 600)
+# "Any number of phones register" per extension: no cap. A reconnecting phone re-registers with the
+# same Contact URI and replaces its own old binding (usrloc matching on Contact).
+modparam("registrar", "max_contacts", 0)
 
 # path: when a peer edge relays to us with our Path as Route, deliver to the "received" address
-# (the browser's WebSocket connection) stored in it.
+# (the phone's connection) stored in it.
 modparam("path", "use_received", 1)
 
+# ----- dmq: replicate registrations between edges -----
+modparam("dmq", "server_address", "sip:{{ private_ip }}:5060")
+{% if edge_peer_ips | length > 0 %}
+{% for ip in edge_peer_ips %}
+modparam("dmq", "notification_address", "sip:{{ ip }}:5060")
+{% endfor %}
+{% else %}
+modparam("dmq", "notification_address", "sip:{{ private_ip }}:5060")
+{% endif %}
+modparam("dmq", "multi_notify", 1)
+modparam("dmq", "num_workers", 4)
+modparam("dmq_usrloc", "enable", 1)
+# On start, pull the full location table from a peer (an edge that restarts keeps every phone).
+modparam("dmq_usrloc", "sync", 1)
+
 # ----- auth -----
-modparam("auth_db", "db_url", DBURL)
+modparam("auth_db", "db_url", DBURL_RO)
 modparam("auth_db", "calculate_ha1", yes)
 modparam("auth_db", "password_column", "password")
-modparam("auth_db", "load_credentials", "")
+# The extension's account comes along with the credentials: used to keep an account's calls on
+# one pbx node (attended transfer needs both calls on the same Asterisk, B5).
+modparam("auth_db", "load_credentials", "$avp(tenant)=tenant_id")
 modparam("auth_db", "use_domain", 0)
+
+# ----- htable: DID -> account cache (for pbx-node affinity of carrier calls) -----
+modparam("htable", "htable", "didt=>size=12;autoexpire=300;")
 
 # ----- dispatcher: set 1 = pbx (Asterisk) nodes -----
 modparam("dispatcher", "list_file", "/etc/kamailio/dispatcher.list")
@@ -136,6 +221,8 @@ modparam("dispatcher", "ds_inactive_threshold", 2)
 modparam("dispatcher", "ds_probing_mode", 1)       # always probe, so dead nodes come back automatically
 modparam("dispatcher", "ds_ping_from", "sip:dispatcher@{{ private_ip }}")
 modparam("dispatcher", "ds_ping_reply_codes", "class=2")
+# Algorithm 7 hashes this value: the account id, so all of an account's calls land on one node.
+modparam("dispatcher", "hash_pvar", "$avp(dshash)")
 
 # ----- rtpengine: the SAME set on every edge, so any edge can handle any call's in-dialog requests.
 # Node choice is a hash of the Call-ID.
@@ -143,6 +230,10 @@ modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_ips %}udp:{{ ip 
 modparam("rtpengine", "rtpengine_disable_tout", 20)
 modparam("rtpengine", "rtpengine_tout_ms", 1000)
 modparam("rtpengine", "rtpengine_retr", 2)
+# Forking: each branch toward a phone gets its own media leg in rtpengine (via-branch=extra with
+# a per-branch id), otherwise the branches' offers overwrite each other and the answering phone
+# can end up with no audio.
+modparam("rtpengine", "extra_id_pv", "$avp(extra_id)")
 
 # ----- nathelper -----
 modparam("nathelper", "natping_interval", 0)       # clients keep their own NAT bindings alive
@@ -152,9 +243,9 @@ modparam("websocket", "keepalive_mechanism", 1)    # send WS pings
 modparam("websocket", "keepalive_timeout", 30)
 modparam("websocket", "keepalive_interval", 1)
 
-# ----- pike (light flood protection for untrusted sources) -----
+# ----- pike (light flood protection for untrusted sources; course testers exempt, B2) -----
 modparam("pike", "sampling_time_unit", 2)
-modparam("pike", "reqs_density_per_unit", 30)
+modparam("pike", "reqs_density_per_unit", {{ kamailio_pike_density | default(200) }})
 modparam("pike", "remove_latency", 4)
 
 # ----- control interfaces (kamcmd / kamctl) -----
@@ -166,6 +257,11 @@ modparam("jsonrpcs", "pretty_format", 1)
 request_route {
 	route(CLASSIFY);
 	route(REQINIT);
+
+	if (is_method("KDMQ")) {
+		route(DMQ);
+		exit;
+	}
 
 	if (is_method("CANCEL")) {
 		if (t_check_trans()) {
@@ -199,9 +295,11 @@ request_route {
 	if (is_method("INVITE")) {
 		if (isflagset(FLT_PEER)) route(FROM_PEER);
 		if (isflagset(FLT_CARRIER)) route(FROM_CARRIER);
-		if (isflagset(FLT_PBX)) route(TO_STAFF);
-		# Staff placing calls (outbound) is out of scope (assumption A5).
-		sl_send_reply("403", "Forbidden");
+		if (isflagset(FLT_PBX)) {
+			if ({% for h in vendor_hosts %}$rd == "{{ h }}"{% if not loop.last %} || {% endif %}{% endfor %}) route(TO_VENDOR);
+			route(TO_DEVICES);
+		}
+		route(FROM_DEVICE);
 		exit;
 	}
 
@@ -214,10 +312,13 @@ request_route {
 	exit;
 }
 
-# Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_STAFF_SRC.
+# Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_DEVICE_SRC (+ FLT_TRUSTED).
 route[CLASSIFY] {
+{% for cidr in (carrier_cidrs + trusted_tester_cidrs) %}
+	if (is_in_subnet("$si", "{{ cidr if '/' in cidr else cidr ~ '/32' }}")) setflag(FLT_TRUSTED);
+{% endfor %}
 {% for cidr in carrier_cidrs %}
-	if (is_in_subnet("$si", "{{ cidr if '/' in cidr else cidr ~ '/32' }}")) {
+	if (is_in_subnet("$si", "{{ cidr if '/' in cidr else cidr ~ '/32' }}") && $pr == "udp") {
 		setflag(FLT_CARRIER);
 		return;
 	}
@@ -233,7 +334,7 @@ route[CLASSIFY] {
 		return;
 	}
 {% endfor %}
-	setflag(FLT_STAFF_SRC);
+	setflag(FLT_DEVICE_SRC);
 }
 
 route[REQINIT] {
@@ -245,15 +346,20 @@ route[REQINIT] {
 		xlog("L_WARN", "malformed request from $si:$sp\n");
 		exit;
 	}
-	if (isflagset(FLT_STAFF_SRC)) {
+	if (isflagset(FLT_DEVICE_SRC) && !isflagset(FLT_TRUSTED)) {
 		# Anything on the public internet gets scanned; drop the well-known scanners silently.
 		if ($ua =~ "friendly-scanner|sipcli|sipvicious|sip-scan|VaxSIPUserAgent|pplsip") {
 			exit;
 		}
+		# The course's simulated phones come from a few IPs (FLT_TRUSTED): never rate-limit them.
 		if (!pike_check_req()) {
 			xlog("L_ALERT", "pike blocking $rm from $si:$sp\n");
 			exit;
 		}
+	}
+	# Our internal headers (account, source) can only come from us.
+	if (!isflagset(FLT_PBX) && !isflagset(FLT_PEER)) {
+		remove_hf_re("^X-PBX-");
 	}
 	# Keepalive / dispatcher probes / Asterisk qualify addressed to us.
 	if (is_method("OPTIONS") && uri == myself && $rU == $null) {
@@ -262,12 +368,12 @@ route[REQINIT] {
 	}
 }
 
-# Browsers (WS) and NATed phones put unreachable addresses in Contact; remember the real source
+# Phones (UDP behind NAT, TLS, WS) put unreachable addresses in Contact; remember the real source
 # with an ;alias param so in-dialog requests can find them again.
 route[NATDETECT] {
-	if (!isflagset(FLT_STAFF_SRC)) return;
+	if (!isflagset(FLT_DEVICE_SRC)) return;
 	force_rport();
-	if (!is_method("REGISTER") && nat_uac_test("83")) {   # 1+2+16+64 (64 = WebSocket)
+	if (!is_method("REGISTER") && (nat_uac_test("83") || $pr == "tls")) {   # 1+2+16+64 (64 = WebSocket)
 		if (!add_contact_alias()) {
 			xlog("L_ERR", "cannot alias contact <$ct>\n");
 			sl_send_reply("400", "Bad Request");
@@ -283,12 +389,22 @@ route[RELAY] {
 	exit;
 }
 
+route[DMQ] {
+	# Registration replication between edges only.
+	if (!isflagset(FLT_PEER) && $si != "{{ private_ip }}") {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	dmq_handle_message();
+	exit;
+}
+
 # ---------------------------------------------------------------------------------------------
-# REGISTER: staff browsers (WS) and SIP phones (UDP).
+# REGISTER: desk phones (UDP/TLS) and browsers (WS). Any number per extension.
 # ---------------------------------------------------------------------------------------------
 route[REGISTRAR] {
 	# Asterisk and peer edges never register. Carrier IPs may (in testing, SIPp acts as both the
-	# carrier and a staff phone from one machine); auth below is still required.
+	# carrier and a phone from one machine); auth below is still required.
 	if (isflagset(FLT_PBX) || isflagset(FLT_PEER)) {
 		sl_send_reply("403", "Forbidden");
 		exit;
@@ -310,37 +426,25 @@ route[REGISTRAR] {
 		sl_send_reply("500", "Server Error");
 		exit;
 	}
-	# 0x04: keep ONE contact per user (the latest). A browser that reconnects after an edge
-	# failure replaces its stale registration instead of leaving a dead contact to ring.
-	if (!save("location", "0x04")) {
+	if (!save("location")) {
 		sl_reply_error();
 	}
 	exit;
 }
 
 # ---------------------------------------------------------------------------------------------
-# LEG 1: carrier -> Asterisk
+# Pick a pbx node: hash on the account so all of its calls share one Asterisk (B5); round-robin
+# when the account is unknown. ds_next_dst() fails over in hash order.
 # ---------------------------------------------------------------------------------------------
-route[FROM_CARRIER] {
-	if (!ds_select_dst("1", "4")) {   # 4 = round-robin
+route[PBX_SELECT] {
+	$avp(dshash) = $var(tenant);
+	$var(alg) = 7;
+	if ($var(tenant) == "" || $var(tenant) == $null) $var(alg) = 4;
+	if (!ds_select_dst("1", "$var(alg)")) {
 		xlog("L_ERR", "no pbx node available for $rU\n");
 		send_reply("503", "Service Unavailable");
 		exit;
 	}
-	add_rr_param(";leg=carrier");
-	record_route();
-
-	# Toward Asterisk: plain RTP, PCMU only (+DTMF events). rtpengine transcodes if the carrier's
-	# offer has no PCMU; if it has PCMU this is a pure pass-through.
-	if (!rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection ICE=remove RTP/AVP codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event")) {
-		xlog("L_ERR", "rtpengine offer failed for carrier call\n");
-		send_reply("503", "Media Unavailable");
-		exit;
-	}
-	$avp(rtp_answer) = "replace-origin replace-session-connection ICE=remove RTP/AVP";
-
-	route(PBX_TIMERS);
-	route(RELAY);
 }
 
 # Before relaying to a pbx node (initial try and each failover).
@@ -368,82 +472,200 @@ failure_route[PBX_FAILOVER] {
 }
 
 # ---------------------------------------------------------------------------------------------
-# LEG 2: Asterisk -> staff (browser or SIP phone)
+# carrier -> Asterisk: a PSTN call to one of our DIDs
 # ---------------------------------------------------------------------------------------------
-route[TO_STAFF] {
+route[FROM_CARRIER] {
+	if (!($rU =~ "^\+?[0-9]{4,16}$")) {
+		sl_send_reply("404", "Not Found");
+		exit;
+	}
+	# DID -> account, cached; a DB hiccup only costs affinity (fall back to hashing the DID).
+	# Failures are cached too (autoexpire), so a DB outage costs ONE timeout per DID, not one per call
+	# (post-dial delay is graded).
+	$var(did) = $rU;
+	if ($(rU{s.substr,0,1}) == "+") $var(did) = $(rU{s.substr,1,0});
+	$var(tenant) = $sht(didt=>$var(did));
+	if ($var(tenant) == $null) {
+		$var(tenant) = "-";
+		if (sql_query("ro", "select tenant_id from public.kamailio_did_tenant where did_digits = '$var(did)' limit 1", "ra")) {
+			if ($dbr(ra=>rows) > 0) $var(tenant) = $dbr(ra=>[0,0]);
+			sql_result_free("ra");
+		}
+		$sht(didt=>$var(did)) = $var(tenant);
+	}
+	if ($var(tenant) == "-") $var(tenant) = $var(did);
+
+	append_hf("X-PBX-Src: carrier\r\n");
+	route(PBX_SELECT);
+	add_rr_param(";leg=carrier");
+	record_route();
+	if (!rtpengine_offer("{{ F.plain.far_offer }}")) {
+		xlog("L_ERR", "rtpengine offer failed for carrier call\n");
+		send_reply("503", "Media Unavailable");
+		exit;
+	}
+	$avp(rtp_answer) = "{{ F.plain.far_answer }}";
+	route(PBX_TIMERS);
+	route(RELAY);
+}
+
+# ---------------------------------------------------------------------------------------------
+# phone -> Asterisk: a customer's desk phone or softphone places a call (extension, *98, PSTN)
+# ---------------------------------------------------------------------------------------------
+route[FROM_DEVICE] {
+	if (!auth_check("$fd", "subscriber", "1")) {
+		auth_challenge("$fd", "1");   # 407 for INVITE
+		exit;
+	}
+	$var(user) = $au;
+	$var(tenant) = $avp(tenant);
+	consume_credentials();
+
+	append_hf("X-PBX-Src: device\r\n");
+	append_hf("X-PBX-User: $var(user)\r\n");
+	route(PBX_SELECT);
+
+	if ($pr == "ws" || $pr == "wss") {
+		add_rr_param(";leg=staff_ws");
+		record_route();
+		rtpengine_offer("{{ F.ws.far_offer }}");
+		$var(ok) = $rc;
+		$avp(rtp_answer) = "{{ F.ws.far_answer }}";
+	} else if ($pr == "tls") {
+		add_rr_param(";leg=staff_tls");
+		record_route();
+		rtpengine_offer("{{ F.tls.far_offer }}");
+		$var(ok) = $rc;
+		$avp(rtp_answer) = "{{ F.tls.far_answer }}";
+	} else {
+		add_rr_param(";leg=staff_udp");
+		record_route();
+		rtpengine_offer("{{ F.plain.far_offer }}");
+		$var(ok) = $rc;
+		$avp(rtp_answer) = "{{ F.plain.far_answer }}";
+	}
+	if ($var(ok) < 0) {
+		xlog("L_ERR", "rtpengine offer failed for call from $var(user)\n");
+		send_reply("503", "Media Unavailable");
+		exit;
+	}
+	route(PBX_TIMERS);
+	route(RELAY);
+}
+
+# ---------------------------------------------------------------------------------------------
+# Asterisk -> PSTN vendor (outgoing call, forwarding, simultaneous ring, transfer to a number).
+# Asterisk sends it with us as outbound proxy and answers the vendor's 401/407 itself.
+# ---------------------------------------------------------------------------------------------
+route[TO_VENDOR] {
+	if (is_present_hf("Route")) loose_route();   # our own pre-loaded Route from Asterisk
+	add_rr_param(";leg=vendor");
+	record_route();
+	if (!rtpengine_offer("{{ F.plain.pbx_offer }}")) {
+		send_reply("503", "Media Unavailable");
+		exit;
+	}
+	$avp(rtp_answer) = "{{ F.plain.pbx_answer }}";
+	t_on_reply("RTP_REPLY");
+	t_on_failure("VENDOR_FAILURE");
+	route(RELAY);
+}
+
+failure_route[VENDOR_FAILURE] {
+	if (t_is_canceled()) exit;
+	# 401/407: Asterisk re-sends with credentials on the same Call-ID; keep the media session.
+	if (!t_check_status("401|407")) rtpengine_delete();
+}
+
+# ---------------------------------------------------------------------------------------------
+# Asterisk -> every registered device of one extension (parallel fork)
+# ---------------------------------------------------------------------------------------------
+route[TO_DEVICES] {
 	if (!lookup("location")) {
-		# The ARI app treats this as "unavailable" and falls back to voicemail.
+		# No device registered: the ARI app treats it as "no answer" (forward / voicemail).
 		send_reply("480", "Temporarily Unavailable");
 		exit;
 	}
-	# After lookup, $du is the contact's Path URI: the edge holding the connection, with the
-	# client's real address in ;received. (One contact per user, see REGISTRAR, so one branch.)
+	t_on_branch("DEV_BRANCH");
+	t_on_reply("DEV_REPLY");
+	t_on_failure("DEV_FAILURE");
+	route(RELAY);
+}
+
+# Runs once per contact. $du is that contact's Path: the edge holding its connection, with the
+# phone's real address in ;received.
+branch_route[DEV_BRANCH] {
 	$var(rcv) = "";
 	if ($du != $null && $(du{uri.param,received}) != "") {
 		$var(rcv) = $(du{uri.param,received}{s.unescape.param});
 	}
+	$var(tp) = "udp";
 	if ($var(rcv) != "") {
-		if ($(var(rcv){uri.transport}) =~ "^wss?$") setflag(FLT_STAFF_WS);
-		if ($(du{uri.host}) == "{{ private_ip }}") {
-			# The client is connected to THIS edge: send straight to it.
-			$du = $var(rcv);
-		}
-		# else: leave $du = peer edge; it delivers over its own connection (route FROM_PEER).
-	} else if ($(ru{uri.transport}) =~ "^wss?$") {
-		setflag(FLT_STAFF_WS);
+		$var(tp) = $(var(rcv){uri.transport});
+	} else if ($(ru{uri.transport}) != "") {
+		$var(tp) = $(ru{uri.transport});
 	}
+	if ($var(tp) =~ "^wss?$") setbflag(FLB_WS);
+	else if ($var(tp) =~ "^tls$") setbflag(FLB_TLS);
 
-	# Remember in the dialog's route set whether the staff side is a browser. In-dialog requests
-	# (hold/resume re-INVITEs) need it, and they can't tell from their own transport: with two
-	# edges, a browser's re-INVITE reaches this edge over UDP from the peer edge.
-	if (isflagset(FLT_STAFF_WS)) {
+	if ($var(rcv) != "" && $(du{uri.host}) == "{{ private_ip }}") {
+		# The phone is connected to THIS edge: send straight to it (drop our own Path route).
+		remove_hf("Route");
+		$du = $var(rcv);
+	}
+	# else: leave $du = peer edge; it delivers over its own connection (route FROM_PEER).
+
+	# Leg tag for in-dialog requests (hold/resume, transfer). They can't tell from their own
+	# transport: with two edges a browser's re-INVITE reaches the anchoring edge over UDP.
+	$avp(extra_id) = @via[1].branch + $T_branch_idx;
+	if (isbflagset(FLB_WS)) {
 		add_rr_param(";leg=staff_ws");
+		record_route();
+		if (!rtpengine_offer("via-branch=extra {{ F.ws.pbx_offer }}")) drop;
+	} else if (isbflagset(FLB_TLS)) {
+		add_rr_param(";leg=staff_tls");
+		record_route();
+		if (!rtpengine_offer("via-branch=extra {{ F.tls.pbx_offer }}")) drop;
 	} else {
 		add_rr_param(";leg=staff_udp");
-	}
-	record_route();
-	t_on_branch("STAFF_BRANCH");
-	t_on_reply("STAFF_REPLY");
-	t_on_failure("STAFF_FAILURE");
-	route(RELAY);
-}
-
-branch_route[STAFF_BRANCH] {
-	if (isflagset(FLT_STAFF_WS)) {
-		# Browser: WebRTC needs ICE + DTLS-SRTP + rtcp-mux. Codec stays PCMU (no transcoding).
-		if (!rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection RTP/SAVPF ICE=force DTLS=passive SDES-off rtcp-mux-offer generate-mid")) {
-			xlog("L_ERR", "rtpengine offer failed toward $ru; dropping branch\n");
-			drop;
-		}
-	} else {
-		if (!rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection ICE=remove RTP/AVP")) {
-			xlog("L_ERR", "rtpengine offer failed toward $ru; dropping branch\n");
-			drop;
-		}
+		record_route();
+		if (!rtpengine_offer("via-branch=extra {{ F.plain.pbx_offer }}")) drop;
 	}
 }
 
-onreply_route[STAFF_REPLY] {
-	if (proto == WS || proto == WSS || nat_uac_test("19")) {
-		add_contact_alias();
-	}
+onreply_route[DEV_REPLY] {
+	route(REPLY_ALIAS);
 	if (has_body("application/sdp")) {
-		if (isflagset(FLT_STAFF_WS)) {
-			rtpengine_answer("replace-origin replace-session-connection RTP/AVP ICE=remove DTLS=off rtcp-mux-demux");
+		$avp(extra_id) = @via[2].branch + $T_branch_idx;
+		if (isbflagset(FLB_WS)) {
+			rtpengine_answer("via-branch=extra {{ F.ws.pbx_answer }}");
+		} else if (isbflagset(FLB_TLS)) {
+			rtpengine_answer("via-branch=extra {{ F.tls.pbx_answer }}");
 		} else {
-			rtpengine_answer("replace-origin replace-session-connection ICE=remove RTP/AVP");
+			rtpengine_answer("via-branch=extra {{ F.plain.pbx_answer }}");
 		}
 	}
 }
 
-failure_route[STAFF_FAILURE] {
+failure_route[DEV_FAILURE] {
 	if (t_is_canceled()) exit;
 	rtpengine_delete();
 }
 
+# A reply straight from a phone (not relayed by a peer edge, which already did this): remember
+# its real address on the Contact so Asterisk's in-dialog requests reach it.
+route[REPLY_ALIAS] {
+{% for ip in edge_peer_ips %}
+	if ($si == "{{ ip }}") return;
+{% endfor %}
+	if (proto == WS || proto == WSS || proto == TLS || nat_uac_test("19")) {
+		add_contact_alias();
+	}
+}
+
 # ---------------------------------------------------------------------------------------------
-# Peer edge relaying a staff INVITE because the browser's WebSocket lives on this node.
-# The peer already engaged rtpengine; we only deliver. (Not exercised with a single edge.)
+# Peer edge relaying an INVITE because the phone's connection lives on this node.
+# The peer already engaged rtpengine; we only deliver.
 # ---------------------------------------------------------------------------------------------
 route[FROM_PEER] {
 	if (!loose_route()) {
@@ -457,13 +679,13 @@ route[FROM_PEER] {
 }
 
 onreply_route[PEER_REPLY] {
-	if (proto == WS || proto == WSS || nat_uac_test("19")) {
+	if (proto == WS || proto == WSS || proto == TLS || nat_uac_test("19")) {
 		add_contact_alias();
 	}
 }
 
 # ---------------------------------------------------------------------------------------------
-# In-dialog requests (BYE, re-INVITE, ACK for 2xx, ...)
+# In-dialog requests (BYE, re-INVITE, REFER, NOTIFY, ACK for 2xx, ...)
 # ---------------------------------------------------------------------------------------------
 route[WITHINDLG] {
 	if (!loose_route()) {
@@ -474,7 +696,7 @@ route[WITHINDLG] {
 		exit;
 	}
 
-	# Next hop is a NATed/WS client: restore its real address from the Contact ;alias.
+	# Next hop is a NATed/WS/TLS client: restore its real address from the Contact ;alias.
 	if (!isdsturiset()) {
 		handle_ruri_alias();
 	}
@@ -488,54 +710,33 @@ route[WITHINDLG] {
 }
 
 # re-INVITE / UPDATE with SDP: hold (a=sendonly or a=inactive), resume (a=sendrecv), session
-# refresh. Same rtpengine flags as the initial offer/answer for that leg and direction. rtpengine
-# passes the a=sendonly/recvonly/inactive attributes through unchanged; Asterisk turns them into
-# ChannelHold/ChannelUnhold for the ARI app (docs/hold-call-waiting.md).
+# refresh. Same flags as the initial offer/answer for that leg and direction. rtpengine passes the
+# a=sendonly/recvonly/inactive attributes through; Asterisk turns them into ChannelHold/Unhold.
 #
 # check_route_param() looks at OUR Record-Route entry, so a peer edge that only relays (FROM_PEER,
 # no leg param) does nothing here; the edge that anchored the media does the rtpengine work.
-# "From Asterisk" = FLT_PBX; anything else (the carrier, a staff phone, a peer edge relaying a
-# browser's request) is the far side.
+# "From Asterisk" = FLT_PBX; anything else (carrier, vendor, phone, a peer edge relaying a phone's
+# request) is the far side.
 route[INDLG_SDP] {
-	if (check_route_param("leg=carrier")) {
+{% for leg, fs in [('carrier', F.plain), ('vendor', F.plain), ('staff_udp', F.plain), ('staff_tls', F.tls), ('staff_ws', F.ws)] %}
+	{% if not loop.first %}} else {% endif %}if (check_route_param("leg={{ leg }}")) {
 		if (isflagset(FLT_PBX)) {
-			rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection ICE=remove RTP/AVP");
+			rtpengine_offer("{{ fs.pbx_offer }}");
+			$avp(rtp_answer) = "{{ fs.pbx_answer }}";
 		} else {
-			rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection ICE=remove RTP/AVP codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event");
-		}
-		$avp(rtp_answer) = "replace-origin replace-session-connection ICE=remove RTP/AVP";
-		t_on_reply("RTP_REPLY");
-	} else if (check_route_param("leg=staff_ws")) {
-		if (isflagset(FLT_PBX)) {
-			# Asterisk -> browser
-			rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection RTP/SAVPF ICE=force DTLS=passive SDES-off rtcp-mux-offer generate-mid");
-			$avp(rtp_answer) = "replace-origin replace-session-connection RTP/AVP ICE=remove DTLS=off rtcp-mux-demux";
-		} else {
-			# Browser -> Asterisk (e.g. SIP.js hold/resume). The browser offers a=setup:actpass;
-			# DTLS=passive keeps rtpengine in the passive role it took on the initial call, so the
-			# existing DTLS-SRTP session carries on instead of renegotiating.
-			rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection RTP/AVP ICE=remove DTLS=off rtcp-mux-demux");
-			$avp(rtp_answer) = "replace-origin replace-session-connection RTP/SAVPF ICE=force DTLS=passive rtcp-mux-accept SDES-off";
+			rtpengine_offer("{{ fs.far_offer }}");
+			$avp(rtp_answer) = "{{ fs.far_answer }}";
 		}
 		t_on_reply("RTP_REPLY");
-	} else if (check_route_param("leg=staff_udp")) {
-		if (isflagset(FLT_PBX)) {
-			rtpengine_offer("direction=internal direction=external replace-origin replace-session-connection ICE=remove RTP/AVP");
-		} else {
-			rtpengine_offer("direction=external direction=internal replace-origin replace-session-connection ICE=remove RTP/AVP");
-		}
-		$avp(rtp_answer) = "replace-origin replace-session-connection ICE=remove RTP/AVP";
-		t_on_reply("RTP_REPLY");
+{% endfor %}
 	}
 }
 
 # Generic answer handler: flags were chosen when the offer was sent (AVPs live in the transaction).
 onreply_route[RTP_REPLY] {
-	# Reply from a staff browser/NATed phone to Asterisk's re-INVITE: its Contact becomes
-	# Asterisk's new remote target, so it needs the ;alias too (like STAFF_REPLY).
-	if (isflagset(FLT_PBX) && (proto == WS || proto == WSS || nat_uac_test("19"))) {
-		add_contact_alias();
-	}
+	# Reply from a phone to Asterisk's re-INVITE: its Contact becomes Asterisk's new remote target,
+	# so it needs the ;alias too (like DEV_REPLY).
+	if (isflagset(FLT_PBX)) route(REPLY_ALIAS);
 	if (has_body("application/sdp") && $avp(rtp_answer) != $null) {
 		rtpengine_answer("$avp(rtp_answer)");
 	}

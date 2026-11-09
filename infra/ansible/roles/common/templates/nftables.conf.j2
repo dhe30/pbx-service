@@ -26,9 +26,15 @@ table inet filter {
 		ip saddr @cluster accept
 {% if inventory_hostname in groups['edge'] %}
 
-		# Edge: public SIP, HTTPS/WSS, and rtpengine media.
+		# Edge: public SIP (UDP + TLS for _sips._tcp phones), HTTPS/WSS, and rtpengine media.
 		udp dport 5060 accept
+		tcp dport {{ kamailio_tls_port | default(5061) }} accept
 		tcp dport 443 accept
+		udp dport 30000-40000 accept
+{% endif %}
+{% if groups.get('media') and inventory_hostname in groups['media'] %}
+
+		# Dedicated media node: rtpengine media.
 		udp dport 30000-40000 accept
 {% endif %}
 	}

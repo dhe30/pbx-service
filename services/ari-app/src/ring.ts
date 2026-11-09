@@ -1,197 +1,201 @@
 import { randomUUID } from 'node:crypto';
-import { onChannel, onChannels, onRecordingDone } from './ari/events.js';
-import type { Ctx } from './ctx.js';
-import { CallerHold } from './hold.js';
-import type { StaffTarget } from './repo.js';
-import type { CallSession } from './session.js';
+import type { CdrOutcome } from '@pbx/shared';
+import { chKey, onWatched } from './ari/events.js';
+import { ms, type Ctx } from './ctx.js';
+import { metrics } from './metrics.js';
+import { planPstnLeg, vendorEndpoint } from './pstn.js';
+import { combineOutcomes, newLeg, outcomeFromCause, type CallSession, type LegDraft } from './session.js';
+import type { ExtensionCfg } from './tenant.js';
 
-// Ringing staff and connecting the caller to whoever answers.
+// Ringing: "A call rings all of an extension's devices, its softphone, and its listed external
+// numbers at once; the first answer wins and the rest stop." (spec §3)
 //
-// Each staff leg is originated through a PJSIP trunk to Kamailio: PJSIP/<sip_username>@edge-a.
-// Kamailio looks the user up in the shared location table and delivers to the browser (WSS) or
-// SIP phone (UDP). If Kamailio says the user isn't registered (480) the leg just fails.
-// If a leg fails *immediately* for a network/server reason, the edge is probably down: retry the
-// same user through the next trunk (edge-b).
+//  - Devices: ONE originate per extension, PJSIP/<sip_username>@edge-a. Kamailio looks up every
+//    registered contact of that user and forks to all of them in parallel (desk phones, softphone,
+//    over UDP, TLS or WebSocket). When one answers, Kamailio CANCELs the rest.
+//  - External numbers: one originate per number through a PSTN vendor; each is its own charged CDR
+//    leg (outgoing, parent = the call's main row).
+//  - A leg that fails *fast* for a non-user reason means that edge is probably down: retry it via
+//    the next trunk (edge-b). (Kamailio-side failover covers pbx nodes; this covers edges.)
 //
-// Call waiting: there is deliberately NO busy check. A staff member who is already on a call
-// (active or held) is rung like anyone else; their softphone shows it as a waiting call and
-// either answers it (holding the current one) or declines with 486, which counts as "didn't
-// answer" (USER_CAUSES) for this leg. See docs/hold-call-waiting.md.
+// Call waiting: no busy check. A device already on a call rings like any other; it either answers
+// (holding its current call) or declines with 486 (busy).
 
-export interface AnsweredLeg {
+export type RingTarget =
+  | { kind: 'sip'; sipUsername: string; extension: ExtensionCfg | null }
+  | { kind: 'external'; number: string; extension: ExtensionCfg | null };
+
+export interface Winner {
   channelId: string;
-  userId: string;
+  target: RingTarget;
+}
+
+export interface RingResult {
+  winner: Winner | null;
+  outcome: Exclude<CdrOutcome, 'blocked'>;
+}
+
+export interface RingOptions {
+  /**
+   * Use the session's main CDR row for the (single) external target instead of a child row:
+   * a direct outgoing call from a phone IS the vendor leg.
+   */
+  externalIsMain?: boolean;
 }
 
 /** Leg failed within this window with a non-user cause => try the next trunk. */
 const FAST_FAIL_MS = 3000;
-/**
- * Q.850 causes that mean "the person didn't/couldn't answer", not "the path is broken".
- * 1 unallocated (404), 16 normal, 17 busy, 18 no user response (408/480), 19 no answer,
- * 20 subscriber absent (480), 21 rejected (603/decline).
- */
+/** Q.850 causes that mean "the person didn't/couldn't answer", not "the path is broken". */
 const USER_CAUSES = new Set([1, 16, 17, 18, 19, 20, 21]);
 const RINGBACK = 'tone:ring;tonezone=us';
 
 interface Leg {
-  target: StaffTarget;
+  target: RingTarget;
   trunkIdx: number;
   startedAt: number;
+  draft: LegDraft | null;
+}
+
+/** All targets for one extension: its devices + its external numbers. */
+export function extensionTargets(ext: ExtensionCfg): RingTarget[] {
+  return [
+    { kind: 'sip', sipUsername: ext.sipUsername, extension: ext },
+    ...ext.externalNumbers.map((number): RingTarget => ({ kind: 'external', number, extension: ext })),
+  ];
 }
 
 /**
  * Ring all `targets` at once; the first to answer wins and the others are hung up.
- * Returns null on timeout, if every leg failed, or if there were no targets.
  * Throws HangupError if the caller hangs up while ringing.
  */
 export async function ringTargets(
   ctx: Ctx,
   s: CallSession,
-  targets: StaffTarget[],
+  targets: RingTarget[],
   timeoutSec: number,
-): Promise<AnsweredLeg | null> {
-  if (targets.length === 0) return null;
+  opts: RingOptions = {},
+): Promise<RingResult> {
+  const t = s.tenant!;
   const trunks = ctx.cfg.TRUNKS;
   const legs = new Map<string, Leg>();
-  const pending = new Set<string>(); // live set: the subscription sees ids as they're added
-  const sub = ctx.bus.subscribe(onChannels(pending, 'StasisStart', 'ChannelDestroyed'));
+  const outcomes: CdrOutcome[] = [];
+  const sub = ctx.bus.subscribe(onWatched('StasisStart', 'ChannelDestroyed'));
   const ringbackId = randomUUID();
-  const deadline = Date.now() + timeoutSec * 1000;
+  const deadline = Date.now() + ms(ctx, timeoutSec);
+  let winner: Winner | null = null;
 
-  const originate = async (target: StaffTarget, fromTrunk: number): Promise<void> => {
+  const originate = async (target: RingTarget, fromTrunk: number, draft: LegDraft | null, endpointFor: (trunk: string) => string, callerId: string) => {
     for (let i = fromTrunk; i < trunks.length; i++) {
       const channelId = randomUUID();
-      pending.add(channelId);
-      legs.set(channelId, { target, trunkIdx: i, startedAt: Date.now() });
+      sub.watch(chKey(channelId));
+      legs.set(channelId, { target, trunkIdx: i, startedAt: Date.now(), draft });
+      if (draft) ctx.legs.track(channelId, draft, s);
       try {
         await ctx.ari.originate({
-          endpoint: `PJSIP/${target.sipUsername}@${trunks[i]}`,
+          endpoint: endpointFor(trunks[i]!),
           channelId,
-          appArgs: `outbound:${s.channelId}`,
-          callerId: s.callerNumber,
+          appArgs: `outbound:${s.primary}`,
+          callerId,
           timeout: Math.max(1, Math.ceil((deadline - Date.now()) / 1000)),
-          originator: s.channelId,
+          originator: s.primary,
         });
-        return;
+        return true;
       } catch (err) {
-        s.log.warn({ err, user: target.sipUsername, trunk: trunks[i] }, 'originate failed');
-        pending.delete(channelId);
+        s.log.warn({ err, endpoint: endpointFor(trunks[i]!) }, 'originate failed');
+        sub.unwatch(chKey(channelId));
         legs.delete(channelId);
       }
     }
+    if (draft) {
+      draft.outcome ??= 'failed';
+      draft.endedAt ??= new Date();
+    }
+    outcomes.push('failed');
+    return false;
+  };
+
+  const start = async (target: RingTarget, fromTrunk = 0, existing: LegDraft | null = null): Promise<void> => {
+    if (target.kind === 'sip') {
+      await originate(target, fromTrunk, null, (trunk) => `PJSIP/${target.sipUsername}@${trunk}`, s.ringCallerId);
+      return;
+    }
+    const plan = await planPstnLeg(ctx, t, target.number, s.presentedNumber);
+    let draft = existing;
+    if (!draft) {
+      draft = opts.externalIsMain && s.main ? s.main : newLeg({ direction: 'outgoing', chargeClass: plan.ok ? plan.chargeClass : 'us', parentId: s.main?.id ?? null });
+      draft.toNumber = target.number;
+      draft.fromNumber = s.presentedNumber;
+      draft.did = s.presentedNumber;
+      draft.toExtension ??= null;
+      if (draft !== s.main) s.children.set(draft.id, draft);
+    }
+    if (!plan.ok) {
+      s.log.info({ number: target.number, reason: plan.reason }, 'external leg blocked');
+      draft.outcome = plan.reason === 'no_caller_id' ? 'failed' : 'blocked';
+      draft.endedAt = new Date();
+      outcomes.push(draft.outcome);
+      return;
+    }
+    Object.assign(draft, { vendor: plan.vendor, chargeClass: plan.chargeClass, costPerMin: plan.costPerMin, ratePrefix: plan.ratePrefix });
+    metrics.vendorLegs.inc({ vendor: plan.vendor });
+    await originate(target, fromTrunk, draft, (trunk) => vendorEndpoint(ctx, plan.vendor, plan.host, trunk, target.number), plan.callerId);
   };
 
   try {
-    await ctx.ari.play(s.channelId, RINGBACK, ringbackId).catch(() => {});
-    for (const t of targets) await originate(t, 0);
+    if (!s.answered) await ctx.ari.ring(s.primary).catch(() => {});
+    else await ctx.ari.play(s.primary, RINGBACK, ringbackId).catch(() => {});
+    // In parallel: a 50-member ring group must not ring member 50 seconds after member 1 (B7).
+    await Promise.all(targets.map((tg) => start(tg)));
 
-    while (pending.size > 0) {
+    while (legs.size > 0) {
       const ev = await sub.next({ signal: s.signal, timeoutMs: deadline - Date.now() });
       if (!ev) {
         s.log.info('ring: timeout');
-        return null;
+        return { winner: null, outcome: combineOutcomes(outcomes, true) };
       }
-      const leg = legs.get(ev.channel.id)!;
-      pending.delete(ev.channel.id);
+      const leg = legs.get(ev.channel.id);
+      if (!leg) continue;
+      legs.delete(ev.channel.id);
       if (ev.type === 'StasisStart') {
-        s.log.info({ user: leg.target.sipUsername, trunk: trunks[leg.trunkIdx] }, 'ring: answered');
-        return { channelId: ev.channel.id, userId: leg.target.userId };
+        sub.unwatch(chKey(ev.channel.id));
+        s.log.info({ target: leg.target, trunk: trunks[leg.trunkIdx] }, 'ring: answered');
+        winner = { channelId: ev.channel.id, target: leg.target };
+        return { winner, outcome: 'answered' };
       }
       // ChannelDestroyed before answer
       const fast = Date.now() - leg.startedAt < FAST_FAIL_MS;
-      s.log.info({ user: leg.target.sipUsername, cause: ev.cause, causeTxt: ev.cause_txt }, 'ring: leg ended');
+      s.log.info({ target: leg.target, cause: ev.cause, causeTxt: ev.cause_txt }, 'ring: leg ended');
       if (fast && !USER_CAUSES.has(ev.cause) && leg.trunkIdx + 1 < trunks.length) {
-        await originate(leg.target, leg.trunkIdx + 1);
+        if (leg.draft) leg.draft.endedAt = leg.draft.outcome = null;
+        await start(leg.target, leg.trunkIdx + 1, leg.draft);
+        continue;
       }
+      outcomes.push(outcomeFromCause(ev.cause));
+      if (leg.target.kind === 'external') metrics.vendorLegFailures.inc({ cause: String(ev.cause) });
     }
-    return null;
+    return { winner: null, outcome: combineOutcomes(outcomes, false) };
   } finally {
     sub.close();
     await ctx.ari.stopPlayback(ringbackId).catch(() => {});
-    // Everyone still ringing lost (or we gave up): stop their phones.
-    await Promise.all([...pending].map((id) => ctx.ari.hangupQuietly(id).catch(() => {})));
+    // Everyone still ringing lost (or we gave up): stop their phones. Their CDR legs end as no answer.
+    await Promise.all(
+      [...legs.entries()]
+        .filter(([id]) => id !== winner?.channelId)
+        .map(([id, leg]) => {
+          if (leg.draft && !leg.draft.answeredAt) leg.draft.outcome ??= 'no_answer';
+          return ctx.ari.hangupQuietly(id).catch(() => {});
+        }),
+    );
   }
 }
 
-/** Ring targets one at a time, each for `timeoutSec`. */
-export async function ringSequential(
-  ctx: Ctx,
-  s: CallSession,
-  targets: StaffTarget[],
-  timeoutSec: number,
-): Promise<AnsweredLeg | null> {
-  for (const t of targets) {
-    const leg = await ringTargets(ctx, s, [t], timeoutSec);
-    if (leg) return leg;
+/** Ring targets one group at a time (sequential ring groups), each group for `timeoutSec`. */
+export async function ringSequential(ctx: Ctx, s: CallSession, groups: RingTarget[][], timeoutSec: number): Promise<RingResult> {
+  const outcomes: CdrOutcome[] = [];
+  for (const g of groups) {
+    const r = await ringTargets(ctx, s, g, timeoutSec);
+    if (r.winner) return r;
+    outcomes.push(r.outcome);
   }
-  return null;
-}
-
-/**
- * Bridge caller and agent, optionally record the bridge, and return when either side hangs up
- * (throws HangupError if it was the caller). While connected, the agent's hold/resume plays or
- * stops music on hold for the caller; the recording keeps running (decision D1).
- */
-export async function connectToAgent(ctx: Ctx, s: CallSession, agent: AnsweredLeg, record: boolean): Promise<void> {
-  const bridgeId = randomUUID();
-  const agentEvents = ctx.bus.subscribe(
-    onChannel(agent.channelId, 'StasisEnd', 'ChannelDestroyed', 'ChannelHold', 'ChannelUnhold'),
-  );
-  const hold = new CallerHold(ctx.ari, s.channelId, ctx.cfg.HOLD_MOH_CLASS, s.log);
-  let recording: string | null = null;
-  try {
-    s.check();
-    await ctx.ari.createBridge(bridgeId);
-    await ctx.ari.addToBridge(bridgeId, [s.channelId, agent.channelId]);
-    s.disposition = 'answered';
-    if (s.callId) {
-      ctx.repo.markCallAnswered(s.callId, agent.userId).catch((err) => s.log.warn({ err }, 'markCallAnswered failed'));
-    }
-
-    if (record && s.tenantId) {
-      const mediaId = randomUUID();
-      recording = `rec-${mediaId}`;
-      await ctx.uploader.begin(recording, {
-        kind: 'recording',
-        mediaId,
-        tenantId: s.tenantId,
-        callId: s.callId,
-        mailboxId: null,
-      });
-      try {
-        await ctx.ari.recordBridge(bridgeId, recording);
-      } catch (err) {
-        s.log.error({ err }, 'could not start call recording');
-        await ctx.uploader.abandon(recording);
-        recording = null;
-      }
-    }
-
-    // Until the agent hangs up, follow hold/resume from their phone.
-    for (;;) {
-      const ev = await agentEvents.next({ signal: s.signal });
-      if (!ev || ev.type === 'StasisEnd' || ev.type === 'ChannelDestroyed') break;
-      await hold.set(ev.type === 'ChannelHold');
-    }
-    s.log.info({ held: hold.isHeld }, 'agent hung up');
-  } finally {
-    agentEvents.close();
-    hold.end();
-    if (recording) await finishRecording(ctx, s, recording);
-    await ctx.ari.hangupQuietly(agent.channelId).catch(() => {});
-    await ctx.ari.destroyBridge(bridgeId).catch(() => {});
-  }
-}
-
-async function finishRecording(ctx: Ctx, s: CallSession, name: string): Promise<void> {
-  const done = ctx.bus.subscribe(onRecordingDone(name));
-  try {
-    await ctx.ari.stopRecording(name).catch(() => {});
-    const ev = await done.next({ timeoutMs: 5000 });
-    // Without the event the file may still be open; the uploader's stale-file sweep handles it.
-    if (ev) await ctx.uploader.finish(name);
-    else s.log.warn({ name }, 'no RecordingFinished event; leaving recording to the sweep');
-  } finally {
-    done.close();
-  }
+  return { winner: null, outcome: combineOutcomes(outcomes, false) };
 }

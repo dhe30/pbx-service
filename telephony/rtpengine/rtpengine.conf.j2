@@ -1,10 +1,10 @@
-# rtpengine (edge nodes). Spec: CLAUDE.md §8.
+# rtpengine (edge or dedicated media nodes). Spec: CLAUDE.md §8, docs/spec-transition.md (B3, B4).
 # Kamailio controls it over the "ng" protocol; every call's audio flows through here.
 [rtpengine]
 
 # Two logical interfaces. Kamailio picks them per leg with direction=internal/external:
 #   internal = private IP, faces Asterisk
-#   external = public IP, faces carriers, browsers and SIP phones
+#   external = public IP, faces carriers, vendors, phones and browsers
 # "local!advertised" form is used when the public IP is NATed onto the VM.
 interface = internal/{{ private_ip }};external/{{ public_bind_ip }}{% if public_bind_ip != public_ip %}!{{ public_ip }}{% endif %}
 
@@ -17,9 +17,12 @@ listen-http = {{ private_ip }}:2225
 port-min = 30000
 port-max = 40000
 
-# Userspace forwarding only (no kernel module): simpler to install, and transcoded calls run in
-# userspace anyway. Revisit in phase 6 if CPU is the bottleneck for PCMU pass-through calls.
-table = -1
+# B3: in-kernel forwarding for streams that need no transcoding (table 0 = the module's first
+# forwarding table). Transcoded streams (G.729, G.723.1, Opus, PCMA <-> PCMU) always run in
+# userspace. Without the module rtpengine falls back to userspace for everything.
+table = {{ 0 if rtpengine_kernel_forwarding | default(true) else -1 }}
+# Worker threads for userspace media (transcoding is CPU-bound: one per vCPU).
+num-threads = {{ rtpengine_threads | default(2) }}
 
 # Kill sessions with no media (e.g. both ends vanished without BYE).
 timeout = 60
@@ -30,5 +33,4 @@ final-timeout = 10800
 delete-delay = 30
 
 tos = 184
-log-level = 6
-
+log-level = 5

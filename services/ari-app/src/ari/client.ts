@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
-import type { AriEvent, Bridge, Channel, HangupReason, LiveRecording, Playback } from './types.js';
+import type { AriEvent, Bridge, Channel, HangupReason, LiveRecording, Playback, TransferProgressState } from './types.js';
 
 // Thin typed ARI client: REST over fetch + one events WebSocket.
 // We deliberately do NOT auto-reconnect the WebSocket. If it drops after being established the
@@ -185,15 +185,24 @@ export class AriClient extends EventEmitter<AriClientEvents> {
     });
   }
 
-  originate(opts: {
-    endpoint: string;
-    channelId: string;
-    appArgs: string;
-    callerId?: string;
-    timeout: number;
-    originator?: string;
-  }): Promise<Channel> {
-    return this.request('POST', '/channels', { ...opts, app: this.opts.app });
+  originate(opts: OriginateOptions): Promise<Channel> {
+    const { variables, ...query } = opts;
+    return this.request('POST', '/channels', { ...query, app: this.opts.app }, variables ? { variables } : undefined);
+  }
+
+  /** Send 180 Ringing to an unanswered channel (the caller's phone plays ringback). */
+  ring(channelId: string): Promise<void> {
+    return this.request('POST', `/channels/${enc(channelId)}/ring`);
+  }
+
+  /** Set a channel variable or dialplan function, e.g. PJSIP_TRANSFER_HANDLING(). */
+  setChannelVar(channelId: string, variable: string, value: string): Promise<void> {
+    return this.request('POST', `/channels/${enc(channelId)}/variable`, { variable, value });
+  }
+
+  /** Report the outcome of an ari-only transfer back to the phone that sent REFER (NOTIFY sipfrag). */
+  transferProgress(channelId: string, states: TransferProgressState): Promise<void> {
+    return this.request('POST', `/channels/${enc(channelId)}/transfer_progress`, { states });
   }
 
   createBridge(bridgeId: string): Promise<Bridge> {
@@ -202,6 +211,14 @@ export class AriClient extends EventEmitter<AriClientEvents> {
 
   addToBridge(bridgeId: string, channelIds: string[]): Promise<void> {
     return this.request('POST', `/bridges/${enc(bridgeId)}/addChannel`, { channel: channelIds.join(',') });
+  }
+
+  async removeFromBridge(bridgeId: string, channelIds: string[]): Promise<void> {
+    try {
+      await this.request('POST', `/bridges/${enc(bridgeId)}/removeChannel`, { channel: channelIds.join(',') });
+    } catch (err) {
+      if (!(err instanceof AriError && (err.gone || err.status === 422))) throw err;
+    }
   }
 
   async destroyBridge(bridgeId: string): Promise<void> {
@@ -229,6 +246,42 @@ export class AriClient extends EventEmitter<AriClientEvents> {
     }
   }
 }
+
+export interface OriginateOptions {
+  endpoint: string;
+  channelId: string;
+  appArgs: string;
+  callerId?: string;
+  timeout: number;
+  originator?: string;
+  /** Channel variables set before dialing (e.g. PJSIP_HEADER(add,X-...)). */
+  variables?: Record<string, string>;
+}
+
+/** The ARI operations call flows use. AriClient implements it; tests use a fake Asterisk. */
+export type Ari = Pick<
+  AriClient,
+  | 'connected'
+  | 'listChannels'
+  | 'answer'
+  | 'hangup'
+  | 'hangupQuietly'
+  | 'play'
+  | 'stopPlayback'
+  | 'startMoh'
+  | 'stopMoh'
+  | 'recordChannel'
+  | 'originate'
+  | 'ring'
+  | 'setChannelVar'
+  | 'transferProgress'
+  | 'createBridge'
+  | 'addToBridge'
+  | 'removeFromBridge'
+  | 'destroyBridge'
+  | 'recordBridge'
+  | 'stopRecording'
+>;
 
 function enc(s: string): string {
   return encodeURIComponent(s);

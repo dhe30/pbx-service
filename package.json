@@ -17,6 +17,7 @@
     "test": "npm run test --workspaces --if-present",
     "dev:up": "docker compose -f dev/docker-compose.yml up -d",
     "dev:down": "docker compose -f dev/docker-compose.yml down",
-    "db:migrate": "dbmate --migrations-dir db/migrations up"
+    "db:migrate": "dbmate --migrations-dir db/migrations up",
+    "test:configs": "sh telephony/tests/check-configs.sh"
   }
 }

@@ -162,3 +162,4 @@ dev/data/
 
 # Ansible Vault with real secrets (plaintext before `ansible-vault encrypt`); never commit.
 infra/ansible/group_vars/all/vault.yml
+telephony/tests/.rendered/

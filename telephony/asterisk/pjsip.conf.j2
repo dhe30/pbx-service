@@ -1,8 +1,15 @@
-; Asterisk PJSIP config (pbx nodes). Spec: CLAUDE.md §9.
+; Asterisk PJSIP config (pbx nodes). Spec: CLAUDE.md §9, docs/spec-transition.md.
 ;
-; Asterisk only ever talks SIP to the Kamailio edges. There are NO per-staff endpoints and NO
-; webrtc=yes: Kamailio is the registrar and rtpengine does WebRTC. Every call Asterisk sees is
-; plain RTP, PCMU, from a private IP.
+; Asterisk only ever talks SIP to the Kamailio edges. There are NO per-phone endpoints and NO
+; webrtc=yes: Kamailio is the registrar and rtpengine does WebRTC/SRTP and transcoding. Every call
+; Asterisk sees is plain RTP, PCMU, from a private IP.
+;
+; Endpoints:
+;   edge-a, edge-b, ...          one per Kamailio edge. Calls IN from the edge (carrier, phones)
+;                                and staff rings OUT to it (PJSIP/<sip user>@edge-a).
+;   vendor-<us|intl>-edge-<x>    PSTN vendor legs, sent through edge <x> (outbound_proxy) with the
+;                                vendor's digest credentials. The ARI app dials
+;                                PJSIP/vendor-us-edge-a/sip:+1NXXNXXXXXX@<vendor host>.
 
 [global]
 type=global
@@ -15,10 +22,8 @@ type=transport
 protocol=udp
 bind={{ private_ip }}:{{ asterisk_sip_port }}
 
-{% for host in groups['edge'] %}
-{% set trunk = {'name': edge_trunk_names[loop.index0], 'ip': hostvars[host].private_ip} %}
-; ---- {{ trunk.name }}: Kamailio on {{ host }} ({{ trunk.ip }}) ----
-[{{ trunk.name }}]
+; ---- Common media/call settings for everything that talks to an edge ----
+[edge-common](!)
 type=endpoint
 transport=transport-udp
 context=from-edge
@@ -27,21 +32,28 @@ allow=ulaw
 ; rtpengine anchors the media; never let RTP go point-to-point.
 direct_media=no
 dtmf_mode=rfc4733
-; Show the caller's number on the staff phone (originate callerId -> From / P-Asserted-Identity).
+; Show the caller's number on the phone (originate callerId -> From / P-Asserted-Identity).
 send_pai=yes
 trust_id_inbound=yes
 trust_id_outbound=yes
 ; If rtpengine dies mid-call, audio stops: hang up instead of leaving a silent call open.
-rtp_timeout=60
-; Hold (docs/hold-call-waiting.md). Staff holds with a re-INVITE a=sendonly/inactive ->
-; Asterisk marks the staff channel held and raises ARI ChannelHold; the ARI app plays MOH to
-; the caller. moh_passthrough=no: when a hold reaches a channel, Asterisk plays MOH itself
-; instead of sending a hold re-INVITE on to that side (e.g. the carrier).
+rtp_timeout=30
+; Hold: a phone holds with a re-INVITE a=sendonly/inactive -> ChannelHold for the ARI app, which
+; plays MOH to the other party. moh_passthrough=no: never forward a hold re-INVITE to the other
+; side (e.g. the carrier); MOH is played locally instead.
 moh_passthrough=no
 moh_suggest=default
 ; A held leg may send no RTP at all. Allow that for up to hold_max_sec, then treat the device as
 ; dead (e.g. the browser closed while holding) and hang up. Keep below rtpengine silent-timeout.
 rtp_timeout_hold={{ hold_max_sec }}
+; Transfers (REFER) are handed to the ARI app: it sets PJSIP_TRANSFER_HANDLING()=ari-only on each
+; bridged channel (ChannelTransfer events). allow_transfer must stay on for Asterisk to accept REFER.
+allow_transfer=yes
+
+{% for host in groups['edge'] %}
+{% set trunk = {'name': edge_trunk_names[loop.index0], 'ip': hostvars[host].private_ip} %}
+; ==== {{ trunk.name }}: Kamailio on {{ host }} ({{ trunk.ip }}) ====
+[{{ trunk.name }}](edge-common)
 aors={{ trunk.name }}
 
 [{{ trunk.name }}]
@@ -56,4 +68,31 @@ type=identify
 endpoint={{ trunk.name }}
 match={{ trunk.ip }}
 
+{% for v in [{'id': 'us', 'host': vendor_us_host, 'user': vault_vendor_us_user, 'pass': vault_vendor_us_password},
+             {'id': 'intl', 'host': vendor_intl_host, 'user': vault_vendor_intl_user, 'pass': vault_vendor_intl_password}] %}
+; ---- {{ v.id }} PSTN vendor via {{ trunk.name }} ----
+[vendor-{{ v.id }}-{{ trunk.name }}](edge-common)
+; Requests go to Kamailio on this edge, which relays to the vendor (and anchors media).
+outbound_proxy=sip:{{ trunk.ip }}:5060\;lr
+outbound_auth=vendor-{{ v.id }}-auth
+aors=vendor-{{ v.id }}-{{ trunk.name }}
+; In-dialog requests from the vendor arrive via the same edge (identified as {{ trunk.name }}).
+
+[vendor-{{ v.id }}-{{ trunk.name }}]
+type=aor
+contact=sip:{{ v.host }}:5060
+
 {% endfor %}
+{% endfor %}
+; ---- PSTN vendor digest credentials (Course Services tab; values from the vault) ----
+[vendor-us-auth]
+type=auth
+auth_type=userpass
+username={{ vault_vendor_us_user }}
+password={{ vault_vendor_us_password }}
+
+[vendor-intl-auth]
+type=auth
+auth_type=userpass
+username={{ vault_vendor_intl_user }}
+password={{ vault_vendor_intl_password }}

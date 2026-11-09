@@ -56,6 +56,14 @@
   when: ari_src.changed or not ari_dist.stat.exists
   notify: Restart ari-app
 
+- name: CDR spool directory (survives restarts; replayed on start)
+  ansible.builtin.file:
+    path: /var/spool/pbx/cdr
+    state: directory
+    owner: asterisk
+    group: asterisk
+    mode: "0750"
+
 - name: Environment file (contains secrets)
   ansible.builtin.template:
     src: ari-app.env.j2
