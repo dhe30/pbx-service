@@ -16,4 +16,7 @@ the `kamailio` schema of the `pbx` database. The `kamailio` role's `search_path`
 these tables so the API can create/delete `subscriber` rows.
 
 Local dev: `npm run db:kamailio` (`dev/kamailio-schema.sh`) creates the same tables in the
-docker-compose Postgres, in schema `kamailio`. It is idempotent.
+docker-compose Postgres, in schema `kamailio`. It is idempotent, and it applies
+`pbx-subscriber-columns.sql` on every run, so a dev DB created before those columns existed gets
+them by re-running it (API tests against Docker fail with `column "tenant_id" does not exist`
+otherwise).

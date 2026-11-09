@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createDb, type Sql } from '@pbx/shared';
 import { buildApp, type AppConfig, type AppDeps } from '../src/app.js';
 import { StripeError, type Card, type ChargeResult, type SetupIntent, type StripeClient } from '../src/billing/stripe.js';
@@ -31,8 +32,11 @@ export class FakeStripe implements StripeClient {
   private seq = 0;
   private byKey = new Map<string, unknown>();
 
+  // Unique across instances and test files: billing_accounts.stripe_customer_id is UNIQUE in the
+  // shared test DB, and test files run in parallel.
+  private readonly run = randomUUID().slice(0, 8);
   private next(prefix: string) {
-    return `${prefix}_${++this.seq}`;
+    return `${prefix}_${this.run}_${++this.seq}`;
   }
   private check() {
     if (this.down) throw new StripeError('gateway down', null);

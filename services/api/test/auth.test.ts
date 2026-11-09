@@ -206,11 +206,16 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
   it('signup with an existing email (any case) is 409 and creates nothing', async () => {
     const email = uniqueEmail();
     expect((await signup(email)).statusCode).toBe(201);
-    const [{ count: before }] = (await sql`select count(*)::int as count from tenants`) as unknown as [{ count: number }];
+    // Only this file's tenants: other test files create tenants in parallel.
+    const countOurs = async () =>
+      ((await sql`select count(*)::int as count from tenants where name = ${"Tony's Pizza (test)"}`) as unknown as [
+        { count: number },
+      ])[0].count;
+    const before = await countOurs();
     const dup = await signup(email.toUpperCase());
     expect(dup.statusCode).toBe(409);
     expect(dup.json()).toMatchObject({ error: 'email_taken' });
-    const [{ count: after }] = (await sql`select count(*)::int as count from tenants`) as unknown as [{ count: number }];
+    const after = await countOurs();
     expect(after).toBe(before); // transaction rolled back the tenant insert
   });
 
