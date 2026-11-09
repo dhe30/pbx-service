@@ -194,7 +194,7 @@ Change any of these by editing the code they point at. Each is small and local.
 - `kamailio -c` (6.0.8) passes on both rendered edge configs. The check does catch unknown
   functions, unknown module parameters and wrong argument counts (verified by injecting each).
 
-**[VERIFY] on the first VM deploy** (nothing here ran against real Asterisk, rtpengine or SIP
+**[VERIFY] on the first VM deploy** (step-by-step checks: [cloud-deploy.md](cloud-deploy.md) §4) (nothing here ran against real Asterisk, rtpengine or SIP
 endpoints):
 1. Transfers:
    - `ChannelTransfer` event fields and `POST /channels/{id}/transfer_progress` (Asterisk

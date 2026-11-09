@@ -1,7 +1,7 @@
 # Telephony ↔ API/web contract
 
 What the call path (Kamailio + Asterisk/ARI app) reads and writes, so the API and web can be built
-against it. The schema is in `db/migrations/` (latest:
+against it. Purchases, payments and invoicing (Stripe, proration, past due): [billing-flows.md](billing-flows.md). The schema is in `db/migrations/` (latest:
 `20261109000000_course_spec_telephony.sql`). Shared types, zod schemas and rules are in
 `services/shared` (import from `@pbx/shared`). Why it looks like this:
 [spec-transition.md](spec-transition.md).

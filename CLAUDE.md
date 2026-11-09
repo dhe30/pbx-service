@@ -484,7 +484,7 @@ Summary:
 The phase-1 telephony was rebuilt for the course spec. Full write-up for the team (assumption ->
 spec table, per-component changes, decisions S1-S16, bottleneck status, new risks N1-N10, what is
 still [VERIFY] on a VM): docs/spec-transition.md. API/web contract: docs/telephony-contract.md.
-Tests: docs/telephony-tests.md.
+Tests: docs/telephony-tests.md. First cloud deployment + checklist: docs/cloud-deploy.md. Purchases/payments/billing (frontend vs backend vs Stripe): docs/billing-flows.md.
 
 Bottlenecks from the gap analysis:
 - B1 registrations/auth on the DB primary -> FIXED (usrloc in memory + DMQ, read-only DB URL, 16/16 workers)
