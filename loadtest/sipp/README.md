@@ -15,7 +15,10 @@
 - Copy `dtmf_2833_1.pcap` and `g711a.pcap` from SIPp's source tree (`pcap/` directory) into
   `loadtest/sipp/pcap/` (they are not committed).
 - `cp users.csv.example users.csv` and put bob's SIP password (from the vault) in it.
-- The machine's public IP must be in `carrier_cidrs` (`infra/ansible/group_vars/all/main.yml`),
+- The carrier scenarios must run from an address (and, for an `IP:port` entry, the source port,
+  e.g. `-p 5062`) listed in `carrier_cidrs` (`infra/ansible/group_vars/all/main.yml` or the
+  inventory). Phone scenarios (`register.xml`, `uas_*`, `uac_device_call.xml`) must use a
+  *different* port on the same machine, or they are treated as the carrier,
   otherwise Kamailio answers the INVITE with 403.
 
 ## Phase-1 end-to-end call (run from `loadtest/sipp/`)

@@ -177,6 +177,13 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).toMatch(/is_in_subnet\("\$si", "130\.245\.136\.142\/32"\) && \$pr == "udp"\)/);
       expect(block(kam, 'route[REQINIT]')).toMatch(/if \(isflagset\(FLT_DEVICE_SRC\) && !isflagset\(FLT_TRUSTED\)\)/);
     });
+    it('a carrier entry with :port matches that source port only (fake carrier + phones on one host)', () => {
+      const cls = block(kam2, 'route[CLASSIFY]');
+      expect(cls).toMatch(/is_in_subnet\("\$si", "192\.168\.56\.1\/32"\) && \$sp == 5062 && \$pr == "udp"\) \{\n\t\tsetflag\(FLT_CARRIER\)/);
+      // without a port: any source port (the real carrier)
+      expect(cls).toMatch(/is_in_subnet\("\$si", "130\.245\.136\.142\/32"\) && \$pr == "udp"\) \{/);
+      expect(cls).toMatch(/is_in_subnet\("\$si", "192\.168\.56\.1\/32"\)\) setflag\(FLT_TRUSTED\)/);
+    });
     it('B3: rtpengine kernel forwarding + one thread per vCPU', () => {
       const rtp = read('edge-1', 'rtpengine.conf');
       expect(rtp).toMatch(/^table = 0$/m);

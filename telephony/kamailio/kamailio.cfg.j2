@@ -314,11 +314,15 @@ request_route {
 
 # Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_DEVICE_SRC (+ FLT_TRUSTED).
 route[CLASSIFY] {
-{% for cidr in (carrier_cidrs + trusted_tester_cidrs) %}
-	if (is_in_subnet("$si", "{{ cidr if '/' in cidr else cidr ~ '/32' }}")) setflag(FLT_TRUSTED);
+{# carrier_cidrs / trusted_tester_cidrs entries: "IP", "IP/bits", optionally ":port" (carrier only).
+   A port pins the carrier to one source port, so phones on the SAME machine (local testing: SIPp
+   carrier on :5062, MicroSIP phone on :5060) are still treated as phones. #}
+{% macro net(entry) %}{% set n = entry.split(':')[0] %}{{ n if '/' in n else n ~ '/32' }}{% endmacro %}
+{% for entry in (carrier_cidrs + trusted_tester_cidrs) %}
+	if (is_in_subnet("$si", "{{ net(entry) }}")) setflag(FLT_TRUSTED);
 {% endfor %}
-{% for cidr in carrier_cidrs %}
-	if (is_in_subnet("$si", "{{ cidr if '/' in cidr else cidr ~ '/32' }}") && $pr == "udp") {
+{% for entry in carrier_cidrs %}
+	if (is_in_subnet("$si", "{{ net(entry) }}"){% if ':' in entry %} && $sp == {{ entry.split(':')[1] }}{% endif %} && $pr == "udp") {
 		setflag(FLT_CARRIER);
 		return;
 	}

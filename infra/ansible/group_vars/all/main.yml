@@ -18,6 +18,8 @@ sip_domain: "group-4.cse356.compas.cs.stonybrook.edu"
 
 # Carrier (DID provider) source addresses allowed to send INVITEs for our DIDs (Course Services tab:
 # "Your inbound trunks receive INVITEs from the carrier, 130.245.136.142").
+# Entries: "IP", "IP/bits", optionally ":port" to accept carrier calls only from that source port
+# (needed when the fake carrier and test phones run on the same machine, e.g. "192.168.56.1:5062").
 # Local testing: add the public IP of the machine running SIPp / your test softphone.
 carrier_cidrs: ["130.245.136.142/32"]
 # Sources of the course's simulated phones/customers: never rate-limited by pike (B2).
