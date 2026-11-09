@@ -8,7 +8,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`. Code: `services/api
 | Step | What | State |
 |---|---|---|
 | 1 | Server skeleton: config, logging, `/health`, `/ready`, `/metrics`, error format, graceful shutdown | Done |
-| 2 | Auth: signup, login, refresh, logout (cookies + JWT) | Done, `GET /me` deliberately postponed |
+| 2 | Auth: signup (with time zone), login, refresh, logout (cookies + JWT), `GET /me` | Done |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
 | 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
 | 5 | IVR menus, ring groups, mailboxes, number routing | Done |
@@ -68,13 +68,17 @@ stores is checked to belong to the same business. Rules and helpers: `docs/backe
 
 | Request | Success response |
 |---|---|
-| `POST /auth/signup` `{ "businessName", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner" }` + cookies |
+| `POST /auth/signup` `{ "businessName", "timezone", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner" }` + cookies |
 | `POST /auth/login` `{ "email", "password" }` | `200 { "userId", "tenantId", "role" }` + cookies |
 | `POST /auth/refresh` (no body) | `200 { "userId", "tenantId", "role" }` + new cookies |
 | `POST /auth/logout` (no body) | `204` + cookies cleared |
+| `GET /me` | `200 { "user": { "id", "email", "role", "createdAt" }, "tenant": { "id", "name", "timezone", "status", "createdAt" } }` |
 
 Validation rules (show them in the forms):
 - `businessName`: 1-100 characters.
+- `timezone`: IANA name, e.g. `America/New_York` (offer a picker; the browser's own zone is
+  `Intl.DateTimeFormat().resolvedOptions().timeZone`). **Fixed after signup**: it sets billing
+  periods and business hours. Returned in its canonical spelling.
 - `email`: valid email, case-insensitive (stored lowercased).
 - `password`: 8-128 characters at signup.
 
@@ -173,19 +177,6 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 
 ### Not available yet
 
-- `GET /me` (current user + tenant name). Until then, keep `{ userId, tenantId, role }` from the
-  login/signup/refresh response. Tell me what fields you need in `/me`.
-  Proposed GET /me (not built yet; feedback welcome)
-  {
-    "user": {
-      "id": "uuid",
-      "email": "owner@tonys.test",
-      "role": "owner",
-      "sipUsername": null,
-      "extension": null
-    },
-    "tenant": 
-  {
 - All other dashboard endpoints (CLAUDE.md §11). I'll share request/response shapes before
   building each group; tell me early if a shape doesn't suit the UI.
 
@@ -302,8 +293,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 - **Daniel:** extensions schema (column, format, who writes the migration, auto-assigned or
   picked by owners). Step 4 shipped without it; needed before staff-to-staff calling.
-- **Justin:** fields in `GET /me`, and request/response shapes for each dashboard page. Needed
-  before `/me` and steps 6-7. (Staff and call configuration shapes are already built; say if they
+- **Justin:** whether `GET /me` has the fields the UI needs, and request/response shapes for each
+  dashboard page. Needed before steps 6-7. (Staff and call configuration shapes are already built; say if they
   don't suit the UI.)
 - **Daniel:** confirm on the phase-1 VM that an IVR `on_timeout` action now runs (fixed in
   `services/shared` in step 5; see the Daniel section above).
@@ -320,7 +311,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Not built yet
 
-- `GET /me` (postponed on purpose).
 - Staff extensions (step 4 follow-up, waiting on the schema decision with Daniel).
 - Changing a staff member's dashboard password (no reset or change-password route yet).
 - Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.

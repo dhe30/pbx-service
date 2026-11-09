@@ -120,7 +120,7 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: "Tony's Pizza (test)", email, password },
+      payload: { businessName: "Tony's Pizza (test)", timezone: 'america/chicago', email, password },
     });
     if (res.statusCode === 201) tenantIds.push(res.json().tenantId);
     return res;
@@ -153,6 +153,43 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     expect(user!.passwordHash).toMatch(/^\$argon2id\$/);
     const [settings] = await sql`select record_calls from tenant_settings where tenant_id = ${body.tenantId}`;
     expect(settings).toEqual({ recordCalls: false });
+    const [tenant] = await sql`select timezone, status from tenants where id = ${body.tenantId}`;
+    expect(tenant).toEqual({ timezone: 'America/Chicago', status: 'active' }); // canonical spelling
+  });
+
+  it('signup requires a time zone', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: { businessName: 'No TZ', email: uniqueEmail(), password: 'correct horse battery' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toMatch(/^timezone: Required/);
+  });
+
+  it('GET /me returns the user and the business; 401 without a session or once deleted', async () => {
+    const email = uniqueEmail();
+    const signed = await signup(email);
+    const { userId, tenantId } = signed.json();
+    const access = cookie(signed, ACCESS_COOKIE)!.value;
+
+    const me = await app.inject({ method: 'GET', url: '/me', cookies: { [ACCESS_COOKIE]: access } });
+    expect(me.statusCode).toBe(200);
+    expect(me.json()).toEqual({
+      user: { id: userId, email, role: 'owner', createdAt: expect.any(String) },
+      tenant: {
+        id: tenantId,
+        name: "Tony's Pizza (test)",
+        timezone: 'America/Chicago',
+        status: 'active',
+        createdAt: expect.any(String),
+      },
+    });
+
+    expect((await app.inject({ method: 'GET', url: '/me' })).statusCode).toBe(401);
+    await sql`delete from users where id = ${userId}`;
+    const gone = await app.inject({ method: 'GET', url: '/me', cookies: { [ACCESS_COOKIE]: access } });
+    expect(gone.statusCode).toBe(401);
   });
 
   it('signup with an existing email (any case) is 409 and creates nothing', async () => {
@@ -170,12 +207,13 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: '', email: 'not-an-email', password: 'short' },
+      payload: { businessName: '', timezone: 'Mars/Olympus_Mons', email: 'not-an-email', password: 'short' },
     });
     expect(res.statusCode).toBe(400);
     const { error, message } = res.json();
     expect(error).toBe('invalid_request');
     expect(message).toMatch(/businessName/);
+    expect(message).toMatch(/timezone: must be an IANA time zone/);
     expect(message).toMatch(/email/);
     expect(message).toMatch(/password/);
   });

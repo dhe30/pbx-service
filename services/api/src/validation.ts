@@ -1,3 +1,4 @@
+import { isValidTimeZone } from '@pbx/shared';
 import { z } from 'zod';
 import { HttpError } from './errors.js';
 
@@ -25,3 +26,12 @@ export const password = z.string().min(8, 'must be at least 8 characters').max(1
 export const name = z.string().trim().min(1).max(100);
 // An optional reference to another row (greeting, owner, fallback mailbox, ...). Omitted = null.
 export const nullableId = z.string().uuid().nullable().default(null);
+// IANA time zone ("America/New_York"). Stored in its canonical spelling, so "america/new_york"
+// and "America/New_York" are the same account setting.
+export const timeZone = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(isValidTimeZone, 'must be an IANA time zone, e.g. America/New_York')
+  .transform((tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone);
