@@ -6,7 +6,8 @@ import { z } from 'zod';
 import type { AudioConverter } from '../audio.js';
 import { authenticate, requireRole } from '../auth.js';
 import { HttpError } from '../errors.js';
-import { RangeNotSatisfiable, type MediaStore } from '../object-store.js';
+import { audioDoc, deleteObjects, sendAudio } from '../audio-response.js';
+import type { MediaStore } from '../object-store.js';
 import { IN_USE, withDoc } from '../openapi/document.js';
 import { refuseIfUsed, usages, type Usage } from '../references.js';
 import { IdParams, tenantOf } from '../tenancy.js';
@@ -73,9 +74,6 @@ const view = (m: MediaRow) => ({
 });
 
 const notFound = () => new HttpError(404, 'not_found', 'No such media');
-
-/** One `bytes=` range (what browsers send for <audio>). Anything else is ignored: full file. */
-const SINGLE_RANGE = /^bytes=(\d+-\d*|-\d+)$/;
 
 /** IVR menus and mailboxes that play this greeting. */
 async function greetingUsages(db: Db, tenantId: string, mediaId: string): Promise<Usage[]> {
@@ -217,33 +215,17 @@ export const mediaRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore; audi
 
   app.get(
     '/media/:id/audio',
-    withDoc(ownerOnly, {
-      tag: 'Media',
-      auth: 'owner',
-      summary: 'Download the audio',
-      description:
-        'The WAV file (16-bit PCM, mono, 8 kHz). Works as `<audio src>` in the dashboard (same origin, cookie sent). ' +
-        'Supports a single `Range: bytes=...` for seeking.',
-      params: IdParams,
-      headers: { Range: { description: 'Optional single byte range, e.g. `bytes=0-1023`. Other forms are ignored.' } },
-      responses: {
-        200: {
-          description: 'The whole file',
-          binary: 'audio/wav',
-          headers: { 'Content-Length': 'File size in bytes.', 'Accept-Ranges': 'Always `bytes`.' },
-        },
-        206: {
-          description: 'The requested range',
-          binary: 'audio/wav',
-          headers: { 'Content-Range': '`bytes <first>-<last>/<total>`.' },
-        },
-      },
-      errors: {
-        404: 'No such media in this account, or its file is missing (`not_found`).',
-        416: 'The range is outside the file (`range_not_satisfiable`).',
-        503: 'Database or object store temporarily unavailable (`unavailable`). Retry after `Retry-After` seconds.',
-      },
-    }),
+    withDoc(
+      ownerOnly,
+      audioDoc({
+        tag: 'Media',
+        auth: 'owner',
+        summary: 'Download the audio',
+        description: 'The audio file.',
+        params: IdParams,
+        notFound: 'No such media in this account.',
+      }),
+    ),
     async (req, reply) => {
       const { id } = parse(IdParams, req.params);
       const [row] = await withRetry(
@@ -251,33 +233,7 @@ export const mediaRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore; audi
           select object_key from media where id = ${id} and tenant_id = ${tenantOf(req)}`,
       );
       if (!row) throw notFound();
-
-      const header = req.headers.range;
-      const range = header && SINGLE_RANGE.test(header) ? header : undefined;
-      let obj;
-      try {
-        obj = await store.get(row.objectKey, range);
-      } catch (err) {
-        if (err instanceof RangeNotSatisfiable) {
-          throw new HttpError(416, 'range_not_satisfiable', `Range ${range} is outside the file`);
-        }
-        throw err;
-      }
-      if (!obj) {
-        // The row exists but the file doesn't: lost data (or an upload still in flight). Log loudly.
-        req.log.error({ mediaId: id, key: row.objectKey }, 'media object missing from the object store');
-        throw new HttpError(404, 'not_found', 'The audio file is missing');
-      }
-
-      reply
-        .header('content-type', 'audio/wav')
-        .header('accept-ranges', 'bytes')
-        // Media never changes (a new upload gets a new id), so the browser may keep it.
-        .header('cache-control', 'private, max-age=86400, immutable')
-        .header('content-disposition', `inline; filename="${id}.wav"`);
-      if (obj.contentLength !== undefined) reply.header('content-length', obj.contentLength);
-      if (range && obj.contentRange) reply.status(206).header('content-range', obj.contentRange);
-      return reply.send(obj.body);
+      return sendAudio(req, reply, store, { id, objectKey: row.objectKey });
     },
   );
 
@@ -314,8 +270,7 @@ export const mediaRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore; audi
           return row.objectKey;
         }),
       );
-      // After the commit. If this fails the file stays behind unreferenced: harmless, logged.
-      await store.delete(key).catch((err: unknown) => req.log.warn({ err, key }, 'could not delete media object'));
+      await deleteObjects(store, [key], req.log); // after the commit
       return reply.status(204).send();
     },
   );

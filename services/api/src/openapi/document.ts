@@ -222,6 +222,9 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   Numbers: "Routing the account's phone numbers.",
   'Business hours': 'Weekly schedules that route calls differently when open or closed.',
   Blocklist: 'Caller numbers that are rejected.',
+  Calls: 'Call history (one row per call leg) and call recordings.',
+  Voicemail: 'Voicemail inbox: listen, mark heard or new, delete.',
+  Settings: 'Active add-ons and plan allowances.',
   Media: 'Audio files: uploaded greetings, call recordings and voicemail messages (8 kHz mono WAV).',
 };
 

@@ -1,7 +1,7 @@
 # Backend API: what the rest of the team needs to know
 
 From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
-Details: `docs/backend-step1.md` to `docs/backend-step6.md`, `docs/backend-card-signup.md`. Code:
+Details: `docs/backend-step1.md` to `docs/backend-step7.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
 
 **What changed on 2026-11-09 (read this if you built against an earlier version):**
@@ -20,6 +20,10 @@ Details: `docs/backend-step1.md` to `docs/backend-step6.md`, `docs/backend-card-
 - **Step 6 (media):** `POST /media` (greeting upload), `GET /media`, `GET /media/:id`,
   `GET /media/:id/audio`, `DELETE /media/:id`. Audio is served by the API, not via presigned
   URLs. Local dev now needs Garage (`npm run dev:s3`) and ffmpeg.
+- **Step 7 (history, voicemail, settings):** `GET /calls` (search, keyset paging),
+  `GET /calls/:callId`, `GET /calls/:callId/recording`; `GET /voicemails`, `GET/PATCH/DELETE
+  /voicemails/:id`, `GET /voicemails/:id/audio`; `GET /settings` (read-only). Staff see only their
+  own extensions' calls and their mailboxes. Deleting a mailbox now also deletes its voicemail audio.
 
 ## Status
 
@@ -32,7 +36,8 @@ Details: `docs/backend-step1.md` to `docs/backend-step6.md`, `docs/backend-card-
 | 5 | IVR menus, ring groups, mailboxes, number routing, business hours, caller blocklist | Done |
 | — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card at signup + first plan charge, extension limit | Done (2026-11-09) |
 | 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
-| 7-8 | History/voicemail views, settings, number purchase | Planned |
+| 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
+| 8 | Number listing and purchase | Planned |
 
 ## For everyone
 
@@ -252,10 +257,41 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
   `400 invalid_audio`: show `message`. `409 in_use` on delete: a menu or mailbox still plays it.
 - There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
 
+### Call history, voicemail, settings (available now, step 7)
+
+Any logged-in user. The owner sees everything; **staff see only calls where one of their
+extensions (`extensions.userId`) took part, and voicemails in mailboxes they own or their
+extensions' mailboxes**. Details: `docs/backend-step7.md`.
+
+| Request | Response |
+|---|---|
+| `GET /calls?from&to&direction&outcome&extension&number&limit&cursor` | `{ items: [leg], nextCursor }`, newest first |
+| `GET /calls/:callId` | `{ callId, legs: [leg], recordingUrl }` (main leg first) |
+| `GET /calls/:callId/recording` | the WAV (`<audio src={recordingUrl}>`) |
+| `GET /voicemails?mailboxId&heard&limit&cursor` | `{ items: [voicemail], nextCursor }`, newest first |
+| `GET /voicemails/:id`, `PATCH /voicemails/:id { heard }` | `voicemail` |
+| `DELETE /voicemails/:id` | `204` (message + audio) |
+| `GET /voicemails/:id/audio` | the WAV (`<audio src={audioUrl}>`) |
+| `GET /settings` | `{ recordCalls, intlCalling, includedUsMinutes, includedExtensions, extraExtensions }` |
+
+- **One row per leg**, not per call: an incoming call that also rang an external number has a
+  second leg with the same `callId` and `parentId` set. Group by `callId` if the page shows calls.
+- leg = `{ id, callId, parentId, direction, fromNumber, toNumber, did, fromExtension, toExtension,
+  startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, charge, includedSec,
+  recordingUrl }`. `charge` is USD. Our cost isn't exposed.
+- `number` matches digits anywhere in the from/to/our number; formatting is ignored, so
+  `(201) 555` works. `from` is inclusive, `to` exclusive (ISO 8601).
+- **Paging:** pass `nextCursor` back as `cursor`; `null` means the last page. Don't build cursors
+  yourself.
+- voicemail = `{ id, mailboxId, mailboxName, callerNumber, callId, heard, durationMs, createdAt,
+  audioUrl }`. `heard: false` = new, `true` = saved; the phone menu (`*98`) sees the same state.
+  Playing doesn't mark it heard: send the `PATCH`.
+- **Settings are read-only.** Recording and international calling are paid add-ons
+  (billing-flows §2-§3), bought and cancelled through billing (not built yet).
+
 ### Not available yet
 
-- All other dashboard endpoints (CLAUDE.md §11). I'll share request/response shapes before
-  building each group; tell me early if a shape doesn't suit the UI.
+- Number listing and purchase (step 8); buying add-ons and extra extensions; invoices.
 
 ### Errors to handle on upcoming forms (from step 3)
 
@@ -401,8 +437,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - Changing a staff member's dashboard password (no reset or change-password route yet).
-- Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
-- Billing: buying extra extensions / numbers / add-ons, weekly invoices, past due and recovery
+- Billing: buying extra extensions / numbers / add-ons (turning `record_calls` / `intl_calling`
+  on and off; `GET /settings` only shows them), weekly invoices, past due and recovery
   (billing-flows §3-§5).
 - Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
   is known).
@@ -418,8 +454,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
   would remove the trap.
 - **No end-to-end test over a real socket or browser yet.** Auth and staff are covered by
   `app.inject()` tests only; a curl/browser run with the Vite proxy is still to do.
-- **Deleting a mailbox leaves its voicemail audio behind.** The voicemail rows cascade, but their
-  `media` rows and object-store files stay. Step 7 (voicemail delete) should add the cleanup.
+- **Voicemails deleted by phone (`*98` key 3) leave their audio behind.** The ARI app deletes
+  only the `voicemails` row; the `media` row and the object stay (spec-transition S13). Deletes
+  through the API remove all three. A periodic cleanup of unreferenced voicemail media is still
+  to do.
 - **No call has gone through an API-created IVR menu yet** (phase-1 VM test).
 - **No softphone has registered with API-created credentials yet.** Needs the phase-1 VM (or a
   local Kamailio) pointed at the same database.

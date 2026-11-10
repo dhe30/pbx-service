@@ -12,6 +12,7 @@ import { authRoutes } from './routes/auth.js';
 import { billingRoutes } from './routes/billing.js';
 import { blockedNumberRoutes } from './routes/blocked-numbers.js';
 import { businessHoursRoutes } from './routes/business-hours.js';
+import { callRoutes } from './routes/calls.js';
 import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
 import { ivrMenuRoutes } from './routes/ivr-menus.js';
@@ -19,7 +20,9 @@ import { mailboxRoutes } from './routes/mailboxes.js';
 import { mediaRoutes } from './routes/media.js';
 import { numberRoutes } from './routes/numbers.js';
 import { ringGroupRoutes } from './routes/ring-groups.js';
+import { settingsRoutes } from './routes/settings.js';
 import { staffRoutes } from './routes/staff.js';
+import { voicemailRoutes } from './routes/voicemails.js';
 
 // Builds the Fastify app without listening, so tests can drive it with app.inject().
 // index.ts wires the real dependencies; tests pass fakes or a test database.
@@ -118,15 +121,18 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
   await app.register(extensionRoutes, { sql: deps.sql, sipDomain: cfg.SIP_DOMAIN });
 
-  await app.register(mailboxRoutes, { sql: deps.sql });
+  await app.register(mailboxRoutes, { sql: deps.sql, store: deps.store });
   await app.register(ringGroupRoutes, { sql: deps.sql });
   await app.register(ivrMenuRoutes, { sql: deps.sql });
   await app.register(numberRoutes, { sql: deps.sql });
   await app.register(businessHoursRoutes, { sql: deps.sql });
   await app.register(blockedNumberRoutes, { sql: deps.sql });
   await app.register(mediaRoutes, { sql: deps.sql, store: deps.store, audio: deps.audio });
+  await app.register(callRoutes, { sql: deps.sql, store: deps.store });
+  await app.register(voicemailRoutes, { sql: deps.sql, store: deps.store });
+  await app.register(settingsRoutes, { sql: deps.sql });
 
-  // Steps 7+ register voicemails, calls, settings routes here. Every tenant-scoped route
+  // Step 8+ registers number listing and purchase here. Every tenant-scoped route
   // follows the rules in src/tenancy.ts (docs/backend-step3.md) and src/references.ts.
 
   return app;
