@@ -171,11 +171,12 @@ Stripe.js).
 
 ## 8. Decisions still open (check these in review)
 
-1. **Charge first or provision first?** Charging and then failing the DIDWW order leaves money
-   taken for nothing, and the clone lists **no Refunds API** [VERIFY]. Options:
-   - authorize, then capture after provisioning (`capture_method=manual`), if the clone supports
-     it [VERIFY];
-   - or order first, then charge, and release the number if the charge is declined.
+1. **Charge first or provision first?** DECIDED (2026-11-10, numbers): **order first, then
+   charge**, and release the number if the charge is declined (we lose at most DIDWW's setup
+   fee; the customer is never charged for a number they don't get). Charging first would need
+   refunds, which the clone doesn't list. Implemented in `services/api/src/numbers/purchase.ts`,
+   see docs/backend-step8.md. Extensions and add-ons have no provider step, so for them the
+   question doesn't arise.
 2. **Account state until the card is confirmed:** "pending" until §1 steps 5–6 succeed? What
    happens if the first prorated charge is declined?
 3. **Rounding:** Stripe takes integer cents; `cdrs.charge` has 6 decimals. Sum the period's usage,

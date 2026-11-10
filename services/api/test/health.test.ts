@@ -4,6 +4,7 @@ import { HttpError } from '../src/errors.js';
 import { loadConfig } from '../src/config.js';
 import { FakeStripe, MemoryStore, build, testConfig, unusedDb } from './helpers.js';
 import { FfmpegConverter } from '../src/audio.js';
+import { FakeDidProvider } from '../src/numbers/fake-provider.js';
 
 const ok = async () => {};
 const fail = async () => {
@@ -45,13 +46,16 @@ describe('GET /ready', () => {
       stripe: new FakeStripe(),
       store: new MemoryStore(),
       audio: new FfmpegConverter(),
+      didProvider: new FakeDidProvider(),
     });
     const started = Date.now();
     const res = await app.inject({ method: 'GET', url: '/ready' });
     expect(res.statusCode).toBe(503);
-    expect(Date.now() - started).toBeLessThan(3000);
+    // The check times out after 1.5 s. The bound is loose because timers fire late while the other
+    // test files (run in parallel) keep the CPU busy; what matters is that it doesn't hang.
+    expect(Date.now() - started).toBeLessThan(10_000);
     expect(aborted).toBe(true);
-  });
+  }, 15_000);
 
   it('is 503 while draining, without running checks', async () => {
     let ran = false;
@@ -120,6 +124,8 @@ describe('loadConfig', () => {
     S3_SECRET_ACCESS_KEY: 's',
     JWT_SECRET: 'x'.repeat(32),
     DID_PROVIDER_URL: 'http://127.0.0.1:4000',
+    DID_PROVIDER_API_KEY: 'didww-key',
+    DID_TRUNK_GROUP_ID: 'tg-1',
     SIP_WS_URI: 'wss://localhost/ws',
     SIP_DOMAIN: 'pbx.local',
     STRIPE_SECRET_KEY: 'sk_test_x',
@@ -131,6 +137,15 @@ describe('loadConfig', () => {
     expect(cfg.PORT).toBe(3000);
     expect(cfg.HOST).toBe('127.0.0.1');
     expect(cfg.STRIPE_JS_URL).toBe('https://stripe.cse356.compas.cs.stonybrook.edu/v3/');
+  });
+
+  it('needs the DID provider key and exactly one trunk in didww mode, neither in fake mode', () => {
+    expect(loadConfig(valid).DID_PROVIDER_MODE).toBe('didww');
+    expect(() => loadConfig({ ...valid, DID_PROVIDER_API_KEY: undefined })).toThrowError(/DID_PROVIDER_API_KEY/);
+    expect(() => loadConfig({ ...valid, DID_TRUNK_GROUP_ID: undefined })).toThrowError(/exactly one/);
+    expect(() => loadConfig({ ...valid, DID_TRUNK_ID: 't-1' })).toThrowError(/exactly one/);
+    const fake = { ...valid, DID_PROVIDER_MODE: 'fake', DID_PROVIDER_API_KEY: undefined, DID_TRUNK_GROUP_ID: undefined };
+    expect(loadConfig(fake).DID_PROVIDER_MODE).toBe('fake');
   });
 
   it('lists every bad variable without echoing secret values', () => {

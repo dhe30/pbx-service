@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { buildApp, type AppConfig, type AppDeps } from '../src/app.js';
 import { FfmpegConverter } from '../src/audio.js';
+import { FakeDidProvider } from '../src/numbers/fake-provider.js';
 import { ObjectStoreError, RangeNotSatisfiable, type MediaStore, type StoredObject } from '../src/object-store.js';
 import { StripeError, type Card, type ChargeResult, type SetupIntent, type StripeClient } from '../src/billing/stripe.js';
 
@@ -130,6 +131,7 @@ export function build(deps: Partial<AppDeps> = {}, cfg: Partial<AppConfig> = {})
       stripe: new FakeStripe(),
       store: new MemoryStore(),
       audio: new FfmpegConverter(),
+      didProvider: new FakeDidProvider(),
       ...deps,
     },
   );

@@ -4,6 +4,8 @@ import { buildApp } from './app.js';
 import { FfmpegConverter } from './audio.js';
 import { HttpStripeClient } from './billing/stripe.js';
 import { ConfigError, loadConfig } from './config.js';
+import { HttpDidwwProvider } from './numbers/didww.js';
+import { FakeDidProvider } from './numbers/fake-provider.js';
 import { ObjectStore } from './object-store.js';
 
 // API entrypoint (Fastify). See CLAUDE.md §11 for the endpoint list.
@@ -32,6 +34,16 @@ async function main(): Promise<void> {
     stripe: new HttpStripeClient(cfg.STRIPE_API_URL, cfg.STRIPE_SECRET_KEY),
     store,
     audio: new FfmpegConverter(cfg.FFMPEG_PATH),
+    didProvider:
+      cfg.DID_PROVIDER_MODE === 'fake'
+        ? new FakeDidProvider()
+        : new HttpDidwwProvider({
+            baseUrl: cfg.DID_PROVIDER_URL,
+            apiKey: cfg.DID_PROVIDER_API_KEY!,
+            trunk: cfg.DID_TRUNK_GROUP_ID
+              ? { type: 'voice_in_trunk_groups', id: cfg.DID_TRUNK_GROUP_ID }
+              : { type: 'voice_in_trunks', id: cfg.DID_TRUNK_ID! },
+          }),
   });
 
   let shuttingDown = false;

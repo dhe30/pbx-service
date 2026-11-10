@@ -43,8 +43,21 @@ const EnvSchema = z.object({
   STRIPE_JS_URL: z.string().url().default('https://stripe.cse356.compas.cs.stonybrook.edu/v3/'),
   STRIPE_SECRET_KEY: z.string().min(1),
   STRIPE_PUBLISHABLE_KEY: z.string().min(1),
-  /** Course DID endpoint (CLAUDE.md §3 A6; API shape still unknown). */
+  /**
+   * DID provider (course DIDWW API v3 clone, CLAUDE.md §3 A6). `fake` = an in-memory provider
+   * selling fictional numbers (tests and local dev; one API process only).
+   */
+  DID_PROVIDER_MODE: z.enum(['didww', 'fake']).default('didww'),
+  /** API base URL, e.g. https://<didww clone>/v3. */
   DID_PROVIDER_URL: z.string().url(),
+  /** `Api-Key` header value (Ansible Vault). Required in didww mode. */
+  DID_PROVIDER_API_KEY: z.string().optional(),
+  /**
+   * Where bought numbers send their calls: our inbound trunk group (both edges, A7) or a single
+   * trunk. Exactly one is required in didww mode (DIDWW voice_in_trunk_groups / voice_in_trunks id).
+   */
+  DID_TRUNK_GROUP_ID: z.string().optional(),
+  DID_TRUNK_ID: z.string().optional(),
   /** Returned to staff browsers by GET /me/sip-credentials. */
   SIP_WS_URI: z.string().url(),
   SIP_DOMAIN: z.string().min(1),
@@ -57,6 +70,14 @@ const EnvSchema = z.object({
   SHUTDOWN_DRAIN_MS: z.coerce.number().int().min(0).max(60_000).default(5000),
   /** Hard limit for finishing in-flight requests after draining; then we exit anyway. */
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(10_000),
+}).superRefine((c, ctx) => {
+  if (c.DID_PROVIDER_MODE !== 'didww') return;
+  if (!c.DID_PROVIDER_API_KEY) {
+    ctx.addIssue({ code: 'custom', path: ['DID_PROVIDER_API_KEY'], message: 'Required (or set DID_PROVIDER_MODE=fake)' });
+  }
+  if (!c.DID_TRUNK_GROUP_ID === !c.DID_TRUNK_ID) {
+    ctx.addIssue({ code: 'custom', path: ['DID_TRUNK_GROUP_ID'], message: 'Set exactly one of DID_TRUNK_GROUP_ID, DID_TRUNK_ID' });
+  }
 });
 
 export type Config = z.infer<typeof EnvSchema>;

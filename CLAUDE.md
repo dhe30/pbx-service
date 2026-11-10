@@ -314,9 +314,10 @@ Listeners: UDP 5060 public (carrier, phones) + private (Asterisk, peer edge, DMQ
 ---------------------------------------------------------------------------------------------
 Auth: httpOnly cookie with signed JWT (stateless across replicas), short expiry + refresh.
 - POST /auth/signup (tenant + owner), POST /auth/login, POST /auth/logout, GET /me
-- GET /numbers/available (proxy to course DID endpoint), POST /numbers/purchase
-  (Idempotency-Key header; transaction; reconcile if provider succeeded but DB failed),
-  GET /numbers, PUT /numbers/:id/route {ivr_menu_id}
+- Numbers (step 8, docs/backend-step8.md): GET /numbers/{countries,regions,cities,available}
+  (DIDWW search), POST /numbers/purchase (Idempotency-Key; order -> trunk -> prorated charge ->
+  phone_numbers; resumable), GET /numbers, GET/DELETE (release) /numbers/:id,
+  PUT /numbers/:id/route {destination}
 NOTE (2026-11-09): the course spec requires an OpenAPI 3.1 document at /openapi.json and that
 everything the web does be possible through the API. Telephony-relevant data and formats the API
 must expose/write: docs/telephony-contract.md (extensions + subscriber rows, destinations,
@@ -428,12 +429,12 @@ node_exporter 9100 and other exporters.
    -> IMPLEMENTED: infra/ansible/phase1-allinone.yml. Runbook, decisions taken beyond this spec,
       and the items still to verify on a real VM: docs/phase1.md.
 2. (Parallel) API + web locally via dev/docker-compose; staff creation writes subscriber rows.
-   -> API IN PROGRESS (Aaron): steps 1-7 done (skeleton, auth, tenant isolation, staff + SIP
+   -> API IN PROGRESS (Aaron): steps 1-8 done (skeleton, auth, tenant isolation, staff + SIP
       credentials, mailboxes / ring groups / IVR menus / number routing, greeting upload + media,
-      call history / voicemail / settings), plus the course-spec
+      call history / voicemail / settings, number search + purchase + release), plus the course-spec
       updates (time zone + GET /me, business hours, blocklist, /openapi.json, signup card + first
       plan charge, extension limit: docs/backend-card-signup.md). Contracts for other
-      tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5,6,7}.md.
+      tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5,6,7,8}.md.
       Local dev also needs `npm run db:kamailio`, `npm run dev:s3` (Garage) and ffmpeg.
       Every tenant-scoped API route must follow the rules in docs/backend-step3.md.
 3. Everything as code: Ansible roles + StackScript; rebuild the all-in-one VM with one command.

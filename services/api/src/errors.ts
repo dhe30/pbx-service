@@ -1,6 +1,7 @@
 import { isTransientDbError } from '@pbx/shared';
 import type { FastifyError, FastifyInstance } from 'fastify';
 import { StripeError } from './billing/stripe.js';
+import { DidProviderError, NumberUnavailable } from './numbers/provider.js';
 import { ObjectStoreError } from './object-store.js';
 
 // One error shape for every route: { error: <machine-readable code>, message: <human text> }.
@@ -36,6 +37,15 @@ export function registerErrorHandling(app: FastifyInstance): void {
         .status(503)
         .header('Retry-After', '2')
         .send({ error: 'unavailable', message: 'Temporarily unavailable, please retry' });
+    }
+
+    // The DID provider failed. Number purchases are resumable, so retrying (same Idempotency-Key) is safe.
+    if (err instanceof DidProviderError) {
+      req.log.error({ err: err.message, status: err.status }, 'DID provider error');
+      return reply.status(502).send({ error: 'did_provider_error', message: 'The phone number provider failed; please retry' });
+    }
+    if (err instanceof NumberUnavailable) {
+      return reply.status(409).send({ error: 'number_unavailable', message: 'That number is not available' });
     }
 
     // Object store (Garage) unreachable or failing: also temporary, from the client's side.
