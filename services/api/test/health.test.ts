@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { HttpError } from '../src/errors.js';
 import { loadConfig } from '../src/config.js';
-import { build, testConfig, unusedDb } from './helpers.js';
+import { FakeStripe, MemoryStore, build, testConfig, unusedDb } from './helpers.js';
+import { FfmpegConverter } from '../src/audio.js';
 
 const ok = async () => {};
 const fail = async () => {
@@ -41,6 +42,9 @@ describe('GET /ready', () => {
       sql: unusedDb(),
       readinessChecks: { db: hang },
       isDraining: () => false,
+      stripe: new FakeStripe(),
+      store: new MemoryStore(),
+      audio: new FfmpegConverter(),
     });
     const started = Date.now();
     const res = await app.inject({ method: 'GET', url: '/ready' });
