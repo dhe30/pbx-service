@@ -2,7 +2,9 @@ import { withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
+import { deleteObjects } from '../audio-response.js';
 import { HttpError } from '../errors.js';
+import type { MediaStore } from '../object-store.js';
 import { assertGreeting, destinationUsages, refuseIfUsed } from '../references.js';
 import { IdParams, assertOwned, tenantOf, type Ref } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
@@ -19,7 +21,7 @@ import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 // mailbox = { id, name, greetingMediaId, ownerUserId }
 // ownerUserId: whose mailbox it is (display only). The call path uses extensions.mailbox_id as an
 // extension's no-answer fallback and for *98. Deleting a mailbox deletes its voicemails (foreign
-// key cascade).
+// key cascade) and their audio (media rows + objects).
 
 const MailboxBody = z.object({
   name,
@@ -60,11 +62,11 @@ const docs = crudDocs({
   body: MailboxBody,
   params: IdParams,
   listOrder: 'sorted by name',
-  deleteDescription: 'Also deletes its voicemails.',
+  deleteDescription: 'Also deletes its voicemails and their audio.',
   deleteErrors: { 409: `${IN_USE} (IVR digits, numbers, ring groups, business hours, extensions using it as their voicemail).` },
 });
 
-export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql }) => {
+export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore }> = async (app, { sql, store }) => {
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
 
   app.get('/mailboxes', withDoc(ownerOnly, docs.list), async (req) => {
@@ -125,7 +127,7 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
   app.delete('/mailboxes/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
-    await withRetry(() =>
+    const keys = await withRetry(() =>
       sql.begin(async (tx) => {
         const [row] = await tx`select 1 from mailboxes where id = ${id} and tenant_id = ${tenantId} for update`;
         if (!row) throw notFound();
@@ -133,9 +135,16 @@ export const mailboxRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
         // extensions.mailbox_id (an extension's no-answer fallback; the foreign key would set it to
         // NULL) would silently turn "go to voicemail" into "hang up". Refuse instead.
         refuseIfUsed(await destinationUsages(tx, tenantId, 'voicemail', id));
+        // The voicemails cascade with the mailbox, but their media rows (and files) would stay.
+        const media = await tx<{ objectKey: string }[]>`
+          delete from media m using voicemails v
+           where v.mailbox_id = ${id} and v.tenant_id = ${tenantId} and m.id = v.media_id
+          returning m.object_key`;
         await tx`delete from mailboxes where id = ${id} and tenant_id = ${tenantId}`;
+        return media.map((m) => m.objectKey);
       }),
     );
+    await deleteObjects(store, keys, req.log); // after the commit
     return reply.status(204).send();
   });
 };

@@ -1,7 +1,7 @@
 # Backend API: what the rest of the team needs to know
 
 From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
-Details: `docs/backend-step1.md` to `docs/backend-step5.md`, `docs/backend-card-signup.md`. Code:
+Details: `docs/backend-step1.md` to `docs/backend-step7.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
 
 **What changed on 2026-11-09 (read this if you built against an earlier version):**
@@ -14,6 +14,16 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`, `docs/backend-card-
 - Phase-1 IVR targets `{action: "user"}` are a 400 now.
 - New required config: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`. New migration:
   `db/migrations/20261110000000_billing_card.sql` (run `npm run db:migrate`).
+- `npm run db:kamailio` now also adds the `tenant_id` / `extension_id` columns to
+  `kamailio.subscriber`. **Re-run it on an existing dev database**, otherwise extension routes and
+  the API tests fail with `column "tenant_id" does not exist`.
+- **Step 6 (media):** `POST /media` (greeting upload), `GET /media`, `GET /media/:id`,
+  `GET /media/:id/audio`, `DELETE /media/:id`. Audio is served by the API, not via presigned
+  URLs. Local dev now needs Garage (`npm run dev:s3`) and ffmpeg.
+- **Step 7 (history, voicemail, settings):** `GET /calls` (search, keyset paging),
+  `GET /calls/:callId`, `GET /calls/:callId/recording`; `GET /voicemails`, `GET/PATCH/DELETE
+  /voicemails/:id`, `GET /voicemails/:id/audio`; `GET /settings` (read-only). Staff see only their
+  own extensions' calls and their mailboxes. Deleting a mailbox now also deletes its voicemail audio.
 
 ## Status
 
@@ -22,11 +32,12 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`, `docs/backend-card-
 | 1 | Server skeleton: config, logging, `/health`, `/ready`, `/metrics`, error format, graceful shutdown | Done |
 | 2 | Auth: signup (with time zone), login, refresh, logout (cookies + JWT), `GET /me` | Done |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
-| 4 | Staff + SIP credentials (`users` + Kamailio `subscriber` rows) | Done (no extensions yet) |
+| 4 | Staff logins + SIP credentials; extensions (each with a Kamailio `subscriber` row) | Done |
 | 5 | IVR menus, ring groups, mailboxes, number routing, business hours, caller blocklist | Done |
 | — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card at signup + first plan charge, extension limit | Done (2026-11-09) |
-| 6 | Greeting upload, media URLs | Next (needs Garage in dev) |
-| 7-8 | History/voicemail views, settings, number purchase | Planned |
+| 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
+| 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
+| 8 | Number listing and purchase | Planned |
 
 ## For everyone
 
@@ -39,17 +50,19 @@ Details: `docs/backend-step1.md` to `docs/backend-step5.md`, `docs/backend-card-
 | Status | `error` | Meaning |
 |---|---|---|
 | 400 | `invalid_request` | Bad body or malformed id; `message` names each bad field (`email: Invalid email; password: ...`) |
-| 400 | `invalid_reference` | The body points at an id that doesn't exist or belongs to another business; `message` names the field (`members.1: no such user`) |
+| 400 | `invalid_reference` | The body points at an id that doesn't exist or belongs to another business; `message` names the field (`memberIds.1: no such extension`) |
+| 400 | `invalid_audio` | Upload isn't a supported audio file, is empty, or is longer than 300 s (`POST /media`) |
+| 400 | `card_not_saved` | Card setup not confirmed with Stripe.js yet (`POST /billing/card`) |
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
+| 402 | `payment_required`, `payment_failed` | Plan not paid yet / a card charge was declined |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
-| 400 | `card_not_saved` | Card setup not confirmed with Stripe.js yet (`POST /billing/card`) |
-| 402 | `payment_required`, `payment_failed` | Plan not paid yet / a card charge was declined |
 | 409 | `email_taken`, `in_use`, `number_taken`, `extension_limit` | Conflict with existing data (`in_use`: can't delete, still used by call routing; `message` names what uses it) |
-| 502 | `payment_gateway_error` | The payment service failed. Safe to retry (billing calls are idempotent) |
-| 415 | | Body wasn't JSON (only `application/json` is accepted) |
-| 503 | `unavailable` | Database failing over; comes with `Retry-After: 2`. Retry, it's not a bug |
+| 416 | `range_not_satisfiable` | `Range` header outside the file (`GET /media/:id/audio`) |
+| 4xx | Fastify's code, e.g. `FST_ERR_CTP_INVALID_MEDIA_TYPE` (415) | Errors raised by Fastify itself: body wasn't JSON (only `application/json` is accepted, except audio uploads to `POST /media`), body too large, malformed JSON. Same shape, but `error` is Fastify's code, not one of ours |
 | 500 | `internal_error` | A bug; details are only in the server log |
+| 502 | `payment_gateway_error` | The payment service failed. Safe to retry (billing calls are idempotent) |
+| 503 | `unavailable` | Database failing over or object store unreachable; comes with `Retry-After: 2`. Retry, it's not a bug |
 
 **API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
 every route with its body, parameters, responses and error codes, and a description for every
@@ -62,33 +75,30 @@ field has no description).
 
 ```sh
 cp .env.example .env          # add SHUTDOWN_DRAIN_MS=0 for fast restarts
-npm run dev:up                # Postgres (Docker Desktop with WSL integration)
+npm run dev:up                # Postgres + Garage (Docker Desktop with WSL integration)
 npm run db:migrate
-npm run db:kamailio           # Kamailio tables (subscriber, location); safe to re-run
+npm run db:kamailio           # Kamailio tables + our subscriber columns; safe to re-run
+npm run dev:s3                # Garage layout, bucket and the dev key from .env.example; safe to re-run
 npm run dev -w @pbx/api       # http://127.0.0.1:3000
 ```
 
-`/ready` reports 503 locally until an object store is added to `dev/docker-compose.yml`. That's
-expected; everything else works. The API won't start without the Stripe keys in `.env`; the
+Greeting uploads also need **ffmpeg** on the PATH (`sudo apt install ffmpeg`), or set
+`FFMPEG_PATH`. `/ready` should answer 200 with `db` and `objectStore` ok. The API won't start without the Stripe keys in `.env`; the
 `.env.example` placeholders are enough for local work (the gateway is only called on signup and
 billing).
+
+**Tests with Docker:** after the setup above (`dev:up`, `db:migrate`, `db:kamailio`), run
+`npm test -w @pbx/api`. The test files run in parallel against the dev Postgres.
 
 **Tests without Docker** (in-process Postgres with every migration applied):
 
 ```sh
-node dev/pglite-server.mjs &   # listens on 127.0.0.1:55432
+npm run db:test-server &       # node dev/pglite-server.mjs, listens on 127.0.0.1:55432
 TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres npm test -w @pbx/api -- --no-file-parallelism
 ```
 
-Run the API tests sequentially (`--no-file-parallelism`): PGlite serves one connection at a time.
-Without a database the DB tests are skipped, not failed.
-
-**API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
-every route with its body, parameters, responses and error codes, and a description for every
-field. Open it in any OpenAPI viewer (e.g. paste into editor.swagger.io) instead of relying on the
-tables below when in doubt. How routes document themselves: `services/api/src/openapi/document.ts`
-(each route passes `withDoc(opts, {...})`; `test/openapi.test.ts` fails if a route, parameter or
-field has no description).
+With PGlite, run the API tests sequentially (`--no-file-parallelism`): it serves one connection at
+a time. Without a database the DB tests are skipped, not failed.
 
 **Schema changes.** The API, the ARI app and Kamailio all read the same tables. Please send
 migrations (`db/migrations/`, dbmate) through one reviewed PR at a time and tell the other
@@ -216,6 +226,7 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 | Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination }` |
 | Business hours | `GET/POST /business-hours`, `GET/PUT/DELETE /business-hours/:id` | `{ id, name, schedule, openDestination, closedDestination, openNow }` |
 | Blocklist | `GET/POST /blocked-numbers`, `DELETE /blocked-numbers/:number` | `{ number, createdAt }` |
+| Media (step 6) | `POST /media` (file upload), `GET /media?kind=`, `GET/DELETE /media/:id`, `GET /media/:id/audio` | `{ id, kind, format, durationMs, callId, createdAt, audioUrl }` |
 
 - **`PUT` replaces the whole object**: omitted fields reset to defaults. Edit forms should send
   everything they got from `GET`.
@@ -236,14 +247,51 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
   "17:00" }] }` in the account's time zone (`GET /me` → `tenant.timezone`). `openNow` is a
   read-only preview to show next to the schedule.
 - Blocklist: send `number` in any format (`(201) 555-0100`, `+44...`); it comes back as E.164.
-  Blocking twice is fine (200). Encode `+` as `%2B` in the DELETE URL.
+  Blocking returns `201`; blocking an already blocked number is fine and returns `200`. Encode `+` as `%2B` in the DELETE URL.
 - `409 in_use` on delete: show `message` (e.g. `Used by IVR menu "Main"; change that first`).
+- **Greetings (step 6, details in `docs/backend-step6.md`):** upload the file as the body of
+  `POST /media` (`Content-Type: audio/*`) or as `FormData` field `file`; WAV, MP3, Ogg/Opus,
+  M4A, WebM (`MediaRecorder` output) and more, up to 20 MB / 300 s. Use the returned `id` as
+  `greetingMediaId`. Play any media with `<audio src={audioUrl}>` (same origin, the cookie is
+  sent). Media can't be edited: upload a new greeting and switch the menu or mailbox to it.
+  `400 invalid_audio`: show `message`. `409 in_use` on delete: a menu or mailbox still plays it.
 - There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
+
+### Call history, voicemail, settings (available now, step 7)
+
+Any logged-in user. The owner sees everything; **staff see only calls where one of their
+extensions (`extensions.userId`) took part, and voicemails in mailboxes they own or their
+extensions' mailboxes**. Details: `docs/backend-step7.md`.
+
+| Request | Response |
+|---|---|
+| `GET /calls?from&to&direction&outcome&extension&number&limit&cursor` | `{ items: [leg], nextCursor }`, newest first |
+| `GET /calls/:callId` | `{ callId, legs: [leg], recordingUrl }` (main leg first) |
+| `GET /calls/:callId/recording` | the WAV (`<audio src={recordingUrl}>`) |
+| `GET /voicemails?mailboxId&heard&limit&cursor` | `{ items: [voicemail], nextCursor }`, newest first |
+| `GET /voicemails/:id`, `PATCH /voicemails/:id { heard }` | `voicemail` |
+| `DELETE /voicemails/:id` | `204` (message + audio) |
+| `GET /voicemails/:id/audio` | the WAV (`<audio src={audioUrl}>`) |
+| `GET /settings` | `{ recordCalls, intlCalling, includedUsMinutes, includedExtensions, extraExtensions }` |
+
+- **One row per leg**, not per call: an incoming call that also rang an external number has a
+  second leg with the same `callId` and `parentId` set. Group by `callId` if the page shows calls.
+- leg = `{ id, callId, parentId, direction, fromNumber, toNumber, did, fromExtension, toExtension,
+  startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, charge, includedSec,
+  recordingUrl }`. `charge` is USD. Our cost isn't exposed.
+- `number` matches digits anywhere in the from/to/our number; formatting is ignored, so
+  `(201) 555` works. `from` is inclusive, `to` exclusive (ISO 8601).
+- **Paging:** pass `nextCursor` back as `cursor`; `null` means the last page. Don't build cursors
+  yourself.
+- voicemail = `{ id, mailboxId, mailboxName, callerNumber, callId, heard, durationMs, createdAt,
+  audioUrl }`. `heard: false` = new, `true` = saved; the phone menu (`*98`) sees the same state.
+  Playing doesn't mark it heard: send the `PATCH`.
+- **Settings are read-only.** Recording and international calling are paid add-ons
+  (billing-flows §2-§3), bought and cancelled through billing (not built yet).
 
 ### Not available yet
 
-- All other dashboard endpoints (CLAUDE.md §11). I'll share request/response shapes before
-  building each group; tell me early if a shape doesn't suit the UI.
+- Number listing and purchase (step 8); buying add-ons and extra extensions; invoices.
 
 ### Errors to handle on upcoming forms (from step 3)
 
@@ -344,8 +392,11 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 - Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
   `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`,
   `STRIPE_SECRET_KEY` (Vault), `STRIPE_PUBLISHABLE_KEY`. Optional: `STRIPE_API_URL`,
-  `STRIPE_JS_URL` (defaults: the course gateway). The
-  process refuses to start, listing the missing ones, if any are absent.
+  `STRIPE_JS_URL` (defaults: the course gateway), `FFMPEG_PATH` (default `ffmpeg`; app nodes need ffmpeg installed), `S3_REGION` (default `garage`; must match
+  Garage's `s3_region`), `COOKIE_SECURE` (default `true`; keep it in production),
+  `ACCESS_TOKEN_TTL_SEC` (900) / `REFRESH_TOKEN_TTL_SEC` (7 days), `HOST`, `PORT` (3000),
+  `LOG_LEVEL` (info), `DB_POOL_MAX` (10), `SHUTDOWN_DRAIN_MS` (5000), `SHUTDOWN_TIMEOUT_MS`
+  (10000). The process refuses to start, listing the missing ones, if any are absent.
 - **`JWT_SECRET` must be identical on every app node** (otherwise logins break when HAProxy
   switches replicas) and at least 16 characters; keep it in Vault.
 - Production: set `HOST` to the app node's private IP (default `127.0.0.1`).
@@ -365,8 +416,9 @@ Everything backend-related that is still missing or undecided. Remove items as t
   don't suit the UI.)
 - **Daniel:** confirm on the phase-1 VM that an IVR `on_timeout` action now runs (fixed in
   `services/shared` in step 5; see the Daniel section above).
-- **Muhammad:** Garage in `dev/docker-compose.yml` (bucket, keys, endpoint matching production).
-  Needed before step 6; until then `/ready` is 503 locally.
+- **Muhammad:** the production Garage key and bucket must match what the dev setup assumes:
+  bucket `pbx-media`, `s3_region = "garage"`, path-style S3 API, a key with read/write on the
+  bucket (`dev/garage-setup.sh` shows the commands).
 - **Muhammad:** who runs `dbmate` migrations during a deploy (once, before the new API version
   starts). Needed before the first multi-node deploy.
 - **Muhammad / edge owner:** whether the edge HAProxy routes on `/ready` (a cluster-wide DB
@@ -385,9 +437,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - Changing a staff member's dashboard password (no reset or change-password route yet).
-- Step 6: greeting upload (ffmpeg conversion to 8 kHz mono wav) and presigned media URLs.
-- Step 7: call history, voicemail inbox (list, mark heard, delete), settings.
-- Billing: buying extra extensions / numbers / add-ons, weekly invoices, past due and recovery
+- Billing: buying extra extensions / numbers / add-ons (turning `record_calls` / `intl_calling`
+  on and off; `GET /settings` only shows them), weekly invoices, past due and recovery
   (billing-flows §3-§5).
 - Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
   is known).
@@ -403,8 +454,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
   would remove the trap.
 - **No end-to-end test over a real socket or browser yet.** Auth and staff are covered by
   `app.inject()` tests only; a curl/browser run with the Vite proxy is still to do.
-- **Deleting a mailbox leaves its voicemail audio behind.** The voicemail rows cascade, but their
-  `media` rows and object-store files stay. Step 7 (voicemail delete) should add the cleanup.
+- **Voicemails deleted by phone (`*98` key 3) leave their audio behind.** The ARI app deletes
+  only the `voicemails` row; the `media` row and the object stay (spec-transition S13). Deletes
+  through the API remove all three. A periodic cleanup of unreferenced voicemail media is still
+  to do.
 - **No call has gone through an API-created IVR menu yet** (phase-1 VM test).
 - **No softphone has registered with API-created credentials yet.** Needs the phase-1 VM (or a
   local Kamailio) pointed at the same database.

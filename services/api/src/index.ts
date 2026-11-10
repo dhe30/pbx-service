@@ -1,6 +1,7 @@
 import { createDb } from '@pbx/shared';
 import { hostname } from 'node:os';
 import { buildApp } from './app.js';
+import { FfmpegConverter } from './audio.js';
 import { HttpStripeClient } from './billing/stripe.js';
 import { ConfigError, loadConfig } from './config.js';
 import { ObjectStore } from './object-store.js';
@@ -29,6 +30,8 @@ async function main(): Promise<void> {
     },
     isDraining: () => draining,
     stripe: new HttpStripeClient(cfg.STRIPE_API_URL, cfg.STRIPE_SECRET_KEY),
+    store,
+    audio: new FfmpegConverter(cfg.FFMPEG_PATH),
   });
 
   let shuttingDown = false;
