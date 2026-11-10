@@ -1,5 +1,9 @@
 import { createDb, type Sql } from '@pbx/shared';
+import { execFileSync } from 'node:child_process';
+import { Readable } from 'node:stream';
 import { buildApp, type AppConfig, type AppDeps } from '../src/app.js';
+import { FfmpegConverter } from '../src/audio.js';
+import { ObjectStoreError, RangeNotSatisfiable, type MediaStore, type StoredObject } from '../src/object-store.js';
 import { StripeError, type Card, type ChargeResult, type SetupIntent, type StripeClient } from '../src/billing/stripe.js';
 
 export const testConfig: AppConfig = {
@@ -120,6 +124,8 @@ export function build(deps: Partial<AppDeps> = {}, cfg: Partial<AppConfig> = {})
       readinessChecks: { db: async () => {}, objectStore: async () => {} },
       isDraining: () => false,
       stripe: new FakeStripe(),
+      store: new MemoryStore(),
+      audio: new FfmpegConverter(),
       ...deps,
     },
   );
@@ -134,5 +140,47 @@ export async function connectTestDb(): Promise<Sql | null> {
   } catch {
     await sql.end({ timeout: 1 }).catch(() => {});
     return null;
+  }
+}
+
+/** In-memory object store. `down` makes every call fail like an unreachable Garage. */
+export class MemoryStore implements MediaStore {
+  objects = new Map<string, { body: Buffer; contentType: string }>();
+  down = false;
+
+  private check() {
+    if (this.down) throw new ObjectStoreError('store down');
+  }
+  async put(key: string, body: Buffer, contentType: string) {
+    this.check();
+    this.objects.set(key, { body, contentType });
+  }
+  async get(key: string, range?: string): Promise<StoredObject | null> {
+    this.check();
+    const obj = this.objects.get(key);
+    if (!obj) return null;
+    if (!range) return { body: Readable.from([obj.body]), contentLength: obj.body.length, contentRange: undefined };
+    // Single range only (what the route forwards): bytes=a-b, bytes=a-, bytes=-n.
+    const [, a, b] = /^bytes=(\d*)-(\d*)$/.exec(range)!;
+    const size = obj.body.length;
+    const first = a === '' ? Math.max(0, size - Number(b)) : Number(a);
+    const last = a === '' || b === '' ? size - 1 : Math.min(Number(b), size - 1);
+    if (first >= size || first > last) throw new RangeNotSatisfiable();
+    const part = obj.body.subarray(first, last + 1);
+    return { body: Readable.from([part]), contentLength: part.length, contentRange: `bytes ${first}-${last}/${size}` };
+  }
+  async delete(key: string) {
+    this.check();
+    this.objects.delete(key);
+  }
+}
+
+/** True if ffmpeg is installed (media upload tests are skipped otherwise). */
+export function hasFfmpeg(): boolean {
+  try {
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
   }
 }

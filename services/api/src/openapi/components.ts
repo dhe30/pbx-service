@@ -43,7 +43,8 @@ export const COMPONENTS: Record<string, JsonSchema> = {
         description:
           'Machine-readable code: invalid_request, invalid_reference, unauthorized, invalid_credentials, ' +
           'forbidden, not_found, email_taken, number_taken, in_use, payment_required, ' +
-          'extension_limit, payment_failed, card_not_saved, payment_gateway_error, unavailable, internal_error.',
+          'extension_limit, payment_failed, card_not_saved, payment_gateway_error, invalid_audio, range_not_satisfiable, ' +
+          'unavailable, internal_error.',
       },
       message: {
         type: 'string',

@@ -1,6 +1,7 @@
 import { isTransientDbError } from '@pbx/shared';
 import type { FastifyError, FastifyInstance } from 'fastify';
 import { StripeError } from './billing/stripe.js';
+import { ObjectStoreError } from './object-store.js';
 
 // One error shape for every route: { error: <machine-readable code>, message: <human text> }.
 // Routes signal expected failures with `throw new HttpError(404, 'not_found', 'No such number')`.
@@ -31,6 +32,15 @@ export function registerErrorHandling(app: FastifyInstance): void {
     // The web client retries 503 + Retry-After; HAProxy may also retry on another replica.
     if (isTransientDbError(err)) {
       req.log.warn({ err }, 'database unavailable');
+      return reply
+        .status(503)
+        .header('Retry-After', '2')
+        .send({ error: 'unavailable', message: 'Temporarily unavailable, please retry' });
+    }
+
+    // Object store (Garage) unreachable or failing: also temporary, from the client's side.
+    if (err instanceof ObjectStoreError) {
+      req.log.warn({ err }, 'object store unavailable');
       return reply
         .status(503)
         .header('Retry-After', '2')

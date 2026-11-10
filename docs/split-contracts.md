@@ -154,6 +154,8 @@ lets the whole cluster reach every private port.
   and writes working.
 - **Audio format:** 8 kHz mono 16-bit WAV (what Asterisk records and plays). The API converts
   uploads to it.
+- **Who reads it from outside:** nobody directly. Browsers get audio through the API
+  (`GET /media/:id/audio`), so the S3 port stays on the private network.
 
 ## 7. Health and metrics (for HAProxy, Ansible waits and Prometheus)
 

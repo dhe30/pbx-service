@@ -122,8 +122,8 @@ Ansible + StackScripts for deployment. No Kubernetes.
 - Browser: HTTPS -> HAProxy (edge) -> API (app-N). WSS -> HAProxy (edge) -> Kamailio WS (private).
 - Data: ARI app + API + Kamailio -> local HAProxy (127.0.0.1:5432) -> current Patroni primary.
   Asterisk itself does NOT use the database.
-- Files: ARI app writes recordings/voicemail to local spool, uploads to object store; API serves
-  them via presigned URLs. Greetings uploaded via API, cached locally on pbx nodes for playback.
+- Files: ARI app writes recordings/voicemail to local spool, uploads to object store; API streams
+  them to browsers (GET /media/:id/audio; the store is private, so no presigned URLs). Greetings uploaded via API, cached locally on pbx nodes for playback.
 
 ### 4.3 Key design decisions (and why)
 1. Kamailio is the REGISTRAR (not Asterisk). Browsers register with Kamailio; any Asterisk node can
@@ -326,8 +326,8 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 - GET /me/sip-credentials -> {wsUri, sipUri, username, password} for the chosen extension
 - IVR menus CRUD, ring groups CRUD, mailboxes CRUD, business hours CRUD, blocklist CRUD
   (zod-validated destinations)
-- Media: POST /media (upload greeting; convert with ffmpeg to 8 kHz mono wav; store in object
-  store), GET /media/:id/url (presigned)
+- Media (step 6, docs/backend-step6.md): POST /media (upload greeting; ffmpeg -> 8 kHz mono wav;
+  object store), GET /media, GET/DELETE /media/:id, GET /media/:id/audio (streamed, Range)
 - Voicemails: GET /voicemails, GET /voicemails/:id/url, PATCH /voicemails/:id {heard}, DELETE
 - Calls: GET /calls (history + recording links)
 - Settings: GET/PUT /settings {record_calls}
@@ -427,12 +427,12 @@ node_exporter 9100 and other exporters.
    -> IMPLEMENTED: infra/ansible/phase1-allinone.yml. Runbook, decisions taken beyond this spec,
       and the items still to verify on a real VM: docs/phase1.md.
 2. (Parallel) API + web locally via dev/docker-compose; staff creation writes subscriber rows.
-   -> API IN PROGRESS (Aaron): steps 1-5 done (skeleton, auth, tenant isolation, staff + SIP
-      credentials, mailboxes / ring groups / IVR menus / number routing), plus the course-spec
+   -> API IN PROGRESS (Aaron): steps 1-6 done (skeleton, auth, tenant isolation, staff + SIP
+      credentials, mailboxes / ring groups / IVR menus / number routing, greeting upload + media), plus the course-spec
       updates (time zone + GET /me, business hours, blocklist, /openapi.json, signup card + first
       plan charge, extension limit: docs/backend-card-signup.md). Contracts for other
-      tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5}.md.
-      Local dev also needs `npm run db:kamailio`.
+      tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5,6}.md.
+      Local dev also needs `npm run db:kamailio`, `npm run dev:s3` (Garage) and ffmpeg.
       Every tenant-scoped API route must follow the rules in docs/backend-step3.md.
 3. Everything as code: Ansible roles + StackScript; rebuild the all-in-one VM with one command.
 4. Split and replicate per §4.1, killing a node after each step: pbx x2 behind dispatcher;

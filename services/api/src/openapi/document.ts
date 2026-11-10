@@ -23,6 +23,8 @@ export type Auth = 'public' | 'user' | 'owner';
 export interface ResponseDoc {
   description: string;
   schema?: ZodTypeAny;
+  /** Binary (non-JSON) response body: its content type, e.g. 'audio/wav'. */
+  binary?: string;
   /** Response headers, name -> description. */
   headers?: Record<string, string>;
 }
@@ -36,6 +38,8 @@ export interface OperationDoc {
   params?: AnyZodObject;
   query?: AnyZodObject;
   body?: ZodTypeAny;
+  /** File upload instead of a JSON body: raw bytes with one of `contentTypes`, or multipart/form-data. */
+  upload?: { description: string; contentTypes: string[]; multipartField: string };
   /** Request headers the operation reads, name -> description. */
   headers?: Record<string, { description: string; required?: boolean }>;
   responses: Record<number, ResponseDoc>;
@@ -145,10 +149,11 @@ function operation(method: string, url: string, doc: OperationDoc, refs: RefMap)
         ),
       }),
       ...(r.schema && { content: { 'application/json': { schema: toJsonSchema(r.schema, refs) } } }),
+      ...(r.binary && { content: { [r.binary]: { schema: { type: 'string', format: 'binary' } } } }),
     };
   }
   const errors: Record<number, string> = { ...doc.errors };
-  if (doc.params || doc.query || doc.body) errors[400] ??= STANDARD_ERRORS[400];
+  if (doc.params || doc.query || doc.body || doc.upload) errors[400] ??= STANDARD_ERRORS[400];
   if (doc.auth !== 'public') errors[401] ??= STANDARD_ERRORS[401];
   if (doc.auth === 'owner') errors[403] ??= STANDARD_ERRORS[403];
   if (doc.tag !== 'Health') errors[503] ??= STANDARD_ERRORS[503];
@@ -174,7 +179,22 @@ function operation(method: string, url: string, doc: OperationDoc, refs: RefMap)
         content: { 'application/json': { schema: toJsonSchema(doc.body, refs) } },
       },
     }),
+    ...(doc.upload && { requestBody: uploadBody(doc.upload) }),
     responses,
+  };
+}
+
+function uploadBody(u: NonNullable<OperationDoc['upload']>): JsonSchema {
+  const file = { type: 'string', format: 'binary', description: u.description };
+  return {
+    required: true,
+    description: u.description,
+    content: {
+      ...Object.fromEntries(u.contentTypes.map((ct) => [ct, { schema: file }])),
+      'multipart/form-data': {
+        schema: { type: 'object', properties: { [u.multipartField]: file }, required: [u.multipartField] },
+      },
+    },
   };
 }
 
@@ -202,6 +222,7 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   Numbers: "Routing the account's phone numbers.",
   'Business hours': 'Weekly schedules that route calls differently when open or closed.',
   Blocklist: 'Caller numbers that are rejected.',
+  Media: 'Audio files: uploaded greetings, call recordings and voicemail messages (8 kHz mono WAV).',
 };
 
 /** Route options with OpenAPI docs: `app.get(url, withDoc(ownerOnly, {...}), handler)`. */

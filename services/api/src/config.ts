@@ -20,6 +20,9 @@ const EnvSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
 
+  /** ffmpeg binary for greeting uploads (converted to 8 kHz mono WAV). Must be installed on app nodes. */
+  FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
+
   /** Signs the auth cookie. Must be identical on every app-N replica (Ansible Vault). */
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
   /** Access cookie lifetime: how long a copied/stolen token or a deleted user keeps working. */
