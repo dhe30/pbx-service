@@ -108,9 +108,6 @@ describe('authenticate / requireRole (no DB)', () => {
 });
 
 // Needs the docker-compose Postgres with migrations applied; skipped (not failed) when it's down.
-/** Business name of every signup in these tests; counting by it ignores tenants other test files create meanwhile. */
-const TEST_BUSINESS = "Tony's Pizza (test)";
-
 const db = await connectTestDb();
 
 describe.skipIf(!db)('auth routes (Postgres)', () => {
@@ -123,7 +120,7 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: TEST_BUSINESS, timezone: 'america/chicago', email, password },
+      payload: { businessName: "Tony's Pizza (test)", timezone: 'america/chicago', email, password },
     });
     if (res.statusCode === 201) tenantIds.push(res.json().tenantId);
     return res;
@@ -193,7 +190,7 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
       user: { id: userId, email, role: 'owner', createdAt: expect.any(String) },
       tenant: {
         id: tenantId,
-        name: TEST_BUSINESS,
+        name: "Tony's Pizza (test)",
         timezone: 'America/Chicago',
         status: 'active',
         createdAt: expect.any(String),
@@ -209,11 +206,16 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
   it('signup with an existing email (any case) is 409 and creates nothing', async () => {
     const email = uniqueEmail();
     expect((await signup(email)).statusCode).toBe(201);
-    const [{ count: before }] = (await sql`select count(*)::int as count from tenants where name = ${TEST_BUSINESS}`) as unknown as [{ count: number }];
+    // Only this file's tenants: other test files create tenants in parallel.
+    const countOurs = async () =>
+      ((await sql`select count(*)::int as count from tenants where name = ${"Tony's Pizza (test)"}`) as unknown as [
+        { count: number },
+      ])[0].count;
+    const before = await countOurs();
     const dup = await signup(email.toUpperCase());
     expect(dup.statusCode).toBe(409);
     expect(dup.json()).toMatchObject({ error: 'email_taken' });
-    const [{ count: after }] = (await sql`select count(*)::int as count from tenants where name = ${TEST_BUSINESS}`) as unknown as [{ count: number }];
+    const after = await countOurs();
     expect(after).toBe(before); // transaction rolled back the tenant insert
   });
 

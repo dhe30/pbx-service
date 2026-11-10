@@ -1,6 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { createDb, type Sql } from '@pbx/shared';
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { buildApp, type AppConfig, type AppDeps } from '../src/app.js';
 import { FfmpegConverter } from '../src/audio.js';
@@ -34,16 +34,13 @@ export class FakeStripe implements StripeClient {
   /** Make every call fail (gateway down). */
   down = false;
   private seq = 0;
-  /**
-   * Ids are unique across instances: test files run in parallel against one database, and
-   * billing_accounts.stripe_customer_id is UNIQUE, so two fakes both handing out `cus_1` would
-   * make one signup's card setup fail.
-   */
-  private readonly instance = randomUUID().slice(0, 8);
   private byKey = new Map<string, unknown>();
 
+  // Unique across instances and test files: billing_accounts.stripe_customer_id is UNIQUE in the
+  // shared test DB, and test files run in parallel.
+  private readonly run = randomUUID().slice(0, 8);
   private next(prefix: string) {
-    return `${prefix}_${this.instance}_${++this.seq}`;
+    return `${prefix}_${this.run}_${++this.seq}`;
   }
   private check() {
     if (this.down) throw new StripeError('gateway down', null);
