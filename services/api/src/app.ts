@@ -6,6 +6,7 @@ import type { StripeClient } from './billing/stripe.js';
 import type { Config } from './config.js';
 import { registerErrorHandling } from './errors.js';
 import { metrics } from './metrics.js';
+import type { DidProvider } from './numbers/provider.js';
 import type { MediaStore } from './object-store.js';
 import { collectOpenApi, withDoc } from './openapi/document.js';
 import { authRoutes } from './routes/auth.js';
@@ -38,6 +39,8 @@ export interface AppDeps {
   store: MediaStore;
   /** Greeting conversion (index.ts: FfmpegConverter). */
   audio: AudioConverter;
+  /** Phone number provider (index.ts: HttpDidwwProvider, or FakeDidProvider in fake mode). */
+  didProvider: DidProvider;
 }
 
 export type AppConfig = Pick<
@@ -124,7 +127,7 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(mailboxRoutes, { sql: deps.sql, store: deps.store });
   await app.register(ringGroupRoutes, { sql: deps.sql });
   await app.register(ivrMenuRoutes, { sql: deps.sql });
-  await app.register(numberRoutes, { sql: deps.sql });
+  await app.register(numberRoutes, { sql: deps.sql, stripe: deps.stripe, provider: deps.didProvider });
   await app.register(businessHoursRoutes, { sql: deps.sql });
   await app.register(blockedNumberRoutes, { sql: deps.sql });
   await app.register(mediaRoutes, { sql: deps.sql, store: deps.store, audio: deps.audio });
@@ -132,7 +135,7 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(voicemailRoutes, { sql: deps.sql, store: deps.store });
   await app.register(settingsRoutes, { sql: deps.sql });
 
-  // Step 8+ registers number listing and purchase here. Every tenant-scoped route
+  // New tenant-scoped routes go here. Every tenant-scoped route
   // follows the rules in src/tenancy.ts (docs/backend-step3.md) and src/references.ts.
 
   return app;

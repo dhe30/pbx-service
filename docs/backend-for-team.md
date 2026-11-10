@@ -1,7 +1,7 @@
 # Backend API: what the rest of the team needs to know
 
 From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
-Details: `docs/backend-step1.md` to `docs/backend-step7.md`, `docs/backend-card-signup.md`. Code:
+Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
 
 **What changed on 2026-11-09 (read this if you built against an earlier version):**
@@ -20,6 +20,12 @@ Details: `docs/backend-step1.md` to `docs/backend-step7.md`, `docs/backend-card-
 - **Step 6 (media):** `POST /media` (greeting upload), `GET /media`, `GET /media/:id`,
   `GET /media/:id/audio`, `DELETE /media/:id`. Audio is served by the API, not via presigned
   URLs. Local dev now needs Garage (`npm run dev:s3`) and ffmpeg.
+- **Step 8 (numbers):** `GET /numbers`, `GET /numbers/:id`, number search
+  (`/numbers/countries`, `/regions`, `/cities`, `/available`), `POST /numbers/purchase`
+  (`Idempotency-Key` header), `DELETE /numbers/:id` (release). Number objects gained `paidUntil`
+  and `purchasedAt`. **New config:** `DID_PROVIDER_MODE` (`fake` for local dev; add it to your
+  `.env`, or the API refuses to start), and for the real provider `DID_PROVIDER_API_KEY` +
+  `DID_TRUNK_GROUP_ID` (or `DID_TRUNK_ID`). New migration `20261111000000_number_purchase.sql`.
 - **Step 7 (history, voicemail, settings):** `GET /calls` (search, keyset paging),
   `GET /calls/:callId`, `GET /calls/:callId/recording`; `GET /voicemails`, `GET/PATCH/DELETE
   /voicemails/:id`, `GET /voicemails/:id/audio`; `GET /settings` (read-only). Staff see only their
@@ -37,7 +43,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step7.md`, `docs/backend-card-
 | — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card at signup + first plan charge, extension limit | Done (2026-11-09) |
 | 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
 | 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
-| 8 | Number listing and purchase | Planned |
+| 8 | Number search, purchase (idempotent, prorated charge), list, release | Done (DIDWW clone details [VERIFY]) |
 
 ## For everyone
 
@@ -54,14 +60,16 @@ Details: `docs/backend-step1.md` to `docs/backend-step7.md`, `docs/backend-card-
 | 400 | `invalid_audio` | Upload isn't a supported audio file, is empty, or is longer than 300 s (`POST /media`) |
 | 400 | `card_not_saved` | Card setup not confirmed with Stripe.js yet (`POST /billing/card`) |
 | 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
-| 402 | `payment_required`, `payment_failed` | Plan not paid yet / a card charge was declined |
+| 402 | `payment_required`, `payment_failed` | Plan not paid yet (or account past due) / a card charge was declined |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
 | 409 | `email_taken`, `in_use`, `number_taken`, `extension_limit` | Conflict with existing data (`in_use`: can't delete, still used by call routing; `message` names what uses it) |
+| 409 | `number_unavailable`, `idempotency_key_reused`, `purchase_in_progress` | Number purchase: the number was taken / the key was used for another number / the same key is still running |
 | 416 | `range_not_satisfiable` | `Range` header outside the file (`GET /media/:id/audio`) |
 | 4xx | Fastify's code, e.g. `FST_ERR_CTP_INVALID_MEDIA_TYPE` (415) | Errors raised by Fastify itself: body wasn't JSON (only `application/json` is accepted, except audio uploads to `POST /media`), body too large, malformed JSON. Same shape, but `error` is Fastify's code, not one of ours |
 | 500 | `internal_error` | A bug; details are only in the server log |
 | 502 | `payment_gateway_error` | The payment service failed. Safe to retry (billing calls are idempotent) |
+| 502 | `did_provider_error` | The phone number provider failed. Safe to retry (a purchase with the same `Idempotency-Key` continues where it stopped) |
 | 503 | `unavailable` | Database failing over or object store unreachable; comes with `Retry-After: 2`. Retry, it's not a bug |
 
 **API reference: `GET /openapi.json`** (OpenAPI 3.1, required by the course spec). It lists
@@ -223,7 +231,7 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 | Mailboxes | `GET/POST /mailboxes`, `GET/PUT/DELETE /mailboxes/:id` | `{ id, name, greetingMediaId, ownerUserId }` |
 | Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }` |
 | IVR menus | `GET/POST /ivr-menus`, `GET/PUT/DELETE /ivr-menus/:id` | `{ id, name, greetingMediaId, timeoutSec, maxRetries, config }` |
-| Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination }` |
+| Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination, paidUntil, purchasedAt }` |
 | Business hours | `GET/POST /business-hours`, `GET/PUT/DELETE /business-hours/:id` | `{ id, name, schedule, openDestination, closedDestination, openNow }` |
 | Blocklist | `GET/POST /blocked-numbers`, `DELETE /blocked-numbers/:number` | `{ number, createdAt }` |
 | Media (step 6) | `POST /media` (file upload), `GET /media?kind=`, `GET/DELETE /media/:id`, `GET /media/:id/audio` | `{ id, kind, format, durationMs, callId, createdAt, audioUrl }` |
@@ -255,7 +263,6 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
   `greetingMediaId`. Play any media with `<audio src={audioUrl}>` (same origin, the cookie is
   sent). Media can't be edited: upload a new greeting and switch the menu or mailbox to it.
   `400 invalid_audio`: show `message`. `409 in_use` on delete: a menu or mailbox still plays it.
-- There's no `GET /numbers` yet (step 8), so number routing can't be wired into the UI until then.
 
 ### Call history, voicemail, settings (available now, step 7)
 
@@ -289,9 +296,36 @@ extensions' mailboxes**. Details: `docs/backend-step7.md`.
 - **Settings are read-only.** Recording and international calling are paid add-ons
   (billing-flows §2-§3), bought and cancelled through billing (not built yet).
 
+### Phone numbers (available now, step 8)
+
+Details: `docs/backend-step8.md`.
+
+| Request | Who | Response |
+|---|---|---|
+| `GET /numbers` | any user | `[number]`: active numbers, plus released ones until `paidUntil` |
+| `GET /numbers/:id` | any user | `number` |
+| `GET /numbers/countries` | owner | `[{ iso, name, prefix }]` |
+| `GET /numbers/regions?country=US` | owner | `[{ id, name }]` |
+| `GET /numbers/cities?country=US&regionId=` | owner | `[{ id, name }]` |
+| `GET /numbers/available?country&regionId&cityId&areaCode&kind&limit` | owner | `[{ id, number, kind, country, region, city, areaCode, priceCents, dueNowCents }]` |
+| `POST /numbers/purchase { availableNumberId }` + header `Idempotency-Key` | owner | `201 { number, chargedCents, replayed }`, or `202` (repeat the request) |
+| `DELETE /numbers/:id` | owner | `200 number` with `status: "released"` |
+
+- **Show `priceCents` (per week) and `dueNowCents` (charged now, prorated) before the buy
+  button.** That is the "price before purchase" the spec asks for.
+- **Idempotency-Key:** make a new UUID when the user clicks Buy, and reuse it for every retry of
+  that click (timeouts, `502`, `202`). The same key never orders or charges twice; a new key is a
+  new purchase. After `402 payment_failed` (declined), the number was not kept: the user picks
+  a card and clicks again, which is a new key.
+- `202 { status: "processing" }`: the provider is still working; wait `Retry-After` seconds and
+  repeat the same request.
+- After buying, route it with `PUT /numbers/:id/route`. Until then calls to it are hung up.
+- Release: the number keeps working until `paidUntil`; nothing is refunded. It can't be re-routed
+  after release.
+
 ### Not available yet
 
-- Number listing and purchase (step 8); buying add-ons and extra extensions; invoices.
+- Buying add-ons and extra extensions; invoices.
 
 ### Errors to handle on upcoming forms (from step 3)
 
@@ -390,8 +424,10 @@ extensions' mailboxes**. Details: `docs/backend-step7.md`.
 ### Config and secrets (for Ansible / Vault)
 
 - Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
-  `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `SIP_WS_URI`, `SIP_DOMAIN`,
-  `STRIPE_SECRET_KEY` (Vault), `STRIPE_PUBLISHABLE_KEY`. Optional: `STRIPE_API_URL`,
+  `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `DID_PROVIDER_API_KEY` (Vault),
+  `DID_TRUNK_GROUP_ID` or `DID_TRUNK_ID` (the DIDWW inbound trunk group / trunk bought numbers
+  are pointed at), `SIP_WS_URI`, `SIP_DOMAIN`, `STRIPE_SECRET_KEY` (Vault),
+  `STRIPE_PUBLISHABLE_KEY`. Optional: `DID_PROVIDER_MODE` (`didww` default; `fake` only for dev), `STRIPE_API_URL`,
   `STRIPE_JS_URL` (defaults: the course gateway), `FFMPEG_PATH` (default `ffmpeg`; app nodes need ffmpeg installed), `S3_REGION` (default `garage`; must match
   Garage's `s3_region`), `COOKIE_SECURE` (default `true`; keep it in production),
   `ACCESS_TOKEN_TTL_SEC` (900) / `REFRESH_TOKEN_TTL_SEC` (7 days), `HOST`, `PORT` (3000),
@@ -431,8 +467,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - **Course staff:** the payment gateway's API base URL (assumed
   `https://stripe.cse356.compas.cs.stonybrook.edu`); and whether grader tools keep cookies (the API
   authenticates with cookies only).
-- **Course staff:** DID endpoint API shape and how purchases work (CLAUDE.md §3 A6). Needed
-  before step 8.
+- **Course staff / whoever has the Course Services credentials:** check the DIDWW clone against
+  the [VERIFY] list at the top of `services/api/src/numbers/didww.ts` (filters, includes, order
+  status, trunk assignment, release by `billing_cycles_count = 0`), and create our inbound trunk
+  group (both edges) for `DID_TRUNK_GROUP_ID`.
 
 ### Not built yet
 
@@ -440,8 +478,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - Billing: buying extra extensions / numbers / add-ons (turning `record_calls` / `intl_calling`
   on and off; `GET /settings` only shows them), weekly invoices, past due and recovery
   (billing-flows §3-§5).
-- Step 8: number listing and purchase (idempotent, behind a fake provider until the DID endpoint
-  is known).
+- Renewal and release at the provider on the weekly cycle (billing scheduler): numbers are only
+  released at DIDWW when the customer releases them; renewal charges aren't built.
 - `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include
   ffmpeg.
 

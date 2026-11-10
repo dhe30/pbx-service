@@ -219,7 +219,7 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   Mailboxes: 'Voicemail boxes.',
   'Ring groups': 'Groups of extensions rung at once or in order.',
   'IVR menus': 'Auto-attendant menus: greeting and what each key does.',
-  Numbers: "Routing the account's phone numbers.",
+  Numbers: "Search, buy, route and release the account's phone numbers.",
   'Business hours': 'Weekly schedules that route calls differently when open or closed.',
   Blocklist: 'Caller numbers that are rejected.',
   Calls: 'Call history (one row per call leg) and call recordings.',
