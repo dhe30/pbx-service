@@ -1,0 +1,23 @@
+# etcd member config (managed by Ansible). Reference: etcd.io/docs/v3.5/op-guide/configuration/
+name: {{ inventory_hostname }}
+data-dir: {{ etcd_data_dir }}
+
+# Peer traffic (raft) between members: private network only.
+listen-peer-urls: http://{{ private_ip }}:{{ etcd_peer_port }}
+initial-advertise-peer-urls: http://{{ private_ip }}:{{ etcd_peer_port }}
+
+# Clients (Patroni on the db hosts, etcdctl): private IP + loopback.
+listen-client-urls: http://{{ private_ip }}:{{ etcd_client_port }},http://127.0.0.1:{{ etcd_client_port }}
+advertise-client-urls: http://{{ private_ip }}:{{ etcd_client_port }}
+
+initial-cluster: {% for h in groups['db'] %}{{ h }}=http://{{ hostvars[h].private_ip }}:{{ etcd_peer_port }}{{ '' if loop.last else ',' }}{% endfor %}
+
+initial-cluster-token: {{ etcd_cluster_token }}
+initial-cluster-state: {{ etcd_initial_cluster_state }}
+
+auto-compaction-mode: periodic
+auto-compaction-retention: "{{ etcd_auto_compaction_retention }}"
+
+logger: zap
+log-level: info
+log-outputs: [stderr]

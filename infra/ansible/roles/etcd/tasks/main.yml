@@ -1,2 +1,93 @@
 ---
-# TODO: etcd role tasks.
+# etcd cluster on the db hosts (static bootstrap: every member is listed in initial-cluster).
+# All members must be started in the same run the first time: a new member waits for the others
+# before it reports ready. Ansible's linear strategy starts them in parallel.
+
+- name: etcd system user
+  ansible.builtin.user:
+    name: etcd
+    system: true
+    home: "{{ etcd_data_dir }}"
+    shell: /usr/sbin/nologin
+
+- name: etcd directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ etcd_data_dir }}", owner: etcd, mode: "0700" }
+    - { path: /etc/etcd, owner: root, mode: "0755" }
+    - { path: /usr/local/lib/etcd, owner: root, mode: "0755" }
+
+# Official release binaries (Debian's packaged etcd version differs between 12 and 13).
+- name: Download etcd {{ etcd_version }}
+  ansible.builtin.get_url:
+    url: "https://github.com/etcd-io/etcd/releases/download/{{ etcd_version }}/etcd-{{ etcd_version }}-linux-amd64.tar.gz"
+    dest: "/usr/local/lib/etcd/etcd-{{ etcd_version }}-linux-amd64.tar.gz"
+    mode: "0644"
+
+- name: Unpack etcd
+  ansible.builtin.unarchive:
+    src: "/usr/local/lib/etcd/etcd-{{ etcd_version }}-linux-amd64.tar.gz"
+    dest: /usr/local/lib/etcd/
+    remote_src: true
+    creates: "/usr/local/lib/etcd/etcd-{{ etcd_version }}-linux-amd64/etcd"
+
+- name: Link etcd binaries
+  ansible.builtin.file:
+    src: "/usr/local/lib/etcd/etcd-{{ etcd_version }}-linux-amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+  loop: [etcd, etcdctl]
+  notify: Restart etcd
+
+- name: etcd config
+  ansible.builtin.template:
+    src: etcd.conf.yml.j2
+    dest: /etc/etcd/etcd.conf.yml
+    mode: "0644"
+  notify: Restart etcd
+
+- name: etcd systemd unit
+  ansible.builtin.template:
+    src: etcd.service.j2
+    dest: /etc/systemd/system/etcd.service
+    mode: "0644"
+  notify: Restart etcd
+
+- name: Start etcd
+  ansible.builtin.systemd:
+    name: etcd
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending etcd restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for this etcd member to be healthy
+  ansible.builtin.command: >-
+    etcdctl --endpoints=http://{{ private_ip }}:{{ etcd_client_port }} endpoint health
+  register: etcd_health
+  retries: 30
+  delay: 2
+  until: etcd_health.rc == 0
+  changed_when: false
+
+- name: List etcd members
+  ansible.builtin.command: >-
+    etcdctl --endpoints=http://{{ private_ip }}:{{ etcd_client_port }} member list -w json
+  register: etcd_members
+  changed_when: false
+  run_once: true
+
+- name: Every db host is an etcd member
+  ansible.builtin.assert:
+    that: (etcd_members.stdout | from_json).members | length == groups['db'] | length
+    fail_msg: >-
+      etcd has {{ (etcd_members.stdout | from_json).members | length }} members but the inventory
+      has {{ groups['db'] | length }} db hosts. Add/remove members with etcdctl (see role defaults).
+  run_once: true

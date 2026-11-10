@@ -1,0 +1,107 @@
+# Patroni config for {{ inventory_hostname }} (managed by Ansible).
+# Reference: https://patroni.readthedocs.io/en/latest/yaml_configuration.html
+{% set db_ips = groups['db'] | map('extract', hostvars, 'private_ip') | list %}
+{% set cluster_ips = groups['all'] | map('extract', hostvars, 'private_ip') | select('defined') | unique | list %}
+scope: {{ patroni_scope }}
+namespace: /service/
+name: {{ inventory_hostname }}
+
+log:
+  level: INFO
+
+# REST API: health checks for the local DB proxies (/primary, /replica, /health) and patronictl.
+# Private IP only; the host firewall limits it to cluster nodes.
+restapi:
+  listen: {{ private_ip }}:{{ patroni_restapi_port }}
+  connect_address: {{ private_ip }}:{{ patroni_restapi_port }}
+
+etcd3:
+  hosts:
+{% for ip in db_ips %}
+    - {{ ip }}:{{ etcd_client_port | default(2379) }}
+{% endfor %}
+
+bootstrap:
+  # Cluster-wide settings, stored in etcd on the FIRST start only (later: patronictl edit-config).
+  dcs:
+    ttl: {{ patroni_ttl }}
+    loop_wait: {{ patroni_loop_wait }}
+    retry_timeout: {{ patroni_retry_timeout }}
+    maximum_lag_on_failover: {{ patroni_maximum_lag_on_failover }}
+    synchronous_mode: {{ 'true' if (patroni_synchronous_mode | bool) and (db_ips | length > 1) else 'false' }}
+    postgresql:
+      # pg_rewind lets an old primary rejoin as a replica after a failover without a full copy.
+      use_pg_rewind: true
+      # Replication slots keep WAL until every replica has it (no "WAL segment removed" re-clone).
+      use_slots: true
+      parameters:
+        max_connections: {{ patroni_max_connections }}
+        wal_level: replica
+        hot_standby: "on"
+        wal_log_hints: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        # Cap on WAL kept for slots, so a long-dead replica can't fill the primary's disk.
+        max_slot_wal_keep_size: 4GB
+        wal_keep_size: 512MB
+        password_encryption: scram-sha-256
+        # Per-query stats (pg_stat_statements view): evidence for the scaling analysis.
+        shared_preload_libraries: pg_stat_statements
+        track_io_timing: "on"
+
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums
+
+postgresql:
+  listen: "{{ private_ip }},127.0.0.1:5432"
+  connect_address: {{ private_ip }}:5432
+  data_dir: {{ patroni_data_dir }}
+  bin_dir: {{ patroni_bin_dir }}
+  pgpass: /var/lib/postgresql/.pgpass_patroni
+  authentication:
+    superuser:
+      username: postgres
+      password: {{ vault_db_superuser_password | to_json }}
+    replication:
+      username: replicator
+      password: {{ vault_db_replication_password | to_json }}
+    rewind:
+      username: rewind_user
+      password: {{ vault_db_rewind_password | to_json }}
+
+  # Per-node settings (not shared through etcd).
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    shared_buffers: {{ patroni_shared_buffers_mb }}MB
+    effective_cache_size: {{ patroni_effective_cache_size_mb }}MB
+    # Logs in <data_dir>/log, one file per weekday, overwritten a week later: bounded disk use.
+    logging_collector: "on"
+    log_directory: log
+    log_filename: postgresql-%a.log
+    log_truncate_on_rotation: "on"
+    log_rotation_age: 1d
+    log_rotation_size: 0
+    log_line_prefix: "%m [%p] %q%u@%d "
+    # Slow queries (e.g. call-history search) show up in the log.
+    log_min_duration_statement: 500
+    log_lock_waits: "on"
+
+  # Who may connect. Clients reach Postgres through their local HAProxy, so the source address is
+  # the client node's private IP. Every node in the inventory is allowed (password required).
+  pg_hba:
+    - local all all peer
+    - host all all 127.0.0.1/32 scram-sha-256
+{% for ip in db_ips %}
+    - host replication replicator {{ ip }}/32 scram-sha-256
+{% endfor %}
+{% for ip in cluster_ips %}
+    - host all all {{ ip }}/32 scram-sha-256
+{% endfor %}
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

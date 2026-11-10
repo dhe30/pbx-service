@@ -1,1 +1,6 @@
 ---
+# Storage each Garage node offers to the cluster layout (Garage spreads data by capacity).
+# Override per host in the inventory if the db VMs have different volumes.
+garage_capacity: 20G
+# Zone per node: the node's own name, so the 3 copies of every object land on 3 different VMs.
+garage_zone: "{{ inventory_hostname }}"

@@ -1,0 +1,99 @@
+# Local DB/S3 proxy on {{ inventory_hostname }} (managed by Ansible). Loopback only: services on
+# this node connect here and never need to know which db node is primary.
+global
+    log /dev/log local0
+    maxconn 4000
+    user haproxy
+    group haproxy
+    stats socket /run/pbx-dbproxy/admin.sock mode 660 level admin
+
+defaults
+    log global
+    option dontlognull
+    timeout connect 3s
+    timeout check 2s
+    timeout client 30s
+    timeout server 30s
+    retries 2
+
+# ---- Postgres read/write: the current primary only ----------------------------------------
+# Every db node is listed; only the one whose Patroni says "GET /primary -> 200" is UP. On a
+# failover the old primary is marked DOWN and its open connections are cut immediately
+# (shutdown-sessions), so clients reconnect and land on the new primary instead of hanging.
+listen pg_primary
+    bind 127.0.0.1:{{ dbproxy_rw_port }}
+    mode tcp
+    timeout client {{ dbproxy_pg_timeout }}
+    timeout server {{ dbproxy_pg_timeout }}
+    option httpchk
+    http-check send meth GET uri /primary
+    http-check expect status 200
+    default-server inter {{ dbproxy_check_inter }} fall {{ dbproxy_check_fall }} rise {{ dbproxy_check_rise }} on-marked-down shutdown-sessions port {{ patroni_restapi_port | default(8008) }}
+{% for h in groups['db'] %}
+    server {{ h }} {{ hostvars[h].private_ip }}:5432 check
+{% endfor %}
+
+# ---- Postgres read-only: replicas first, else any running node ----------------------------
+# Kamailio only reads (SIP auth, DID -> account). Using replicas keeps that load off the primary
+# and keeps auth working while a failover is in progress.
+frontend pg_ro
+    bind 127.0.0.1:{{ dbproxy_ro_port }}
+    mode tcp
+    timeout client {{ dbproxy_pg_timeout }}
+    use_backend pg_replicas if { nbsrv(pg_replicas) gt 0 }
+    default_backend pg_any
+
+backend pg_replicas
+    mode tcp
+    balance leastconn
+    timeout server {{ dbproxy_pg_timeout }}
+    option httpchk
+    http-check send meth GET uri /replica?lag={{ dbproxy_replica_max_lag }}
+    http-check expect status 200
+    default-server inter {{ dbproxy_check_inter }} fall {{ dbproxy_check_fall }} rise {{ dbproxy_check_rise }} on-marked-down shutdown-sessions port {{ patroni_restapi_port | default(8008) }}
+{% for h in groups['db'] %}
+    server {{ h }} {{ hostvars[h].private_ip }}:5432 check
+{% endfor %}
+
+backend pg_any
+    mode tcp
+    balance leastconn
+    timeout server {{ dbproxy_pg_timeout }}
+    option httpchk
+    http-check send meth GET uri /health
+    http-check expect status 200
+    default-server inter {{ dbproxy_check_inter }} fall {{ dbproxy_check_fall }} rise {{ dbproxy_check_rise }} on-marked-down shutdown-sessions port {{ patroni_restapi_port | default(8008) }}
+{% for h in groups['db'] %}
+    server {{ h }} {{ hostvars[h].private_ip }}:5432 check
+{% endfor %}
+
+# ---- S3 (Garage): any healthy node ---------------------------------------------------------
+# Every Garage node serves the whole bucket (3 copies, quorum 2), so plain load balancing works.
+# Requests are signed with Host = 127.0.0.1:{{ dbproxy_s3_port }}; HAProxy passes Host unchanged, so
+# signatures still verify on the Garage node.
+listen s3
+    bind 127.0.0.1:{{ dbproxy_s3_port }}
+    mode http
+    balance leastconn
+    timeout client 5m
+    timeout server 5m
+    timeout http-request 30s
+    option redispatch
+    retry-on conn-failure empty-response response-timeout
+    # Any HTTP answer means the S3 API is up (an unsigned "GET /" gets 403 from Garage).
+    option httpchk
+    http-check send meth GET uri /
+    http-check expect rstatus ^[234]
+    default-server inter 2s fall 2 rise 2
+{% for h in groups['db'] %}
+    server {{ h }} {{ hostvars[h].private_ip }}:{{ s3_port }} check
+{% endfor %}
+
+# ---- Stats + Prometheus metrics (loopback only) -------------------------------------------
+frontend stats
+    bind 127.0.0.1:{{ dbproxy_stats_port }}
+    mode http
+    http-request use-service prometheus-exporter if { path /metrics }
+    stats enable
+    stats uri /stats
+    stats refresh 5s

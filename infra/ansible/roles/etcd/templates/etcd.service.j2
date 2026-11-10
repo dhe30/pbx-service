@@ -1,0 +1,18 @@
+[Unit]
+Description=etcd (Patroni DCS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# etcd tells systemd it is ready only once it has joined the cluster.
+Type=notify
+User=etcd
+Group=etcd
+ExecStart=/usr/local/bin/etcd --config-file /etc/etcd/etcd.conf.yml
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

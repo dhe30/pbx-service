@@ -1,1 +1,12 @@
 ---
+# Reload: the new HAProxy process takes over; existing connections finish on the old one.
+- name: Reload dbproxy
+  ansible.builtin.systemd:
+    name: pbx-dbproxy
+    state: reloaded
+
+- name: Restart dbproxy
+  ansible.builtin.systemd:
+    name: pbx-dbproxy
+    state: restarted
+    daemon_reload: true

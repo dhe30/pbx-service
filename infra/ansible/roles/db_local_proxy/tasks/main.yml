@@ -1,2 +1,63 @@
 ---
-# TODO: db_local_proxy role tasks.
+# Local DB + S3 proxy on a DB client node (see defaults for the port map).
+
+# On a db host Postgres itself listens on 127.0.0.1:5432 and Garage on private_ip:3900, so a client
+# role there would collide. (The all-in-one VM doesn't use this role: phase1-allinone.yml.)
+- name: Refuse to run on a db host
+  ansible.builtin.assert:
+    that: inventory_hostname not in groups['db']
+    fail_msg: "{{ inventory_hostname }} is in [db]; db hosts are reached directly, not through a local proxy."
+
+- name: Install HAProxy
+  ansible.builtin.apt:
+    name: haproxy
+
+# The package starts the stock haproxy.service. Edges use it for HTTPS/WSS (role edge_haproxy);
+# everywhere else it has nothing to do.
+- name: Stock haproxy service off on non-edge nodes
+  ansible.builtin.systemd:
+    name: haproxy
+    state: stopped
+    enabled: false
+  when: inventory_hostname not in groups['edge']
+
+- name: Local proxy config
+  ansible.builtin.template:
+    src: dbproxy.cfg.j2
+    dest: /etc/haproxy/dbproxy.cfg
+    mode: "0644"
+    validate: haproxy -c -f %s
+  notify: Reload dbproxy
+
+- name: Local proxy systemd unit
+  ansible.builtin.template:
+    src: pbx-dbproxy.service.j2
+    dest: /etc/systemd/system/pbx-dbproxy.service
+    mode: "0644"
+  notify: Restart dbproxy
+
+- name: Start local proxy
+  ansible.builtin.systemd:
+    name: pbx-dbproxy
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending proxy reloads
+  ansible.builtin.meta: flush_handlers
+
+# ---- Verify -------------------------------------------------------------------------------
+# The stats CSV has one BACKEND line per backend: "<name>,BACKEND,...,UP,..." once at least one
+# server passes its health check.
+
+- name: Wait until the primary and S3 backends are UP
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dbproxy_stats_port }}/stats;csv"
+    return_content: true
+  register: dbproxy_stats
+  retries: 30
+  delay: 2
+  until: >-
+    dbproxy_stats.content is defined and
+    (dbproxy_stats.content | regex_search('^pg_primary,BACKEND,.*,UP,', multiline=True)) and
+    (dbproxy_stats.content | regex_search('^s3,BACKEND,.*,UP,', multiline=True))

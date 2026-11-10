@@ -1,6 +1,7 @@
 ---
 # Database contents: roles + database, Kamailio's tables, app migrations, optional test seed.
-# Runs against the primary only (groups['db'][0] in phase 1).
+# Runs against the primary only (groups['db'][0] in phase 1; the current Patroni primary in
+# site.yml, found through its REST API).
 
 - name: Repo SQL directory on the host
   ansible.builtin.file:

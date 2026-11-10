@@ -1,16 +1,41 @@
 ---
-# Full multi-VM deployment (phase 4+; etcd/postgres_patroni/db_local_proxy/api/monitoring/backups
-# are still stubs). For phase 1 use phase1-allinone.yml.
+# Full multi-VM deployment (phase 4+; api/monitoring/backups are still stubs).
+# For phase 1 use phase1-allinone.yml.
 # See CLAUDE.md §15 for ordering and cross-group dependencies.
 - hosts: all
   become: true
   roles: [common]
 
-- hosts: db
+# Data tier: etcd quorum first (Patroni needs it to elect a primary), then Postgres, then Garage.
+- name: Data tier
+  hosts: db
   become: true
   roles: [etcd, postgres_patroni, objectstore]
 
-- hosts: "{{ groups['db'][0] }}"
+# Schema changes must run on whichever node is primary NOW (it may not be db-1 after a failover).
+- name: Find the current Patroni primary
+  hosts: db
+  gather_facts: false
+  tasks:
+    - name: Ask Patroni whether this node is the primary
+      ansible.builtin.uri:
+        url: "http://{{ private_ip }}:8008/primary"
+        status_code: [200, 503]
+      register: patroni_primary_check
+
+    - name: Group the primary
+      ansible.builtin.group_by:
+        key: patroni_primary
+      when: patroni_primary_check.status == 200
+
+    - name: Exactly one primary
+      ansible.builtin.assert:
+        that: groups.get('patroni_primary', []) | length == 1
+        fail_msg: "Expected one Patroni primary, found {{ groups.get('patroni_primary', []) }}. Check `patronictl list`."
+      run_once: true
+
+- name: Database contents (current primary only)
+  hosts: patroni_primary
   become: true
   roles: [db_schema]
 

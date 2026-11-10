@@ -5,6 +5,11 @@ vault_db_app_password: c062f9cadd59f920b075c3841d465cb2ac2f5af2615c6f2b
 vault_db_kamailio_password: fd602a362eeac911a110dcc1803f581cb116421f4d353972
 vault_ari_password: 34805994b7e346ccae0151a7a16d6a38d67ebeefe7b0bab8
 
+# Patroni cluster (db hosts): Postgres superuser, streaming replication user, pg_rewind user.
+vault_db_superuser_password: CHANGE_ME
+vault_db_replication_password: CHANGE_ME
+vault_db_rewind_password: CHANGE_ME
+
 # Garage: rpc secret must be exactly 32 bytes hex:   openssl rand -hex 32
 vault_garage_rpc_secret: f89ec329b5790672d95eb6b9e84f2207d2e8995cfaa5715c84f5065b77722cef
 # S3 key imported into Garage. Format is fixed by Garage:
