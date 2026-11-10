@@ -9,9 +9,14 @@ services:
     ports: ["127.0.0.1:5432:5432"]
     volumes: ["./data/postgres:/var/lib/postgresql/data"]
 
-  # S3-compatible object store. TODO: pick Garage or SeaweedFS to match production (CLAUDE.md §13).
-  # objectstore:
-  #   image: ...
-  #   ports: ["127.0.0.1:9000:9000"]
+  # S3-compatible object store, same as production (Garage v2.5.0, group_vars garage_version).
+  # One-time setup after the first `up`: npm run dev:s3
+  garage:
+    image: dxflrs/garage:v2.5.0
+    ports: ["127.0.0.1:3900:3900"]          # S3 API only; RPC and admin stay inside the container
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+      - ./data/garage/meta:/var/lib/garage/meta
+      - ./data/garage/data:/var/lib/garage/data
 
   # TODO: api and web services once implemented (build from services/*/Dockerfile).

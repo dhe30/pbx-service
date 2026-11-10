@@ -20,6 +20,7 @@
     "db:migrate": "dbmate --migrations-dir db/migrations up",
     "test:configs": "sh telephony/tests/check-configs.sh",
     "db:kamailio": "bash dev/kamailio-schema.sh",
+    "dev:s3": "bash dev/garage-setup.sh",
     "db:test-server": "node dev/pglite-server.mjs"
   }
 }

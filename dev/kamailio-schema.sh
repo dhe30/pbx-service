@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Creates Kamailio's tables (db/kamailio/*.sql) in the dev Postgres, in schema `kamailio`, the
 # same layout the db_schema Ansible role creates in production. The API writes
-# kamailio.subscriber (staff SIP accounts) and kamailio.location (cleared when staff are deleted).
+# kamailio.subscriber (one SIP account per extension). kamailio.location is created but unused:
+# registrations live in Kamailio memory (usrloc db_mode=0).
 # Idempotent: does nothing if the tables already exist. Usage: npm run db:kamailio
 set -euo pipefail
 cd "$(dirname "$0")/.."
