@@ -1,13 +1,13 @@
 # Backend step 2: authentication
 
-Owner: Aaron (Track 3 backend). Status: done (2026-11-06), commit `2d7fd20`.
+Owner: Aaron (Track 3 backend). Status: done; account/business lifecycle updated 2026-11-15.
 
 Signup, login, token refresh and logout, plus the helpers every later route uses to require a
 logged-in user (`authenticate`) or a role (`requireRole`). Follows CLAUDE.md §11: signed JWT in an
 httpOnly cookie, stateless across replicas, short expiry + refresh.
 
-**Updated 2026-11-09 for the course spec:** signup takes the business's `timezone`, and `GET /me`
-exists (see "Course-spec update" below).
+Signup creates a user account without a business. The user can later create a business or be
+attached to one by its owner. `GET /me` returns `tenant: null` until then.
 
 ## Files
 
@@ -15,25 +15,29 @@ All under `services/api/`.
 
 | File | Purpose |
 |---|---|
-| `src/routes/auth.ts` | The four `/auth/*` routes. |
+| `src/routes/auth.ts` | Signup, login, refresh, logout, and `GET /me`. |
+| `src/routes/businesses.ts` | Create a business for the logged-in unassigned user. |
 | `src/auth.ts` | Cookie + JWT setup, `authenticate`, `requireRole`, setting/clearing cookies. |
+| `src/tenancy.ts` | Tenant guards; unassigned users receive `403 business_required`. |
 | `src/passwords.ts` | argon2id hashing and timing-safe verification. |
 | `src/validation.ts` | `parse(schema, input)`: zod validation -> 400 `invalid_request`. |
 | `src/config.ts` | New: `ACCESS_TOKEN_TTL_SEC`, `REFRESH_TOKEN_TTL_SEC`, `COOKIE_SECURE`. |
-| `test/auth.test.ts`, `test/helpers.ts` | 16 tests (8 against Postgres); shared test app builder. |
+| `test/auth.test.ts`, `test/helpers.ts` | Auth and account lifecycle tests; shared test app builder. |
 
 ## Endpoints
 
 | Request | Success | Errors |
 |---|---|---|
-| `POST /auth/signup` `{ businessName, timezone, email, password }` | `201 { userId, tenantId, role: "owner" }` + cookies | 400 `invalid_request`, 409 `email_taken` |
-| `POST /auth/login` `{ email, password }` | `200 { userId, tenantId, role }` + cookies | 400, 401 `invalid_credentials` |
-| `POST /auth/refresh` | `200 { userId, tenantId, role }` + new cookies | 401 `unauthorized` (cookies cleared) |
+| `POST /auth/signup` `{ email, password }` | `201 { userId, tenantId: null, role: "unassigned" }` + cookies | 400 `invalid_request`, 409 `email_taken` |
+| `POST /businesses` `{ name, timezone }` | `201 { userId, tenantId, role: "owner", cardSetup }` + refreshed cookies | 400, 403 `forbidden`, 409 `business_exists` |
+| `POST /auth/login` `{ email, password }` | `200 { userId, tenantId: string \| null, role }` + cookies | 400, 401 `invalid_credentials` |
+| `POST /auth/refresh` | `200 { userId, tenantId: string \| null, role }` + new cookies | 401 `unauthorized` (cookies cleared) |
 | `POST /auth/logout` | `204`, cookies cleared | |
-| `GET /me` | `200 { user: { id, email, role, createdAt }, tenant: { id, name, timezone, status, createdAt } }` | 401 (also once the user is deleted) |
+| `GET /me` | `200 { user: { id, email, role, createdAt }, tenant: object \| null }` | 401 (also once the user is deleted) |
 
-Validation: `businessName` 1-100 chars; `timezone` an IANA name (`America/New_York`), stored in
-its canonical spelling; `email` valid, stored lowercased; `password` 8-128 chars.
+Validation: signup `email` is valid and stored lowercased; `password` is 8-128 chars.
+Business creation validates `name` (1-100 chars) and `timezone` as an IANA name
+(`America/New_York`), stored in its canonical spelling.
 
 ## Using it in a route
 
@@ -52,10 +56,13 @@ app.get('/staff', { preHandler: [authenticate, requireRole('owner')] }, async (r
 - **Stateless.** No session table, so any app-N replica serves any request. Trade-off: logout
   clears the cookies but can't revoke a copied token before it expires. Short access tokens keep
   that window small.
-- **Refresh re-reads the user**, so a deleted user loses access within 15 minutes and role
-  changes apply at the next refresh.
-- **Signup is one transaction** (tenant + `tenant_settings` + owner user), retried on failover
-  errors. A duplicate email returns 409 and leaves no orphan tenant.
+- **Refresh re-reads the user**, so a deleted user loses access within 15 minutes and role or
+  business membership changes apply on refresh. `GET /me` also refreshes cookies when membership
+  changed since the access token was issued.
+- **Signup creates an unassigned user only.** `POST /businesses` transactionally creates the
+  tenant and settings, then assigns that user as its owner. A user can belong to one business.
+- **Business membership is optional** (`users.tenant_id` nullable); the `unassigned` role is valid
+  only when `tenant_id` is null. Tenant-scoped routes return 403 `business_required` otherwise.
 - **No account enumeration at login**: unknown email and wrong password give the same 401 and
   take about the same time (a dummy argon2 verify runs for unknown emails).
 - **Emails are lowercased** because `users.email` is a case-sensitive `UNIQUE` column.
@@ -70,15 +77,15 @@ app.get('/staff', { preHandler: [authenticate, requireRole('owner')] }, async (r
 - Not run: an end-to-end curl session (declined during the session). The same flows are covered
   by `app.inject()` tests, which go through Fastify's real request handling but not a socket.
 
-## Course-spec update (2026-11-09)
+## Account and business lifecycle update (2026-11-15)
 
-- **Time zone at signup** (spec §1: "time zone (fixed after signup; governs billing periods and
-  business hours)"). Required. Stored in `tenants.timezone`, which the ARI app reads for business
-  hours and billing periods. Before this, every account got the column default
-  `America/New_York`. There is no route that changes it, on purpose.
-- **`GET /me`**: the user and their business. `tenant.status` is `active` or `past_due` (the API
-  has to report it; past due blocks outgoing calls). Billing fields are added with the card flow.
-- 2 more tests (`timezone` required and canonicalized, `/me` incl. 401 after the user is deleted).
+- Registration now collects email, password, and confirmation in the web client; confirmation is
+  checked client-side. The API accepts only email and password.
+- Authenticated users without a business are routed to Create Business. Business name and time
+  zone are submitted to `POST /businesses`; the existing card SetupIntent and `/billing/card`
+  flow then saves the card and charges the first plan period.
+- Owners can attach an existing unassigned account by email through `POST /staff`; a password is
+  required only when creating a brand-new staff login.
 
 ## Open items
 

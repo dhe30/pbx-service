@@ -1,4 +1,4 @@
-import { withRetry, type Sql } from '@pbx/shared';
+import { withRetry, type Sql, type UserRole } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
@@ -30,7 +30,7 @@ export interface StaffOptions {
   sipDomain: string;
 }
 
-const CreateStaffBody = z.object({ email, password });
+const CreateStaffBody = z.object({ email, password: password.optional() }).strict();
 const CredentialsQuery = z.object({
   extensionId: z.string().uuid().optional().describe('Extension to use (GET /extensions). Default: the one assigned to this user.'),
 });
@@ -66,11 +66,15 @@ const docs = {
   create: {
     tag: 'Staff',
     auth: 'owner',
-    summary: 'Create a staff login',
-    description: 'A dashboard login for an employee. Phones and the softphone use extensions (POST /extensions).',
+    summary: 'Create or attach a staff login',
+    description:
+      'A dashboard login for an employee. Supply only an email to attach an existing unassigned user; include a password to create a new login. Phones and the softphone use extensions (POST /extensions).',
     body: CreateStaffBody,
     responses: { 201: { description: 'The staff login', schema: StaffSchema } },
-    errors: { 409: 'An account with this email already exists (`email_taken`).' },
+    errors: {
+      400: 'A password is required when the email does not belong to an existing unassigned user (`invalid_request`).',
+      409: 'The email already belongs to a user who cannot be attached (`email_taken`).',
+    },
   },
   list: {
     tag: 'Staff',
@@ -107,15 +111,35 @@ export const staffRoutes: FastifyPluginAsync<StaffOptions> = async (app, { sql, 
   app.post('/staff', withDoc(ownerOnly, docs.create), async (req, reply) => {
     const tenantId = tenantOf(req);
     const body = parse(CreateStaffBody, req.body);
-    const passwordHash = await hashPassword(body.password);
     try {
-      const [staff] = await withRetry(
-        () => sql<StaffRow[]>`
-          insert into users (tenant_id, email, password_hash, role)
-          values (${tenantId}, ${body.email}, ${passwordHash}, 'staff')
-          returning id, email, role, created_at`,
+      const staff = await withRetry(() =>
+        sql.begin(async (tx) => {
+          const [existing] = await tx<{ id: string; tenantId: string | null; role: UserRole }[]>`
+            select id, tenant_id, role from users where email = ${body.email} for update`;
+          if (existing) {
+            if (existing.tenantId !== null || existing.role !== 'unassigned') {
+              throw new HttpError(409, 'email_taken', 'This email already belongs to a business user');
+            }
+            const [attached] = await tx<StaffRow[]>`
+              update users set tenant_id = ${tenantId}, role = 'staff'
+               where id = ${existing.id} and tenant_id is null and role = 'unassigned'
+               returning id, email, role, created_at`;
+            if (!attached) throw new HttpError(409, 'email_taken', 'This user can no longer be attached');
+            return attached;
+          }
+
+          if (!body.password) {
+            throw new HttpError(400, 'invalid_request', 'password: Required when creating a new staff login');
+          }
+          const passwordHash = await hashPassword(body.password);
+          const [created] = await tx<StaffRow[]>`
+            insert into users (tenant_id, email, password_hash, role)
+            values (${tenantId}, ${body.email}, ${passwordHash}, 'staff')
+            returning id, email, role, created_at`;
+          return created!;
+        }),
       );
-      req.log.info({ tenantId, userId: staff!.id }, 'staff created');
+      req.log.info({ tenantId, userId: staff.id }, 'staff created or attached');
       return reply.status(201).send(staff);
     } catch (err) {
       if (isUniqueViolation(err, 'users_email_key')) {

@@ -30,6 +30,15 @@ describe('tenantOf / ivrConfigRefs (no DB)', () => {
     expect(res.json()).toEqual({ tenantId: mine });
   });
 
+  it('tenantOf returns a business-required authorization error for unattached users', async () => {
+    const app = await build();
+    app.get('/test/unassigned', { preHandler: authenticate }, async (req) => ({ tenantId: tenantOf(req) }));
+    const token = app.jwt.sign({ sub: randomUUID(), tid: null, role: 'unassigned', typ: 'access' });
+    const res = await app.inject({ method: 'GET', url: '/test/unassigned', cookies: { [ACCESS_COOKIE]: token } });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ error: 'business_required' });
+  });
+
   it('ivrConfigRefs lists every destination id with its field path (external / hangup have none)', () => {
     const [rg, mb, ext, menu] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
     const refs = ivrConfigRefs({

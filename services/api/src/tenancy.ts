@@ -44,6 +44,9 @@ export function tenantOf(req: FastifyRequest): string {
   if (!req.auth) {
     throw new Error(`tenantOf() used without authenticate on ${req.method} ${req.routeOptions.url}`);
   }
+  if (!req.auth.tenantId || req.auth.role === 'unassigned') {
+    throw new HttpError(403, 'business_required', 'Create or join a business before using this endpoint');
+  }
   return req.auth.tenantId;
 }
 

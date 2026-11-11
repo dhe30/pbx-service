@@ -1,7 +1,7 @@
 // Shared domain types mirroring db/migrations. Rows come back camelCased (see createDb).
 // Contract for the API team: docs/telephony-contract.md.
 
-export type UserRole = 'owner' | 'staff';
+export type UserRole = 'owner' | 'staff' | 'unassigned';
 export type NumberStatus = 'assigned' | 'released';
 export type NumberKind = 'local' | 'toll_free';
 export type RingStrategy = 'all' | 'sequential';
