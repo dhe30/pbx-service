@@ -333,6 +333,10 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
   /voicemails/:id, GET /voicemails/:id/audio (streamed)
 - Calls: GET /calls (CDR search, keyset paging), GET /calls/:callId, GET /calls/:callId/recording
 - Settings: GET /settings (read-only; add-ons are bought through billing, docs/billing-flows.md)
+- Billing (docs/billing-flows.md): GET /billing/prices, /billing/rates(+/lookup), GET /billing,
+  POST /billing/setup-intent, POST /billing/card, GET/POST/DELETE /billing/items (additional
+  extensions, intl calling, recording; table account_items), GET /invoices(/:id). Weekly invoices,
+  retries and past due: background scheduler in every API process (src/billing/scheduler.ts).
 - GET /health (liveness), GET /ready (DB + object store reachable), GET /metrics
 
 ---------------------------------------------------------------------------------------------
@@ -433,7 +437,8 @@ node_exporter 9100 and other exporters.
       credentials, mailboxes / ring groups / IVR menus / number routing, greeting upload + media,
       call history / voicemail / settings, number search + purchase + release), plus the course-spec
       updates (time zone + GET /me, business hours, blocklist, /openapi.json, signup card + first
-      plan charge, extension limit: docs/backend-card-signup.md). Contracts for other
+      plan charge, extension limit: docs/backend-card-signup.md), and (2026-11-12) add-on and
+      extension purchases, weekly invoicing / past due, rates by prefix, Ansible role `api`. Contracts for other
       tracks: docs/backend-for-team.md; per-step details: docs/backend-step{1,2,3,4,5,6,7,8}.md.
       Local dev also needs `npm run db:kamailio`, `npm run dev:s3` (Garage) and ffmpeg.
       Every tenant-scoped API route must follow the rules in docs/backend-step3.md.

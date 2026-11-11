@@ -1,8 +1,8 @@
 # Telephony ↔ API/web contract
 
 What the call path (Kamailio + Asterisk/ARI app) reads and writes, so the API and web can be built
-against it. Purchases, payments and invoicing (Stripe, proration, past due): [billing-flows.md](billing-flows.md). The schema is in `db/migrations/` (latest:
-`20261109000000_course_spec_telephony.sql`). Shared types, zod schemas and rules are in
+against it. Purchases, payments and invoicing (Stripe, proration, past due): [billing-flows.md](billing-flows.md). The schema is in `db/migrations/` (telephony tables:
+`20261109000000_course_spec_telephony.sql`; billing tables in the later migrations). Shared types, zod schemas and rules are in
 `services/shared` (import from `@pbx/shared`). Why it looks like this:
 [spec-transition.md](spec-transition.md).
 
@@ -15,14 +15,14 @@ Everything else is written by the API.
 | Table / column | Written by | Read by telephony for |
 |---|---|---|
 | `tenants.timezone` (IANA, fixed after signup), `tenants.status` (`active` / `past_due`) | API / billing | business hours, billing period, outgoing-call blocking |
-| `tenant_settings.record_calls`, `.intl_calling`, `.included_us_minutes` | API (add-ons, plan) | recording, international blocking, included US minutes |
+| `tenant_settings.record_calls`, `.intl_calling`, `.included_us_minutes` | API (add-ons, plan; the flags are derived from `account_items` on every purchase, cancellation and lapse) | recording, international blocking, included US minutes |
 | `extensions` + `kamailio.subscriber` | API | ringing, forwarding, outgoing calls, auth |
 | `phone_numbers.destination`, `.kind`, `.incoming_cost_per_min`, `.paid_until`, `.status` | API (purchase, routing, release) | where calls to a DID go; toll-free billing |
 | `ivr_menus`, `ring_groups`, `ring_group_members`, `mailboxes`, `business_hours`, `blocked_numbers` | API | routing |
 | `call_pricing` (1 row), `rate_decks` | API / ops (`rates:import`) | rating every leg |
 | `cdrs`, `usage_periods` | **ARI app** (insert-only) | — (API reads them: history, search, invoices) |
 | `media` (kind recording/voicemail), `voicemails` | **ARI app** inserts; API and `*98` update/delete | — |
-| `billing_accounts`, `payments`, `tenant_settings.included_extensions` / `.extra_extensions` | API only | — (not read by telephony) |
+| `billing_accounts`, `payments`, `account_items`, `invoices`, `invoice_lines`, `tenant_settings.included_extensions` / `.extra_extensions` | API only | — (not read by telephony) |
 
 **Freshness:** every write to the account-config tables fires `NOTIFY pbx_config '<tenant id>'`
 (triggers), and every pbx node drops its cached copy of that account. Changes take effect on the
@@ -43,7 +43,8 @@ insert into kamailio.subscriber (username, domain, password, tenant_id, extensio
   values (<sip_username>, <sip_domain>, <generated password>, <tenant_id>, <extension id>);
 ```
 - `number`: digits, unique within the account (`101`). `sip_username`: **globally** unique (one
-  SIP domain for every account), e.g. generated `t<short-tenant>-<number>`. The SIP password is
+  SIP domain for every account), generated as `x` + 16 hex characters (letters and digits only:
+  it ends up in Asterisk dial strings). The SIP password is
   stored in plaintext because the spec says the API returns it (`auth_db calculate_ha1=yes`).
 - `tenant_id` / `extension_id` on the subscriber row are what keep an account's calls on one pbx
   node. Leave them out and calls still work, but attended transfer can break.
@@ -103,10 +104,12 @@ the CDR outcome is `blocked`.
 ## 4. Numbers
 
 - `did` is E.164 with `+`. `kind` is `local` or `toll_free` (from the DIDWW DID group).
-  `incoming_cost_per_min` is what DIDWW charges us for incoming toll-free on that number
-  (`null` = `call_pricing.toll_free_in_cost_per_min`).
+  `incoming_cost_per_min` is what DIDWW charges us for incoming toll-free on that number, set by
+  the purchase from the provider's offer (`null` = unknown: `call_pricing.toll_free_in_cost_per_min`).
 - Releasing: set `status='released'` and keep `paid_until` = end of the paid period. Calls keep
-  routing until then (the `kamailio_did_tenant` view and the ARI app both honour `paid_until`).
+  routing until then (the `kamailio_did_tenant` view and the ARI app both honour `paid_until`),
+  and the owner can still re-route it. Kept numbers get a new `paid_until` at each weekly renewal
+  (billing scheduler).
 - Each DID must be assigned to our DIDWW inbound trunk, which points at our edges. That's done in
   the purchase flow.
 
@@ -200,6 +203,6 @@ never transcodes.
 
 | Setting | Effect |
 |---|---|
-| `tenants.status='past_due'` | Every outgoing external leg is blocked (403 to the phone, CDR `blocked`): dialed calls, forwarding, simultaneous ring, transfers to numbers. Incoming and internal calls still work |
+| `tenants.status='past_due'` (set by the billing scheduler 24 h after an unpaid period end; back to `active` when paid) | Every outgoing external leg is blocked (403 to the phone, CDR `blocked`): dialed calls, forwarding, simultaneous ring, transfers to numbers. Incoming and internal calls still work |
 | `tenant_settings.intl_calling=false` | Legs outside the US, **including Canada/Caribbean +1**, are blocked |
 | `tenant_settings.record_calls=true` | Connected calls are recorded (one WAV per conversation, continues through hold and transfers) |

@@ -1,8 +1,21 @@
 # Backend API: what the rest of the team needs to know
 
-From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
+From: Aaron (Track 3 backend). Updated 2026-11-12 (billing completed, API deployable).
 Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
+
+**What changed on 2026-11-12:**
+- New: `GET /billing/rates`, `GET /billing/rates/lookup` (per-minute price by prefix / number),
+  `GET/POST/DELETE /billing/items` (buy and cancel additional extensions, international calling,
+  call recording), `GET /invoices`, `GET /invoices/:id`.
+- The billing scheduler runs in every API process: weekly invoices, retries, past due, recovery
+  when a card is added (`POST /billing/card` with a replacement card now charges unpaid invoices;
+  `402 payment_failed` if that fails). Config: `BILLING_SCHEDULER`, `BILLING_TICK_SEC`.
+- A released number can be re-routed until `paidUntil`, and stops blocking deletes after it.
+- `DELETE /extensions/:id` is `409 in_use` for a ring group's only member.
+- Migrations `20261112000000_account_items.sql`, `20261113000000_invoices.sql`,
+  `20261114000000_purchase_incoming_cost.sql` (run `npm run db:migrate`).
+- Deployment: Ansible role `api`, `services/api/Dockerfile`; the edge HAProxy checks `/ready`.
 
 **What changed on 2026-11-09 (read this if you built against an earlier version):**
 - `POST /auth/signup` needs `timezone`, and returns `cardSetup` for the card form.
@@ -44,6 +57,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 | 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
 | 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
 | 8 | Number search, purchase (idempotent, prorated charge), list, release | Done (DIDWW clone details [VERIFY]) |
+| 9 | Review fixes (2026-11-12): rates by prefix, additional extensions + add-ons, weekly invoices / past due / recovery, deployment role, toll-free cost, voicemail audio cleanup | Done |
 
 ## For everyone
 
@@ -508,9 +522,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Decisions needed from others
 
-- **Justin:** whether `GET /me` has the fields the UI needs, and request/response shapes for each
-  dashboard page. Needed before steps 6-7. (Staff and call configuration shapes are already built; say if they
-  don't suit the UI.)
+- **Justin:** whether the response shapes (all in `GET /openapi.json`) suit each dashboard page,
+  including the new billing pages (items, invoices, rates).
 - **Daniel:** confirm on the phase-1 VM that an IVR `on_timeout` action now runs (fixed in
   `services/shared` in step 5; see the Daniel section above).
 - **Muhammad:** the production Garage key and bucket must match what the dev setup assumes:

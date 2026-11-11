@@ -42,6 +42,10 @@ The carrier sends SIP from `130.245.136.142`. The SIP domain is `group-4.cse356.
   (`destinationUsages` in `references.ts`).
 - **Tests:** API tests updated plus a new `extensions.test.ts`. They can run without docker via
   `node dev/pglite-server.mjs` (see its header).
+- **Later (2026-11-12):** the flags the call path reads are now bought, not just stored:
+  `tenant_settings.intl_calling` / `record_calls` follow the account's add-on items
+  (`/billing/items`), and `tenants.status` is set by the billing scheduler (past due 24 h after an
+  unpaid period end, active again once paid). No telephony change was needed.
 
 ### Database (migration `20261109000000_course_spec_telephony.sql`)
 - **New:** `extensions`, `business_hours`, `blocked_numbers`, `cdrs`, `rate_decks`, `call_pricing`
