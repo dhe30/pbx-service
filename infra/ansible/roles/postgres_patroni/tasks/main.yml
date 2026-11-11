@@ -46,6 +46,7 @@
       - "postgresql-{{ postgres_version }}"
       - "postgresql-client-{{ postgres_version }}"
       - python3-venv
+      - python3-packaging   # needed by Ansible's pip module itself (not by Patroni)
     update_cache: true
 
 # If a "main" cluster exists anyway (VM reused from phase 1), it must not hold port 5432.
