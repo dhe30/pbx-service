@@ -13,10 +13,12 @@
       - vault_did_api_key | length > 0 and vault_did_api_key != 'CHANGE_ME'
       - vault_stripe_secret_key | length > 0 and vault_stripe_secret_key != 'CHANGE_ME'
       - vault_stripe_publishable_key | length > 0 and vault_stripe_publishable_key != 'CHANGE_ME'
+      - (vault_operator_token | default('')) | length >= 32 and not (vault_operator_token is match('CHANGE_ME'))
     fail_msg: >-
       Set did_provider_url and exactly one of did_trunk_group_id / did_trunk_id (group_vars/all/main.yml),
       and vault_jwt_secret, vault_did_api_key, vault_stripe_secret_key, vault_stripe_publishable_key
-      (vault.yml; values from the Course Services tab).
+      (vault.yml; values from the Course Services tab), and vault_operator_token (openssl rand -hex 32;
+      the provider's view of all accounts' support tickets).
 
 - name: NodeSource apt key
   ansible.builtin.get_url:

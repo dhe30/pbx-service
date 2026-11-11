@@ -18,7 +18,8 @@ import { toJsonSchema, type JsonSchema, type RefMap } from './json-schema.js';
 // drift from validation. Response schemas are zod too (documentation only). Field descriptions
 // come from `.describe()`. test/openapi.test.ts fails if a route, field or parameter has none.
 
-export type Auth = 'public' | 'user' | 'owner';
+/** operator: the provider (us), with the operator token (src/operator.ts), not a customer login. */
+export type Auth = 'public' | 'user' | 'owner' | 'operator';
 
 export interface ResponseDoc {
   description: string;
@@ -33,7 +34,7 @@ export interface OperationDoc {
   tag: string;
   summary: string;
   description?: string;
-  /** public: no login. user: any logged-in user. owner: the account owner only. */
+  /** public: no login. user: any logged-in user. owner: the account owner only. operator: the provider's bearer token. */
   auth: Auth;
   params?: AnyZodObject;
   query?: AnyZodObject;
@@ -118,6 +119,13 @@ function buildDocument(routes: CollectedRoute[], info: { title: string; version:
             'Keep cookies between requests (a cookie jar). The refresh cookie (pbx_refresh, path /auth) ' +
             'renews it via POST /auth/refresh.',
         },
+        operatorAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          description:
+            'Provider (PBX operator) token, `Authorization: Bearer <token>`. Only for the /operator/* routes; ' +
+            'customer accounts never have it.',
+        },
       },
     },
   };
@@ -164,13 +172,19 @@ function operation(method: string, url: string, doc: OperationDoc, refs: RefMap)
     };
   }
 
-  const who = { public: 'No login needed.', user: 'Any logged-in user.', owner: 'Account owner only.' }[doc.auth];
+  const who = {
+    public: 'No login needed.',
+    user: 'Any logged-in user.',
+    owner: 'Account owner only.',
+    operator: 'Provider (PBX operator) only: operator bearer token, not a customer login.',
+  }[doc.auth];
   return {
     operationId: operationId(method, url),
     tags: [doc.tag],
     summary: doc.summary,
     description: doc.description ? `${doc.description}\n\n${who}` : who,
-    ...(doc.auth !== 'public' && { security: [{ cookieAuth: [] }] }),
+    ...(doc.auth === 'operator' && { security: [{ operatorAuth: [] }] }),
+    ...((doc.auth === 'user' || doc.auth === 'owner') && { security: [{ cookieAuth: [] }] }),
     ...(doc.auth === 'public' && { security: [] }),
     ...(parameters.length && { parameters }),
     ...(doc.body && {
@@ -225,6 +239,8 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   Calls: 'Call history (one row per call leg) and call recordings.',
   Voicemail: 'Voicemail inbox: listen, mark heard or new, delete.',
   Settings: 'Active add-ons and plan allowances.',
+  Support: "Support tickets: open one when something doesn't work, list the account's tickets, close them.",
+  Operator: 'Provider (PBX operator) views across all accounts. Not for customers: needs the operator token.',
   Media: 'Audio files: uploaded greetings, call recordings and voicemail messages (8 kHz mono WAV).',
 };
 

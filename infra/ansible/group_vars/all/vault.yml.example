@@ -37,3 +37,6 @@ vault_did_api_key: CHANGE_ME
 # secret (browsers get it) but comes from the same place.
 vault_stripe_secret_key: CHANGE_ME
 vault_stripe_publishable_key: CHANGE_ME
+# Provider (operator) token for GET /operator/tickets (every account's support tickets), at least
+# 32 chars:  openssl rand -hex 32. Only the team uses it; never give it to a customer account.
+vault_operator_token: CHANGE_ME_to_openssl_rand_hex_32

@@ -25,6 +25,7 @@ import { numberRoutes } from './routes/numbers.js';
 import { ringGroupRoutes } from './routes/ring-groups.js';
 import { settingsRoutes } from './routes/settings.js';
 import { staffRoutes } from './routes/staff.js';
+import { ticketRoutes } from './routes/tickets.js';
 import { voicemailRoutes } from './routes/voicemails.js';
 
 // Builds the Fastify app without listening, so tests can drive it with app.inject().
@@ -56,6 +57,7 @@ export type AppConfig = Pick<
   | 'SIP_DOMAIN'
   | 'STRIPE_PUBLISHABLE_KEY'
   | 'STRIPE_JS_URL'
+  | 'OPERATOR_TOKEN'
 >;
 
 declare module 'fastify' {
@@ -102,7 +104,8 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
       'Authentication: POST /auth/signup or /auth/login sets an httpOnly access cookie (pbx_access, 15 min) and a ' +
       'refresh cookie (pbx_refresh, path /auth). Send cookies back on every request; on 401 call POST /auth/refresh ' +
       'once and retry. Request bodies are JSON. Errors are `{ "error": "<code>", "message": "<text>" }`. Ids of ' +
-      'another account answer 404 like unknown ids.',
+      'another account answer 404 like unknown ids. The /operator/* routes are for the provider (PBX operator), ' +
+      'with a bearer token instead of a login.',
   });
   app.get(
     '/openapi.json',
@@ -138,6 +141,7 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(callRoutes, { sql: deps.sql, store: deps.store });
   await app.register(voicemailRoutes, { sql: deps.sql, store: deps.store });
   await app.register(settingsRoutes, { sql: deps.sql });
+  await app.register(ticketRoutes, { sql: deps.sql, operatorToken: cfg.OPERATOR_TOKEN });
 
   // New tenant-scoped routes go here. Every tenant-scoped route
   // follows the rules in src/tenancy.ts (docs/backend-step3.md) and src/references.ts.

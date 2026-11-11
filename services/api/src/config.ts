@@ -58,6 +58,12 @@ const EnvSchema = z.object({
    */
   DID_TRUNK_GROUP_ID: z.string().optional(),
   DID_TRUNK_ID: z.string().optional(),
+  /**
+   * Provider (PBX operator) access to the support tickets of ALL accounts (GET /operator/tickets,
+   * src/operator.ts): `Authorization: Bearer <OPERATOR_TOKEN>`. Ansible Vault; not set = operator
+   * routes refuse everyone. Generate with `openssl rand -hex 32`.
+   */
+  OPERATOR_TOKEN: z.string().min(32, 'OPERATOR_TOKEN must be at least 32 characters').optional(),
   /** Returned to staff browsers by GET /me/sip-credentials. */
   SIP_WS_URI: z.string().url(),
   SIP_DOMAIN: z.string().min(1),
