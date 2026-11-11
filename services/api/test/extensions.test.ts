@@ -195,4 +195,23 @@ describe.skipIf(!db || !hasKamailio)('extensions + SIP credentials (Postgres)', 
     expect(await sql`select 1 from kamailio.subscriber where username = ${ext.sipUsername}`).toHaveLength(0);
     expect(await sql`select 1 from mailboxes where id = ${ext.mailboxId}`).toHaveLength(1); // voicemails kept
   });
+
+  it("DELETE refuses a ring group's only member, and leaves groups with other members", async () => {
+    const a = await makeTenant();
+    const one = (await create(a, { number: '201', name: 'one' })).json();
+    const two = (await create(a, { number: '202', name: 'two' })).json();
+    const group = (key: string, memberIds: string[]) =>
+      app.inject({ method: 'POST', url: '/ring-groups', cookies: a.owner, payload: { name: key, strategy: 'all', memberIds } });
+    const solo = (await group('Solo', [one.id])).json();
+    const shared = (await group('Shared', [one.id, two.id])).json();
+
+    const refused = await app.inject({ method: 'DELETE', url: `/extensions/${one.id}`, cookies: a.owner });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toEqual({ error: 'in_use', message: 'Used by ring group "Solo" (its only member); change that first' });
+
+    expect((await app.inject({ method: 'DELETE', url: `/ring-groups/${solo.id}`, cookies: a.owner })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/extensions/${one.id}`, cookies: a.owner })).statusCode).toBe(204);
+    const after = (await app.inject({ method: 'GET', url: `/ring-groups/${shared.id}`, cookies: a.owner })).json();
+    expect(after.memberIds).toEqual([two.id]);
+  });
 });

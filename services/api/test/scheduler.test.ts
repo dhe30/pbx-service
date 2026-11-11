@@ -192,3 +192,39 @@ describe.skipIf(!db)('billing scheduler (Postgres)', () => {
     );
   });
 });
+
+describe.skipIf(!db)('voicemail audio cleanup (Postgres)', () => {
+  it('deletes media of voicemails deleted by phone (*98), after a grace period, and their objects', async () => {
+    const sql = (await connectTestDb())!;
+    const { MemoryStore } = await import('./helpers.js');
+    const { cleanupOrphanVoicemailMedia, ORPHAN_GRACE_SEC } = await import('../src/maintenance.js');
+    const store = new MemoryStore();
+    const log = pino({ level: 'silent' });
+    const [t] = await sql<{ id: string }[]>`insert into tenants (name) values ('Cleanup test') returning id`;
+    try {
+      const [mb] = await sql<{ id: string }[]>`insert into mailboxes (tenant_id, name) values (${t!.id}, 'MB') returning id`;
+      const media = async (key: string, kind: string, age: number) => {
+        await store.put(key, Buffer.from('RIFF'), 'audio/wav');
+        const [m] = await sql<{ id: string }[]>`
+          insert into media (tenant_id, kind, object_key, format, duration_ms, created_at)
+          values (${t!.id}, ${kind}, ${key}, 'wav', 1000, now() - make_interval(secs => ${age})) returning id`;
+        return m!.id;
+      };
+      const old = ORPHAN_GRACE_SEC + 60;
+      const orphan = await media(`t/${randomUUID()}.wav`, 'voicemail', old); // its message was deleted by *98
+      const kept = await media(`t/${randomUUID()}.wav`, 'voicemail', old);
+      await sql`insert into voicemails (tenant_id, mailbox_id, media_id) values (${t!.id}, ${mb!.id}, ${kept})`;
+      const fresh = await media(`t/${randomUUID()}.wav`, 'voicemail', 10);
+      const greeting = await media(`t/${randomUUID()}.wav`, 'greeting', old);
+
+      expect(await cleanupOrphanVoicemailMedia({ sql, store, log })).toBeGreaterThanOrEqual(1);
+      const left = (await sql<{ id: string }[]>`select id from media where tenant_id = ${t!.id}`).map((r) => r.id);
+      expect(left.sort()).toEqual([kept, fresh, greeting].sort());
+      expect(left).not.toContain(orphan);
+      expect(store.objects.size).toBe(3);
+    } finally {
+      await sql`delete from tenants where id = ${t!.id}`;
+      await sql.end({ timeout: 2 });
+    }
+  });
+});

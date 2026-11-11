@@ -215,7 +215,7 @@ price of calling one number, e.g. next to the dial pad or the forwarding field),
 | `GET /extensions`, `GET /extensions/:id` | any user | extension(s), by number; `sipPassword` only for owners |
 | `POST /extensions` | owner | `201 extension` (creates its SIP account and, unless `mailboxId` is given or `null`, a mailbox) |
 | `PUT /extensions/:id` | owner | `200 extension` (full replace; omitted `mailboxId` = keep) |
-| `DELETE /extensions/:id` | owner | `204`; `409 in_use` while something routes to it |
+| `DELETE /extensions/:id` | owner | `204`; `409 in_use` while something routes to it or it is a ring group's only member |
 
 extension = `{ id, number, name, sipUsername, sipPassword, mailboxId, ringTimeoutSec, forwardAlways,
 forwardBusy, forwardNoAnswer, externalNumbers, callerIdNumber, userId }`.
@@ -405,7 +405,11 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
   on the phase-1 VM. Details: `docs/backend-step5.md`.
 - **The API refuses to delete what call routing still depends on** (409 `in_use`): a mailbox, ring
   group, IVR menu, business hours schedule or extension that a Destination points at (IVR digits,
-  number routing, ring group no-answer, forwarding, extension mailboxes). Seeds or scripts that
+  number routing, ring group no-answer, forwarding, extension mailboxes), and an extension that
+  is the only member of a ring group. Numbers released and past their paid period don't count.
+- **Voicemails deleted with `*98` key 3:** the ARI app keeps deleting only the `voicemails` row
+  (S13); the API's background ticker deletes the leftover `media` row and its object after an
+  hour (`src/maintenance.ts`). Seeds or scripts that
   delete these rows directly should keep the same rule. Staff logins are not routing targets, so
   deleting one no longer checks anything.
 
@@ -538,10 +542,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
   would remove the trap.
 - **No end-to-end test over a real socket or browser yet.** Auth and staff are covered by
   `app.inject()` tests only; a curl/browser run with the Vite proxy is still to do.
-- **Voicemails deleted by phone (`*98` key 3) leave their audio behind.** The ARI app deletes
-  only the `voicemails` row; the `media` row and the object stay (spec-transition S13). Deletes
-  through the API remove all three. A periodic cleanup of unreferenced voicemail media is still
-  to do.
 - **No call has gone through an API-created IVR menu yet** (phase-1 VM test).
 - **No softphone has registered with API-created credentials yet.** Needs the phase-1 VM (or a
   local Kamailio) pointed at the same database.

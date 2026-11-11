@@ -91,6 +91,8 @@ export async function destinationUsages(db: Db, tenantId: string, type: Destinat
 export interface Usage {
   kind: string;
   name: string;
+  /** Shown after the name in parentheses, e.g. "its only member". */
+  note?: string;
 }
 
 export const usages = (kind: string, names: readonly string[]): Usage[] => names.map((name) => ({ kind, name }));
@@ -98,6 +100,6 @@ export const usages = (kind: string, names: readonly string[]): Usage[] => names
 /** Throws 409 `in_use` naming every user of the row, if there are any. */
 export function refuseIfUsed(found: readonly Usage[]): void {
   if (found.length === 0) return;
-  const list = found.map((u) => `${u.kind} "${u.name}"`).join(', ');
+  const list = found.map((u) => `${u.kind} "${u.name}"${u.note ? ` (${u.note})` : ''}`).join(', ');
   throw new HttpError(409, 'in_use', `Used by ${list}; change ${found.length > 1 ? 'those' : 'that'} first`);
 }

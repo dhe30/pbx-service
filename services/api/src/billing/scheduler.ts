@@ -1,5 +1,7 @@
 import { billingPeriod, withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
+import { cleanupOrphanVoicemailMedia } from '../maintenance.js';
+import type { MediaStore } from '../object-store.js';
 import { MIN_CHARGE_CENTS } from './catalog.js';
 import { syncSettings } from './items.js';
 import type { StripeClient } from './stripe.js';
@@ -19,6 +21,7 @@ import type { StripeClient } from './stripe.js';
 //   3. past due: accounts with an invoice still unpaid 24 h after its period ended. The call path
 //      then blocks outgoing external legs (tenants.status, NOTIFY pbx_config).
 //   4. lapse: add-ons whose cancelled period ended are switched off (tenant_settings).
+//   5. housekeeping (with a store): voicemail audio left behind by *98 deletes (src/maintenance.ts).
 // A paid invoice reactivates a past-due account once nothing else is unpaid. Adding a card charges
 // every unpaid invoice at once (payOverdue, called from POST /billing/card).
 
@@ -26,6 +29,8 @@ export interface BillingDeps {
   sql: Sql;
   stripe: StripeClient;
   log: FastifyBaseLogger;
+  /** Object store for housekeeping; without it that step is skipped. */
+  store?: MediaStore;
 }
 
 /** Retry delays after a failed charge attempt (attempt 1, 2, ...), then the last one repeats. */
@@ -41,10 +46,11 @@ export interface TickResult {
   failed: number;
   pastDue: number;
   lapsed: number;
+  orphansDeleted: number;
 }
 
 export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<TickResult> {
-  const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0 };
+  const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0, orphansDeleted: 0 };
   r.lapsed = await expireLapsedAddons(d, now);
   for (let i = 0; i < BATCH && (await invoiceNextAccount(d, now)); i++) r.invoiced++;
   for (let i = 0; i < BATCH; i++) {
@@ -54,6 +60,9 @@ export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<
     else r.failed++;
   }
   r.pastDue = await markPastDue(d, now);
+  if (d.store) {
+    r.orphansDeleted = await cleanupOrphanVoicemailMedia({ sql: d.sql, store: d.store, log: d.log }, now);
+  }
   if (r.invoiced || r.charged || r.failed || r.pastDue || r.lapsed) d.log.info({ ...r }, 'billing tick');
   return r;
 }

@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   });
 
   const stopBilling = cfg.BILLING_SCHEDULER
-    ? startBillingScheduler({ sql, stripe, log: app.log.child({ component: 'billing' }) }, cfg.BILLING_TICK_SEC * 1000)
+    ? startBillingScheduler({ sql, stripe, store, log: app.log.child({ component: 'billing' }) }, cfg.BILLING_TICK_SEC * 1000)
     : async () => {};
 
   let shuttingDown = false;
