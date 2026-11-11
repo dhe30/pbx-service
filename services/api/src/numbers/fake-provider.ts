@@ -31,6 +31,9 @@ const AREAS: AreaCode[] = [
   { regionId: 'r-tf', region: 'Toll-free', cityId: 'c-tf', city: 'Toll-free', areaCode: '833', kind: 'toll_free' },
 ];
 
+/** What the fake provider charges per answered incoming toll-free minute. */
+export const FAKE_TOLL_FREE_COST_PER_MIN = 0.021;
+
 /** Numbers per area code: +1 <area> 555 0100 .. 0149. */
 const PER_AREA = 50;
 
@@ -82,6 +85,8 @@ export class FakeDidProvider implements DidProvider {
           city: a.city,
           areaCode: a.areaCode,
           skuId: `sku-${a.kind}`,
+          // Metered like DIDWW toll-free numbers (USD per answered incoming minute).
+          incomingCostPerMin: a.kind === 'toll_free' ? FAKE_TOLL_FREE_COST_PER_MIN : null,
         };
       }),
     ).filter((n) => !this.owned.has(n.number));

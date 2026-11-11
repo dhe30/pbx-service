@@ -297,7 +297,8 @@ export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; 
     const now = new Date();
     const period = billingPeriod(t!.timezone, t!.createdAt, now);
     const offers = await provider.searchAvailable(q);
-    return offers.map(({ skuId: _sku, ...o }) => {
+    // Our cost (incomingCostPerMin) stays internal; customers see our prices (GET /billing/prices).
+    return offers.map(({ skuId: _sku, incomingCostPerMin: _cost, ...o }) => {
       const priceCents = numberPriceCents(o.kind);
       const due = proratedCents(priceCents, period, now);
       return { ...o, priceCents, dueNowCents: due < 50 ? 0 : due };

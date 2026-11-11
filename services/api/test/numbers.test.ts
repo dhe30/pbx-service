@@ -4,7 +4,7 @@ import type { FastifyInstance, InjectOptions } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
 import { PRICES, proratedCents } from '../src/billing/catalog.js';
-import { FakeDidProvider } from '../src/numbers/fake-provider.js';
+import { FAKE_TOLL_FREE_COST_PER_MIN, FakeDidProvider } from '../src/numbers/fake-provider.js';
 import { DidProviderError, type AvailableNumber, type OrderResult } from '../src/numbers/provider.js';
 import { FakeStripe, build, connectTestDb, payPlan } from './helpers.js';
 
@@ -322,6 +322,10 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     expect(done.json().number).toMatchObject({ did: o.number, kind: 'toll_free' });
     expect(done.json().chargedCents).toBeLessThanOrEqual(PRICES.tollFreeNumberCents);
     expect(ordersOf(o.number)).toBe(1);
+    // The provider's incoming toll-free cost is kept for rating (ARI app), even across the resume.
+    const [n] = await sql`select incoming_cost_per_min from phone_numbers where did = ${o.number}`;
+    expect(Number(n!.incomingCostPerMin)).toBe(FAKE_TOLL_FREE_COST_PER_MIN);
+    expect(o).not.toHaveProperty('incomingCostPerMin');
   });
 
   it('refuses a second concurrent attempt with the same key', async () => {

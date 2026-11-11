@@ -42,6 +42,11 @@ export interface AvailableNumber {
   areaCode: string | null;
   /** Provider-side product to order (DIDWW stock keeping unit id). */
   skuId: string;
+  /**
+   * What the provider charges US per answered incoming minute on this number (metered toll-free),
+   * USD; null = not given (local numbers, or unknown: call_pricing's default cost applies).
+   */
+  incomingCostPerMin: number | null;
 }
 
 export interface OrderResult {

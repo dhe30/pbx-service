@@ -23,7 +23,10 @@ import {
 //     Pending | Completed | Canceled;
 //   - assigning a DID: PATCH /dids/:id relationship voice_in_trunk or voice_in_trunk_group;
 //   - releasing: PATCH /dids/:id billing_cycles_count = 0 (stop renewing; works until the paid
-//     cycle ends). Course spec: renewal every 7 days.
+//     cycle ends). Course spec: renewal every 7 days;
+//   - the per-second / per-minute fee on answered incoming toll-free calls: read from the SKU or
+//     the DID group under the attribute names in meteredCostPerMin() (the public API doesn't
+//     document one; the course spec says the prices are "in its API").
 // Everything provider-specific stays in this file; src/numbers/purchase.ts only sees DidProvider.
 
 interface Resource {
@@ -211,6 +214,7 @@ export class HttpDidwwProvider implements DidProvider {
       city: str(find(one(group, 'city'))?.attributes?.name) ?? str(group?.attributes?.area_name),
       areaCode: str(group?.attributes?.prefix),
       skuId,
+      incomingCostPerMin: meteredCostPerMin(sku, group),
     };
   }
 
@@ -287,4 +291,26 @@ function numberFromItems(order: Resource): string | null {
   const items = order.attributes?.items as { attributes?: { did_number?: unknown; number?: unknown } }[] | undefined;
   const n = str(items?.[0]?.attributes?.did_number) ?? str(items?.[0]?.attributes?.number);
   return n ? e164(n) : null;
+}
+
+/**
+ * Incoming per-minute cost of a metered (toll-free) number in USD, from the first attribute found on
+ * the SKU, then the DID group. [VERIFY] the clone's attribute name; unknown -> null (the ARI app
+ * then uses call_pricing.toll_free_in_cost_per_min).
+ */
+export function meteredCostPerMin(...sources: (Resource | undefined)[]): number | null {
+  const perMinute = ['per_minute_price', 'price_per_minute', 'metered_price', 'metered_rate', 'toll_free_per_minute_price'];
+  const perSecond = ['per_second_price', 'price_per_second'];
+  for (const src of sources) {
+    const a = src?.attributes ?? {};
+    for (const k of perMinute) {
+      const v = Number(a[k]);
+      if (a[k] != null && a[k] !== '' && Number.isFinite(v) && v >= 0) return v;
+    }
+    for (const k of perSecond) {
+      const v = Number(a[k]);
+      if (a[k] != null && a[k] !== '' && Number.isFinite(v) && v >= 0) return Math.round(v * 60 * 1e6) / 1e6;
+    }
+  }
+  return null;
 }

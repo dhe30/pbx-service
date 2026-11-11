@@ -55,6 +55,7 @@ interface PurchaseRow {
   providerDidId: string | null;
   did: string | null;
   numberKind: NumberKind | null;
+  incomingCostPerMin: string | null; // numeric
   phoneNumberId: string | null;
   amountCents: number | null;
   errorCode: string | null;
@@ -87,7 +88,7 @@ export async function purchaseNumber(
     await failPurchase(sql, key, code, message);
     throw new HttpError(TERMINAL[code]!, code, message);
   };
-  const save = (fields: Partial<Record<'status' | 'provider_order_id' | 'provider_did_id' | 'did' | 'number_kind', string>>) =>
+  const save = (fields: Partial<Record<'status' | 'provider_order_id' | 'provider_did_id' | 'did' | 'number_kind' | 'incoming_cost_per_min', string | null>>) =>
     withRetry(() => sql`update purchase_requests set ${sql(fields)}, updated_at = now() where idempotency_key = ${key}`);
 
   try {
@@ -106,8 +107,9 @@ export async function purchaseNumber(
           const offer = await d.provider.getAvailable(p.availableNumberId);
           if (!offer) return await fail('number_unavailable', 'That number is no longer available; search again');
           if (await isOurs(sql, offer.number)) return await fail('number_unavailable', 'That number is already in use');
-          await save({ did: offer.number, number_kind: offer.kind });
-          row = { ...row, did: offer.number, numberKind: offer.kind };
+          const cost = offer.incomingCostPerMin === null ? null : String(offer.incomingCostPerMin);
+          await save({ did: offer.number, number_kind: offer.kind, incoming_cost_per_min: cost });
+          row = { ...row, did: offer.number, numberKind: offer.kind, incomingCostPerMin: cost };
           let ordered;
           try {
             ordered = await d.provider.order(offer);
@@ -158,11 +160,13 @@ export async function purchaseNumber(
     const phoneNumberId = await withRetry(() =>
       sql.begin(async (tx) => {
         const [n] = await tx<{ id: string }[]>`
-          insert into phone_numbers (did, tenant_id, status, kind, provider_ref, paid_until, purchased_at)
-          values (${row.did!}, ${p.tenantId}, 'assigned', ${kind}, ${row.providerDidId!}, ${charge.paidUntil}, now())
+          insert into phone_numbers (did, tenant_id, status, kind, provider_ref, paid_until, purchased_at, incoming_cost_per_min)
+          values (${row.did!}, ${p.tenantId}, 'assigned', ${kind}, ${row.providerDidId!}, ${charge.paidUntil}, now(),
+                  ${row.incomingCostPerMin})
           on conflict (did) do update
              set tenant_id = excluded.tenant_id, status = 'assigned', kind = excluded.kind,
                  provider_ref = excluded.provider_ref, paid_until = excluded.paid_until,
+                 incoming_cost_per_min = excluded.incoming_cost_per_min,
                  purchased_at = excluded.purchased_at, destination = null, ivr_menu_id = null
            where phone_numbers.tenant_id is null
               or (phone_numbers.status = 'released' and coalesce(phone_numbers.paid_until, '-infinity') <= now())
