@@ -10,8 +10,9 @@ what to check and what to change if a check fails. Background:
 [spec-transition.md](spec-transition.md) §6.
 
 **Not covered here:**
-- The split deployment. The data-tier roles (`etcd`, `postgres_patroni`, `db_local_proxy`) are
-  still stubs ([split-contracts.md](split-contracts.md)).
+- The split deployment (§5 below has the outline). The data-tier roles (`etcd`,
+  `postgres_patroni`, `db_local_proxy`, 3-node `objectstore`) are implemented and were tested on
+  Clanode (PR #9, [split-contracts.md](split-contracts.md) §5).
 - The API/web. Without them the graded simulated customers can't sign up; create test accounts
   with the seed or SQL (§3).
 
@@ -136,13 +137,14 @@ Record what you find (especially for 8, 11 and 12) in [spec-transition.md](spec-
 ## 5. Then: split deployment
 
 Once §4 passes on one VM:
-1. Create the edge and pbx VMs (`inventory/staging.ini` layout). Until the data tier lands, use
-   one Postgres on db-1 (`-e db_host=...`, [split-contracts.md](split-contracts.md) §8).
+1. Create the edge, pbx, app and db-1..3 VMs (`inventory/staging.ini` layout). On Clanode the VMs
+   only get a private IP: add a public IPv4 to the edges (and to one VM you SSH through), and
+   create them with an SSH key (password logins are refused).
 2. Run `site.yml`.
 3. Additionally check:
    - registration replication: REGISTER via edge-1, then `kamcmd ul.dump` on edge-2 shows it;
    - a call routed through edge-2 to a phone connected to edge-1 has audio;
    - all of one account's calls land on the same pbx node (`pbx_node` in `cdrs`);
    - killing one edge or one pbx VM mid-test: new calls still work, browsers reconnect.
-4. When T1 provides the read-only DB port, set `db_ro_port` (Kamailio auth then survives a
-   primary failover).
+4. Kamailio already reads through the local proxy's read-only port (`db_ro_port` = 5433, replicas
+   first), so SIP auth survives a primary failover; nothing to set.

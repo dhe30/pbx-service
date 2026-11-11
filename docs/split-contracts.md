@@ -67,7 +67,7 @@ Stable names. Values may change only through the owning track.
 | `db_name` | `pbx` | T1 | all |
 | `db_app_user` / `db_kamailio_user` | `pbx_app` / `kamailio` | T1 | ari_app, api / kamailio |
 | `app_db_url`, `kamailio_db_url` | built from the above + vault passwords, port 5432 | T1 | ari_app, api / kamailio |
-| `s3_endpoint` | phase 1: `http://<db-1 private_ip>:3900`. **T1 changes it to `http://127.0.0.1:3900`** (local S3 proxy) | T1 | ari_app, api |
+| `s3_endpoint` | per host: `http://127.0.0.1:3900` (local S3 proxy) on clients; `http://<own private_ip>:3900` on a host that is itself a db node (all-in-one VM) | T1 | ari_app, api |
 | `s3_bucket`, `s3_region` | `pbx-media`, `garage` | T1 | ari_app, api |
 | `garage_replication_factor` | number of db hosts, max 3 (1 all-in-one, 3 split); must be right before data is stored | T1 | objectstore |
 | `sip_domain` | `group-4.cse356.compas.cs.stonybrook.edu` (was `pbx.local`; course spec) | T2 | kamailio, api (SIP creds), web |
@@ -75,7 +75,9 @@ Stable names. Values may change only through the owning track.
 | `trusted_tester_cidrs` | course simulator ranges, exempt from pike (B2) | T2 | kamailio |
 | `vendor_us_host`, `vendor_intl_host`, `vendor_hosts`, `vendor_number_format` | PSTN vendors | T2 | kamailio, asterisk, ari_app |
 | `kamailio_tls_port` / `kamailio_tls_cert` / `kamailio_tls_key` | 5061, certificate for `sip_domain` | T2 | kamailio |
-| `db_ro_port`, `kamailio_db_ro_url` | read-only DB access for Kamailio (see §5) | T1 (port) / T2 | kamailio |
+| `db_ro_port`, `kamailio_db_ro_url` | read-only DB access for Kamailio (see §5): 5433 on clients, 5432 on a db host (all-in-one VM) | T1 (port) / T2 | kamailio |
+| `etcd_version`, `patroni_version` | pinned in `main.yml` (`v3.5.21`, `4.0.5`) | T1 | etcd, postgres_patroni |
+| vault `vault_db_superuser_password`, `vault_db_replication_password`, `vault_db_rewind_password` | Postgres superuser, streaming replication and pg_rewind users of the Patroni cluster | T1 | postgres_patroni |
 | `kamailio_ws_port` | 8080 | T2 | kamailio, edge_haproxy |
 | `edge_trunk_names`, `rtpengine_ips`, `edge_peer_ips` | derived from `groups['edge']` (`rtpengine_ips` from `groups['media']` when that group exists) | T2 | asterisk, ari_app, kamailio |
 | `ari_user`, `hold_max_sec` | `pbxapp`, 1800 | T2 | asterisk, ari_app |
@@ -110,15 +112,18 @@ lets the whole cluster reach every private port.
 | 3900/tcp | Garage S3 API | db | private_ip | local S3 proxies |
 | 3901/tcp | Garage RPC | db | private_ip | other Garage nodes |
 | 3903/tcp | Garage admin + metrics | db | 127.0.0.1 | local (see O1) |
-| 5432/tcp | **local DB proxy** | db_clients | 127.0.0.1 | local services |
+| 5432/tcp | **local DB proxy** (read/write, current primary) | db_clients | 127.0.0.1 | local services |
+| 5433/tcp | **local DB proxy** (read-only, replicas first) | db_clients | 127.0.0.1 | Kamailio |
 | 3900/tcp | **local S3 proxy** | db_clients | 127.0.0.1 | local services |
+| 8405/tcp | local proxy stats + `/metrics` | db_clients | 127.0.0.1 | local (see O1) |
 | 9100/tcp | node_exporter | all | private_ip | Prometheus |
 
 ## 5. Database contract
 
-- **Address:** `127.0.0.1:5432` on every client. The local proxy forwards only to the node whose
-  `GET http://<db private_ip>:8008/primary` returns 200. Read-only replica routing is not
-  needed.
+- **Address:** `127.0.0.1:5432` on every client. The local proxy (HAProxy instance
+  `pbx-dbproxy`, role `db_local_proxy`) forwards only to the node whose
+  `GET http://<db private_ip>:8008/primary` returns 200, and cuts open connections to a node as
+  soon as it stops being primary, so clients reconnect to the new one instead of hanging.
 - **Database / schemas:** database `pbx`. App tables in `public` (owner `pbx_app`). Kamailio
   tables in schema `kamailio` (owner `kamailio`, role search_path = `kamailio`), from the SQL
   in `db/kamailio/` for Kamailio 6.0. `pbx_app` can read and write `kamailio.*` (the API writes
@@ -132,12 +137,15 @@ lets the whole cluster reach every private port.
 - **Failover behaviour clients must survive:** connections drop once; writes fail for up to
   ~30 s; then the same address works again. Clients reconnect and retry, never exit or hang.
   T1 verifies this; T2/T3 keep their DB code retry-safe.
+  **Measured on Clanode (2026-11-10, PR #9):** clean shutdown of the primary ~5 s of failed
+  writes, hard crash ~32 s (Patroni ttl 30 s), 0 committed rows lost (synchronous replication);
+  the old primary rejoins as a replica by itself.
 - **Kamailio only reads (2026-11-09):** registrations are in memory (usrloc `db_mode=0` + DMQ),
   so Kamailio no longer writes to Postgres. It reads `subscriber` (auth) and the view
   `public.kamailio_did_tenant` through `kamailio_db_ro_url` = `127.0.0.1:<db_ro_port>`.
-  **T1:** add a second local proxy port (e.g. 5433) that forwards to any healthy member,
-  replicas first (Patroni `/replica`, then `/health`), and set `db_ro_port` to it. Until then
-  it is 5432 (the primary).
+  `db_ro_port` = **5433**: the local proxy's read-only port, which forwards to a replica
+  (Patroni `/replica?lag=16MB`) and falls back to any running member (`/health`), so auth keeps
+  working during a primary failover. On a host that is itself a db node it is 5432.
 - **Schema contract with the API (T3):** [telephony-contract.md](telephony-contract.md). The
   migration `20261109000000_course_spec_telephony.sql` replaced `calls` with `cdrs` and moved
   SIP accounts from users to `extensions`; see [spec-transition.md](spec-transition.md).
@@ -151,7 +159,8 @@ lets the whole cluster reach every private port.
   `recording` | `voicemail` (`mediaObjectKey()` in `services/shared/src/types.ts`). Writers
   never overwrite another media id. Uploads are idempotent per media id.
 - **Durability:** with 3 nodes and `replication_factor = 3`, losing any one node keeps reads
-  and writes working.
+  and writes working (verified on Clanode, 2026-11-10: uploads and reads of earlier objects OK
+  with one node down).
 - **Audio format:** 8 kHz mono 16-bit WAV (what Asterisk records and plays). The API converts
   uploads to it.
 - **Who reads it from outside:** nobody directly. Browsers get audio through the API
@@ -168,6 +177,8 @@ lets the whole cluster reach every private port.
 | rtpengine | ng `ping` | `private_ip:2225/metrics` |
 | HAProxy | — | `private_ip:8404/metrics` |
 | Garage | `garage status` | `127.0.0.1:3903/metrics` |
+| Local DB/S3 proxy | `127.0.0.1:8405/stats` (backends UP/DOWN) | `127.0.0.1:8405/metrics` |
+| etcd | `etcdctl endpoint health` | `:2379/metrics` |
 | Asterisk | `pjsip show endpoints` | `127.0.0.1:8088/metrics` (res_prometheus) |
 
 ## 8. While a dependency hasn't landed
@@ -178,17 +189,18 @@ an inline host var (`host-1 ... name=value`), never `[group:vars]`.
 
 | Situation | Do this (on your command line / test inventory, not in `group_vars`) |
 |---|---|
-| T2/T3 need a DB but T1 isn't merged | Install Postgres on db-1 with role `postgres_standalone` + `db_schema`, and run the playbook with `-e db_host=<db-1 private_ip>`. Drop the flag when T1 lands. |
-| Need S3 but T1's local S3 proxy isn't merged | Keep `s3_endpoint=http://<db-1 private_ip>:3900` (today's value) with single-node Garage on db-1. |
-| T1 needs a client to test against | One extra VM in `db_clients` running only `common` + `db_local_proxy`; check `psql -h 127.0.0.1 -U pbx_app pbx` survives killing the primary. |
+| T2/T3 want a DB without the 3 db VMs (e.g. a quick test) | Install Postgres on one VM with role `postgres_standalone` + `db_schema`, and run the playbook with `-e db_host=<that VM's private_ip>`. (T1 is merged since PR #9; the full data tier is the default.) |
+| T1 needs a client to test against | One extra VM in `db_clients` running only `common` + `db_local_proxy`; check `psql -h 127.0.0.1 -U pbx_app pbx` survives killing the primary. Done for PR #9. |
 | T4 needs targets | Scrape the all-in-one VM (`inventory/allinone.ini` / `local-vm.ini`) first. |
 
 ## 9. Open items (decide in the owning track, then update this file)
 
-- **O1 (T4):** ARI app metrics (9101), Asterisk metrics (8088) and Garage metrics (3903) bind to
-  127.0.0.1, so Prometheus on mon-1 can't reach them. Options: bind them to `private_ip`, or
-  scrape through a local exporter/agent.
-- **O2 (T1):** where the local S3 proxy runs (same HAProxy as the DB proxy is simplest).
+- **O1 (T4):** ARI app metrics (9101), Asterisk metrics (8088), Garage metrics (3903) and the
+  local proxy's metrics (8405) bind to 127.0.0.1, so Prometheus on mon-1 can't reach them.
+  Options: bind them to `private_ip`, or scrape through a local exporter/agent.
+- **O2 (T1), decided:** the local S3 proxy runs in the same HAProxy instance as the DB proxy
+  (`pbx-dbproxy`, separate from the edge's public HAProxy so reloading one never touches the
+  other).
 - **O3 (T1/T4):** backup target for WAL archiving (mon-1 volume?) and restore drill.
 - **O4 (T2):** HAProxy on each edge sends `/api` to app-1/app-2 (`backend api` already templates
   `groups['app']`); confirm the API health path with T3.
