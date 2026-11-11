@@ -156,6 +156,9 @@ The signup form must also save a card. Card fields go to Stripe.js only, **never
    prorated. `402 payment_failed` = card declined: restart from `POST /billing/setup-intent`.
 
 Other routes: `GET /billing/prices` (public; show the plan price on the signup page),
+`GET /billing/rates?region=intl&prefix=&destination=&limit=&cursor=` (public; per-minute price by
+destination prefix, exactly what calls are charged), `GET /billing/rates/lookup?number=` (public;
+price of calling one number, e.g. next to the dial pad or the forwarding field),
 `GET /billing` (card, `planPaidThrough`, extension usage). Until the plan is paid,
 `POST /extensions` answers `402 payment_required`; past the plan's limit it answers
 `409 extension_limit`. Details and the decisions taken: [backend-card-signup.md](backend-card-signup.md).
