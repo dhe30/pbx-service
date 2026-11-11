@@ -132,11 +132,19 @@ async function chargeFirstPeriod(
           set status = excluded.status, stripe_payment_intent_id = excluded.stripe_payment_intent_id,
               failure_message = excluded.failure_message`,
     );
+  // The plan becomes a recurring account item (renewed weekly by the billing scheduler).
   const markPaid = () =>
-    withRetry(
-      () => sql`
-        update billing_accounts set plan_paid_through = ${period.end}, updated_at = now()
-         where tenant_id = ${tenantId} and plan_paid_through is null`,
+    withRetry(() =>
+      sql.begin(async (tx) => {
+        const updated = await tx`
+          update billing_accounts set plan_paid_through = ${period.end}, updated_at = now()
+           where tenant_id = ${tenantId} and plan_paid_through is null
+          returning tenant_id`;
+        if (updated.length === 0) return;
+        await tx`
+          insert into account_items (tenant_id, kind, price_cents, paid_through)
+          values (${tenantId}, 'plan', ${PLAN.priceCents}, ${period.end})`;
+      }),
     );
 
   if (amountCents < MIN_CHARGE_CENTS) {

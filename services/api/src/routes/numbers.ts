@@ -370,11 +370,18 @@ export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; 
     // Provider first: if it fails nothing changed here and the client retries. If the DB update
     // fails after it, a retry releases at the provider again, which is harmless.
     if (row.providerRef) await provider.release(row.providerRef);
-    const [released] = await withRetry(
-      () => sql<PhoneNumber[]>`
-        update phone_numbers set status = 'released'
-         where id = ${id} and tenant_id = ${tenantId}
-        returning ${cols}`,
+    const [released] = await withRetry(() =>
+      sql.begin(async (tx) => {
+        const rows = await tx<PhoneNumber[]>`
+          update phone_numbers set status = 'released'
+           where id = ${id} and tenant_id = ${tenantId}
+          returning ${cols}`;
+        // Not renewed any more; it keeps working until paid_through (= paid_until).
+        await tx`
+          update account_items set removed_at = now()
+           where phone_number_id = ${id} and tenant_id = ${tenantId} and removed_at is null`;
+        return rows;
+      }),
     );
     if (!released) throw notFound();
     req.log.info({ tenantId, did: released.did, paidUntil: released.paidUntil }, 'number released');

@@ -1,6 +1,8 @@
-import { billingPeriod, withRetry, type Sql } from '@pbx/shared';
+import { withRetry, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
-import { MIN_CHARGE_CENTS, PRICES, proratedCents } from '../billing/catalog.js';
+import { PRICES } from '../billing/catalog.js';
+import { chargeProrated } from '../billing/charge.js';
+import { assertCanBuy, claimPurchase, failPurchase, releaseLease } from '../billing/purchase-requests.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { HttpError } from '../errors.js';
 import { NumberUnavailable, type DidProvider, type NumberKind } from './provider.js';
@@ -11,7 +13,8 @@ import { NumberUnavailable, type DidProvider, type NumberKind } from './provider
 //   2. ORDER at the DID provider and wait for the DID;
 //   3. assign it to our inbound trunk (calls reach our edges);
 //   4. CHARGE the number's price prorated to the end of the billing period;
-//   5. insert phone_numbers (status assigned, paid_until = period end).
+//   5. insert phone_numbers (status assigned, paid_until = period end) and its account_items row
+//      (renewed weekly by the billing scheduler, src/billing/scheduler.ts).
 //
 // Order first, charge second (billing-flows §8.1): the payment gateway has no refunds, so charging
 // first and then failing the order would keep the customer's money for nothing. If the charge is
@@ -25,9 +28,8 @@ import { NumberUnavailable, type DidProvider, type NumberKind } from './provider
 //     findOwnedDid(number) finds the DID we already got;
 //   - the charge's Stripe Idempotency-Key is derived from the purchase key;
 //   - a completed purchase replays its result; a failed one replays its error.
-// Only one attempt per key runs at a time (updated_at is a short lease).
-
-const LEASE_SEC = 30;
+// Only one attempt per key runs at a time (updated_at is a short lease). The generic part of this
+// lives in src/billing/purchase-requests.ts (shared with add-on purchases).
 
 export const numberPriceCents = (kind: NumberKind) => (kind === 'toll_free' ? PRICES.tollFreeNumberCents : PRICES.localNumberCents);
 
@@ -46,6 +48,7 @@ export type PurchaseResult =
 interface PurchaseRow {
   idempotencyKey: string;
   tenantId: string;
+  kind: string;
   status: 'pending' | 'ordered' | 'completed' | 'failed';
   request: { availableNumberId: string } | null;
   providerOrderId: string | null;
@@ -70,7 +73,7 @@ export async function purchaseNumber(
   const key = `${p.tenantId}:${p.clientKey}`;
   const request = { availableNumberId: p.availableNumberId };
 
-  const claimed = await claim(sql, key, p.tenantId, request);
+  const claimed = await claimPurchase<PurchaseRow>(sql, key, p.tenantId, 'number', request);
   if (claimed === 'busy') {
     throw new HttpError(409, 'purchase_in_progress', 'This purchase is still running; retry in a few seconds');
   }
@@ -81,11 +84,7 @@ export async function purchaseNumber(
   if (row.status === 'failed') throw new HttpError(TERMINAL[row.errorCode!] ?? 400, row.errorCode!, row.errorMessage!);
 
   const fail = async (code: keyof typeof TERMINAL, message: string): Promise<never> => {
-    await withRetry(
-      () => sql`
-        update purchase_requests set status = 'failed', error_code = ${code}, error_message = ${message}, updated_at = now()
-         where idempotency_key = ${key}`,
-    );
+    await failPurchase(sql, key, code, message);
     throw new HttpError(TERMINAL[code]!, code, message);
   };
   const save = (fields: Partial<Record<'status' | 'provider_order_id' | 'provider_did_id' | 'did' | 'number_kind', string>>) =>
@@ -93,7 +92,7 @@ export async function purchaseNumber(
 
   try {
     const fresh = row.did === null && row.providerOrderId === null;
-    if (fresh) await assertCanBuy(sql, p.tenantId);
+    if (fresh) await assertCanBuy(sql, p.tenantId, 'numbers');
 
     // ---- 2. order ------------------------------------------------------------------------------
     if (row.providerDidId === null) {
@@ -134,7 +133,18 @@ export async function purchaseNumber(
 
     // ---- 4. charge -------------------------------------------------------------------------------
     const kind = row.numberKind ?? 'local';
-    const charge = await chargeNumber(d, p.tenantId, key, row.did!, kind, now);
+    const priceCents = numberPriceCents(kind);
+    const charge = await chargeProrated(
+      d,
+      {
+        tenantId: p.tenantId,
+        chargeKey: `number:${key}`,
+        priceCents,
+        purpose: 'number',
+        description: `${kind === 'toll_free' ? 'Toll-free number' : 'Local number'} ${row.did} (prorated)`,
+      },
+      now,
+    );
     if (!charge.ok) {
       // Give the number back so it doesn't renew at our expense. If that fails too, log it: the
       // DID would need releasing by hand (it is not in phone_numbers).
@@ -158,6 +168,10 @@ export async function purchaseNumber(
               or (phone_numbers.status = 'released' and coalesce(phone_numbers.paid_until, '-infinity') <= now())
           returning id`;
         if (!n) throw new Error(`purchased DID ${row.did} is already an active number in phone_numbers`);
+        // The recurring item the billing scheduler renews (and stops renewing on release).
+        await tx`
+          insert into account_items (tenant_id, kind, phone_number_id, price_cents, paid_through)
+          values (${p.tenantId}, 'number', ${n.id}, ${priceCents}, ${charge.paidUntil})`;
         await tx`
           update purchase_requests
              set status = 'completed', phone_number_id = ${n.id}, amount_cents = ${charge.cents}, updated_at = now()
@@ -175,58 +189,6 @@ export async function purchaseNumber(
   }
 }
 
-/**
- * Creates the purchase row, or takes over an existing one. 'busy' = another attempt with this key
- * is running right now.
- */
-async function claim(sql: Sql, key: string, tenantId: string, request: { availableNumberId: string }): Promise<PurchaseRow | 'busy'> {
-  return withRetry(async () => {
-    const inserted = await sql<PurchaseRow[]>`
-      insert into purchase_requests (idempotency_key, tenant_id, status, kind, request)
-      values (${key}, ${tenantId}, 'pending', 'number', ${sql.json(request)})
-      on conflict (idempotency_key) do nothing
-      returning *`;
-    if (inserted[0]) return inserted[0];
-
-    const [row] = await sql<PurchaseRow[]>`select * from purchase_requests where idempotency_key = ${key}`;
-    if (!row) throw new Error('purchase request vanished');
-    if (row.request?.availableNumberId !== request.availableNumberId) {
-      throw new HttpError(
-        409,
-        'idempotency_key_reused',
-        'This Idempotency-Key was already used for a different purchase; use a new key for a new purchase',
-      );
-    }
-    if (row.status === 'completed' || row.status === 'failed') return row;
-    // In progress: take it over only if the last attempt let go of it (or died).
-    const [taken] = await sql<PurchaseRow[]>`
-      update purchase_requests set updated_at = now()
-       where idempotency_key = ${key} and status in ('pending', 'ordered')
-         and updated_at < now() - make_interval(secs => ${LEASE_SEC})
-      returning *`;
-    return taken ?? 'busy';
-  });
-}
-
-const releaseLease = (sql: Sql, key: string) =>
-  withRetry(() => sql`update purchase_requests set updated_at = '-infinity' where idempotency_key = ${key} and status in ('pending', 'ordered')`);
-
-/** 402 unless the account has a card, a paid plan and isn't past due. */
-async function assertCanBuy(sql: Sql, tenantId: string): Promise<void> {
-  const [a] = await withRetry(
-    () => sql<{ status: string; paymentMethodId: string | null; planPaidThrough: Date | null }[]>`
-      select t.status, ba.payment_method_id, ba.plan_paid_through
-        from tenants t left join billing_accounts ba on ba.tenant_id = t.id
-       where t.id = ${tenantId}`,
-  );
-  if (!a?.paymentMethodId || !a.planPaidThrough) {
-    throw new HttpError(402, 'payment_required', 'Save a card and pay the plan first (POST /billing/card)');
-  }
-  if (a.status === 'past_due') {
-    throw new HttpError(402, 'payment_required', 'The account is past due; pay the open invoice before buying numbers');
-  }
-}
-
 /** Is the number already one of ours (another account's, or released but still in a paid period)? */
 async function isOurs(sql: Sql, did: string): Promise<boolean> {
   const rows = await withRetry(
@@ -236,55 +198,4 @@ async function isOurs(sql: Sql, did: string): Promise<boolean> {
          and (status = 'assigned' or coalesce(paid_until, '-infinity') > now())`,
   );
   return rows.length > 0;
-}
-
-type ChargeOutcome = { ok: true; cents: number; paidUntil: Date } | { ok: false; message: string };
-
-/** Charges the number's price prorated to the end of the current period (billing-flows §3). */
-async function chargeNumber(d: PurchaseDeps, tenantId: string, key: string, did: string, kind: NumberKind, now: Date): Promise<ChargeOutcome> {
-  const { sql } = d;
-  const [acct] = await withRetry(
-    () => sql<{ timezone: string; createdAt: Date; stripeCustomerId: string; paymentMethodId: string | null }[]>`
-      select t.timezone, t.created_at, ba.stripe_customer_id, ba.payment_method_id
-        from tenants t join billing_accounts ba on ba.tenant_id = t.id
-       where t.id = ${tenantId}`,
-  );
-  if (!acct?.paymentMethodId) return { ok: false, message: 'no saved card' };
-  const period = billingPeriod(acct.timezone, acct.createdAt, now);
-  const chargeKey = `number:${key}`;
-
-  // Already charged by an earlier attempt? (Stripe would replay it anyway; this skips the call.)
-  const [prev] = await withRetry(
-    () => sql<{ status: string; amountCents: number }[]>`
-      select status, amount_cents from payments where idempotency_key = ${chargeKey}`,
-  );
-  if (prev?.status === 'succeeded') return { ok: true, cents: prev.amountCents, paidUntil: period.end };
-
-  const cents = proratedCents(numberPriceCents(kind), period, now);
-  const record = (status: 'succeeded' | 'failed', paymentIntentId: string | null, message: string | null, amount: number) =>
-    withRetry(
-      () => sql`
-        insert into payments (tenant_id, purpose, period_start, idempotency_key, amount_cents,
-                              stripe_payment_intent_id, status, failure_message)
-        values (${tenantId}, 'number', ${period.startDate}, ${chargeKey}, ${amount}, ${paymentIntentId}, ${status}, ${message})
-        on conflict (idempotency_key) do update
-          set status = excluded.status, stripe_payment_intent_id = excluded.stripe_payment_intent_id,
-              failure_message = excluded.failure_message`,
-    );
-
-  if (cents < MIN_CHARGE_CENTS) {
-    await record('succeeded', null, 'below minimum charge, waived', 0);
-    return { ok: true, cents: 0, paidUntil: period.end };
-  }
-  const label = kind === 'toll_free' ? 'Toll-free number' : 'Local number';
-  const result = await d.stripe.charge(
-    { customerId: acct.stripeCustomerId, paymentMethodId: acct.paymentMethodId, amountCents: cents, description: `${label} ${did} (prorated)`, tenantId },
-    chargeKey,
-  );
-  if (!result.ok) {
-    await record('failed', result.paymentIntentId, result.message, cents);
-    return { ok: false, message: result.message };
-  }
-  await record('succeeded', result.paymentIntentId, null, cents);
-  return { ok: true, cents, paidUntil: period.end };
 }

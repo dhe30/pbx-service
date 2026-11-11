@@ -104,6 +104,9 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     expect(charge.amountCents).toBeLessThanOrEqual(PLAN.priceCents);
     const [payment] = await sql`select purpose, amount_cents, status from payments where tenant_id = ${t.tenantId}`;
     expect(payment).toEqual({ purpose: 'plan', amountCents: charge.amountCents, status: 'succeeded' });
+    // The plan is a recurring item, renewed by the billing scheduler.
+    const items = await sql`select kind, price_cents, paid_through, removed_at from account_items where tenant_id = ${t.tenantId}`;
+    expect(items).toEqual([{ kind: 'plan', priceCents: PLAN.priceCents, paidThrough: period.end, removedAt: null }]);
 
     // Retrying (lost response) charges nothing more.
     expect((await t.call('POST', '/billing/card', { setupIntentId: t.cardSetup.setupIntentId })).statusCode).toBe(200);

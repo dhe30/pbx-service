@@ -297,7 +297,7 @@ extensions' mailboxes**. Details: `docs/backend-step7.md`.
   audioUrl }`. `heard: false` = new, `true` = saved; the phone menu (`*98`) sees the same state.
   Playing doesn't mark it heard: send the `PATCH`.
 - **Settings are read-only.** Recording and international calling are paid add-ons
-  (billing-flows §2-§3), bought and cancelled through billing (not built yet).
+  (billing-flows §2-§3), bought and cancelled through `/billing/items` (below).
 
 ### Phone numbers (available now, step 8)
 
@@ -327,9 +327,23 @@ Details: `docs/backend-step8.md`.
   re-routed until then (`PUT /numbers/:id/route`); after `paidUntil` it is gone (404) and no longer
   blocks deleting what it routed to.
 
-### Not available yet
+### Additional extensions and add-ons
 
-- Buying add-ons and extra extensions; invoices.
+| Request | Who | Response |
+|---|---|---|
+| `GET /billing/items` | owner | `[item]`: plan, additional extensions, numbers, add-ons (incl. cancelled ones until `paidThrough`) |
+| `POST /billing/items { kind }` + header `Idempotency-Key` | owner | `201 { item, chargedCents, replayed }` |
+| `DELETE /billing/items/:id` | owner | `200 item` with `renews: false` |
+
+item = `{ id, kind, priceCents, startedAt, paidThrough, removedAt, renews, phoneNumberId, did }`,
+`kind` = `plan | extension | number | intl_calling | recording`.
+- `kind` to buy: `extension` (one more extension slot), `intl_calling`, `recording`. Charged now,
+  prorated (show `GET /billing/prices` first); Idempotency-Key works like number purchases.
+- `409 already_active`: the add-on already renews. Buying a cancelled add-on that is still paid
+  for renews it again for free (`chargedCents: 0`).
+- Cancel: an add-on keeps working until `paidThrough`. An extension slot stops counting at once,
+  so cancelling it is `409 extension_limit` while the extensions in use need it.
+- Numbers are released with `DELETE /numbers/:id`; the plan can't be cancelled (400).
 
 ### Errors to handle on upcoming forms (from step 3)
 
@@ -479,9 +493,7 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - Changing a staff member's dashboard password (no reset or change-password route yet).
-- Billing: buying extra extensions / numbers / add-ons (turning `record_calls` / `intl_calling`
-  on and off; `GET /settings` only shows them), weekly invoices, past due and recovery
-  (billing-flows §3-§5).
+- Billing: weekly invoices, past due and recovery (billing-flows §4-§5).
 - Renewal and release at the provider on the weekly cycle (billing scheduler): numbers are only
   released at DIDWW when the customer releases them; renewal charges aren't built.
 - `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include

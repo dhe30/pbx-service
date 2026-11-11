@@ -348,6 +348,9 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ id: n.id, status: 'released', paidUntil: n.paidUntil });
     expect(provider.owned.get(o.number)!.released).toBe(true);
+    // Its recurring item stops renewing (billing scheduler).
+    const [item] = await sql`select price_cents, paid_through, removed_at from account_items where phone_number_id = ${n.id}`;
+    expect(item).toMatchObject({ priceCents: PRICES.localNumberCents, paidThrough: new Date(n.paidUntil), removedAt: expect.any(Date) });
     // Still listed and still delivering calls until paidUntil.
     expect((await call(t.cookies, 'GET', '/numbers')).json().map((x: { id: string }) => x.id)).toContain(n.id);
     expect(await sql`select 1 from kamailio_did_tenant where did_digits = ${o.number.slice(1)}`).toHaveLength(1);
