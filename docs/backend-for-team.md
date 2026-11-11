@@ -511,8 +511,11 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
 - **`JWT_SECRET` must be identical on every app node** (otherwise logins break when HAProxy
   switches replicas) and at least 16 characters; keep it in Vault.
 - Production: set `HOST` to the app node's private IP (default `127.0.0.1`).
-- Capacity: each login or signup hashes with argon2 (~64 MiB memory, ~50-100 ms CPU). Up to 4
-  run at once per process, so budget roughly 256 MiB of extra memory per app node at peak.
+- Capacity: each login or signup hashes with argon2id (19 MiB memory, ~25 ms CPU; OWASP minimum
+  parameters, chosen 2026-11-12 for latency). Up to 4 run at once per process (libuv thread
+  pool), so budget roughly 80 MiB of extra memory per app node at peak. Measured on a 16-vCPU dev
+  machine with `loadtest/api/argon2-bench.mjs`: ~160 hashes/s per process, p95 0.2 s at 32
+  concurrent (the old 64 MiB default: ~28/s, p95 1.1 s). Re-measure on an app VM.
 
 ---
 
