@@ -4,7 +4,7 @@ import type { FastifyInstance, InjectOptions } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
 import { PRICES, proratedCents } from '../src/billing/catalog.js';
-import { FakeDidProvider } from '../src/numbers/fake-provider.js';
+import { FAKE_TOLL_FREE_COST_PER_MIN, FakeDidProvider } from '../src/numbers/fake-provider.js';
 import { DidProviderError, type AvailableNumber, type OrderResult } from '../src/numbers/provider.js';
 import { FakeStripe, build, connectTestDb, payPlan } from './helpers.js';
 
@@ -322,6 +322,10 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     expect(done.json().number).toMatchObject({ did: o.number, kind: 'toll_free' });
     expect(done.json().chargedCents).toBeLessThanOrEqual(PRICES.tollFreeNumberCents);
     expect(ordersOf(o.number)).toBe(1);
+    // The provider's incoming toll-free cost is kept for rating (ARI app), even across the resume.
+    const [n] = await sql`select incoming_cost_per_min from phone_numbers where did = ${o.number}`;
+    expect(Number(n!.incomingCostPerMin)).toBe(FAKE_TOLL_FREE_COST_PER_MIN);
+    expect(o).not.toHaveProperty('incomingCostPerMin');
   });
 
   it('refuses a second concurrent attempt with the same key', async () => {
@@ -348,16 +352,39 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ id: n.id, status: 'released', paidUntil: n.paidUntil });
     expect(provider.owned.get(o.number)!.released).toBe(true);
+    // Its recurring item stops renewing (billing scheduler).
+    const [item] = await sql`select price_cents, paid_through, removed_at from account_items where phone_number_id = ${n.id}`;
+    expect(item).toMatchObject({ priceCents: PRICES.localNumberCents, paidThrough: new Date(n.paidUntil), removedAt: expect.any(Date) });
     // Still listed and still delivering calls until paidUntil.
     expect((await call(t.cookies, 'GET', '/numbers')).json().map((x: { id: string }) => x.id)).toContain(n.id);
     expect(await sql`select 1 from kamailio_did_tenant where did_digits = ${o.number.slice(1)}`).toHaveLength(1);
-    // Can't be re-routed; releasing again is fine and doesn't call the provider.
-    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: null })).statusCode).toBe(404);
+    // Still routable until paidUntil; releasing again is fine and doesn't call the provider.
+    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: null })).statusCode).toBe(200);
     const releases = provider.calls.filter(([op]) => op === 'release').length;
     expect((await call(t.cookies, 'DELETE', `/numbers/${n.id}`)).statusCode).toBe(200);
     expect(provider.calls.filter(([op]) => op === 'release').length).toBe(releases);
     // After the paid period it disappears from the list.
     await sql`update phone_numbers set paid_until = now() - interval '1 minute' where id = ${n.id}`;
     expect((await call(t.cookies, 'GET', '/numbers')).json().map((x: { id: string }) => x.id)).not.toContain(n.id);
+    // ... and can't be routed any more.
+    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: null })).statusCode).toBe(404);
+  });
+
+  it('a released number blocks deleting its target only while it still routes calls', async () => {
+    const t = await makeTenant();
+    const n = (await buy(t, (await offer(t, 'areaCode=973')).id)).json().number;
+    const mb = (await call(t.cookies, 'POST', '/mailboxes', { name: 'Released number target' })).json();
+    const dest = { type: 'voicemail', id: mb.id };
+    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: dest })).statusCode).toBe(200);
+    expect((await call(t.cookies, 'DELETE', `/numbers/${n.id}`)).statusCode).toBe(200);
+
+    // During the paid period the number still delivers calls to the mailbox: refuse, naming it.
+    const busy = await call(t.cookies, 'DELETE', `/mailboxes/${mb.id}`);
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json().message).toContain(n.did);
+
+    // Lapsed: it routes nothing any more, so it no longer blocks the delete.
+    await sql`update phone_numbers set paid_until = now() - interval '1 minute' where id = ${n.id}`;
+    expect((await call(t.cookies, 'DELETE', `/mailboxes/${mb.id}`)).statusCode).toBe(204);
   });
 });

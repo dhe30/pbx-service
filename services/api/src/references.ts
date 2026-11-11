@@ -52,6 +52,9 @@ export async function destinationUsages(db: Db, tenantId: string, type: Destinat
     db<{ name: string }[]>`
       select did as name from phone_numbers
        where tenant_id = ${tenantId}
+         -- Only numbers that still deliver calls (same rule as kamailio_did_tenant and the ARI app):
+         -- a released number whose paid period ended routes nothing and must not block deletes.
+         and (status = 'assigned' or paid_until > now())
          and (jsonb_path_exists(coalesce(destination, '{}'), ${DEST_PATH}::jsonpath, ${vars})
               ${type === 'ivr_menu' ? db`or (destination is null and ivr_menu_id = ${id})` : db``})
        order by did`,
@@ -88,6 +91,8 @@ export async function destinationUsages(db: Db, tenantId: string, type: Destinat
 export interface Usage {
   kind: string;
   name: string;
+  /** Shown after the name in parentheses, e.g. "its only member". */
+  note?: string;
 }
 
 export const usages = (kind: string, names: readonly string[]): Usage[] => names.map((name) => ({ kind, name }));
@@ -95,6 +100,6 @@ export const usages = (kind: string, names: readonly string[]): Usage[] => names
 /** Throws 409 `in_use` naming every user of the row, if there are any. */
 export function refuseIfUsed(found: readonly Usage[]): void {
   if (found.length === 0) return;
-  const list = found.map((u) => `${u.kind} "${u.name}"`).join(', ');
+  const list = found.map((u) => `${u.kind} "${u.name}"${u.note ? ` (${u.note})` : ''}`).join(', ');
   throw new HttpError(409, 'in_use', `Used by ${list}; change ${found.length > 1 ? 'those' : 'that'} first`);
 }

@@ -1,17 +1,22 @@
-import { billingPeriod, withRetry, type Sql } from '@pbx/shared';
+import { billingPeriod, normalizeDialed, withRetry, type Sql } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { saveCard, startCardSetup } from '../billing/account.js';
 import { PLAN, PRICES } from '../billing/catalog.js';
+import { listRates, loadPricing, rateForNumber } from '../billing/rates.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
+import { HttpError } from '../errors.js';
 import { tenantOf } from '../tenancy.js';
 import { parse } from '../validation.js';
 
 // Card and plan (course spec §1 signup card, §2 prices, §5 billing). Flow: docs/billing-flows.md.
 //
 // GET  /billing/prices              public   200 prices       (shown before signup / purchase)
+// GET  /billing/rates?region&prefix&destination&limit&cursor
+//                                   public   200 { items: [rate], nextCursor }   per-minute price by prefix
+// GET  /billing/rates/lookup?number public   200 numberRate   what a call to one number costs
 // GET  /billing                     owner    200 billing      card, plan state, extension usage
 // POST /billing/setup-intent        owner    201 cardSetup    to save or replace the card
 // POST /billing/card {setupIntentId} owner   200 billing      400, 402 payment_failed
@@ -53,7 +58,7 @@ const PricesSchema = z
         intlMultiplier: z.number().describe('International calls: the vendor rate for the destination prefix times this.'),
         intlMinPerMin: z.number().describe('International calls: minimum USD per minute.'),
       })
-      .describe('Per-minute prices, billed in 30/6-second increments. Internal and other incoming calls are free.'),
+      .describe('Per-minute prices, billed in 30/6-second increments. Internal and other incoming calls are free. Per destination: GET /billing/rates.'),
   })
   .describe('Price list.');
 
@@ -90,6 +95,53 @@ const BillingSchema = z
   })
   .describe("The account's billing state.");
 
+const RatesQuery = z.object({
+  region: z
+    .enum(['us', 'intl'])
+    .default('intl')
+    .describe('us: the US vendor deck (all at the US price). intl: every other destination, incl. Canada and the Caribbean (default).'),
+  prefix: z.string().regex(/^[0-9]{1,15}$/, 'must be digits').optional().describe('Only prefixes starting with these digits, e.g. "44".'),
+  destination: z.string().min(1).max(100).optional().describe('Only destinations whose name contains this text, e.g. "United Kingdom".'),
+  limit: z.coerce.number().int().min(1).max(500).default(100).describe('Page size, 1-500 (default 100).'),
+  cursor: z.string().regex(/^[0-9]{1,15}$/, 'not a cursor from a previous page').optional().describe('`nextCursor` of the previous page.'),
+});
+
+const RateSchema = z
+  .object({
+    prefix: z.string().describe('Dialed-number prefix (country code + more digits, no "+"). The longest matching prefix wins.'),
+    destination: z.string().describe('Destination name from the vendor rate deck.'),
+    region: z.enum(['us', 'intl']).describe('us or intl (international calls need the international calling add-on).'),
+    perMin: z.number().describe('Our price in USD per minute, billed in 30/6-second increments.'),
+  })
+  .describe('Per-minute price for a destination prefix.');
+
+const RatesResult = z
+  .object({
+    items: z.array(RateSchema).describe('Rates, ordered by prefix.'),
+    nextCursor: z.string().nullable().describe('Pass as `cursor` for the next page; null = last page.'),
+  })
+  .describe('A page of per-minute prices.');
+
+const LookupQuery = z.object({
+  number: z
+    .string()
+    .min(1)
+    .max(32)
+    .describe('Number to price, as a phone would dial it: 10 digits, 1+10 digits, +E.164 or 011...'),
+});
+
+const NumberRateSchema = z
+  .object({
+    number: z.string().describe('The number, E.164.'),
+    region: z.enum(['us', 'intl']).describe('Which vendor carries it: us (US numbers) or intl (everything else, incl. other +1 countries).'),
+    prefix: z.string().nullable().describe('Matching rate deck prefix; null = none (international minimum price applies).'),
+    destination: z.string().nullable().describe('Destination name; null = no matching prefix.'),
+    perMin: z.number().describe('Our price in USD per minute, billed in 30/6-second increments.'),
+    usesIncludedMinutes: z.boolean().describe('true for US numbers: the plan\'s included US minutes are used first.'),
+    needsIntlCalling: z.boolean().describe('true for international numbers: blocked without the international calling add-on.'),
+  })
+  .describe('What a call to this number costs.');
+
 const SaveCardBody = z.object({
   setupIntentId: z.string().min(1).max(255).describe('The SetupIntent the browser confirmed with Stripe.js.'),
 });
@@ -101,6 +153,27 @@ const docs = {
     summary: 'Price list',
     description: 'Plan, items and per-minute prices, as charged. Show these before signup and before every purchase.',
     responses: { 200: { description: 'Prices', schema: PricesSchema } },
+  },
+  rates: {
+    tag: 'Billing',
+    auth: 'public',
+    summary: 'Per-minute prices by destination prefix',
+    description:
+      'Our price per minute for every prefix of the vendor rate decks: exactly what the phone system charges. ' +
+      'US calls cost the US price after the plan\'s included minutes. International calls (incl. Canada and the ' +
+      'Caribbean) cost the international vendor rate times `perMinute.intlMultiplier` from GET /billing/prices, at ' +
+      'least `perMinute.intlMinPerMin`. Internal and incoming calls are free, except incoming toll-free.',
+    query: RatesQuery,
+    responses: { 200: { description: 'A page of rates', schema: RatesResult } },
+  },
+  lookup: {
+    tag: 'Billing',
+    auth: 'public',
+    summary: 'Price of calling a number',
+    description: 'Normalizes the number like an outgoing call, picks the vendor and the longest matching prefix, and returns our per-minute price.',
+    query: LookupQuery,
+    responses: { 200: { description: 'The price', schema: NumberRateSchema } },
+    errors: { 400: 'Not a callable phone number (`invalid_request`).' },
   },
   get: {
     tag: 'Billing',
@@ -172,23 +245,31 @@ export const billingRoutes: FastifyPluginAsync<BillingOptions> = async (app, opt
   }
 
   app.get('/billing/prices', withDoc({}, docs.prices), async () => {
-    const [p] = await withRetry(
-      () => sql<{ usPerMin: string; tollFreeInPerMin: string; intlMultiplier: string; intlMinPerMin: string }[]>`
-        select us_per_min, toll_free_in_per_min, intl_multiplier, intl_min_per_min from call_pricing`,
-    );
+    const p = await withRetry(() => loadPricing(sql));
     return {
       currency: 'usd',
       billingPeriodDays: 7,
       plan: { ...PLAN },
       ...PRICES,
-      // numeric columns arrive as strings
       perMinute: {
-        usPerMin: Number(p!.usPerMin),
-        tollFreeInPerMin: Number(p!.tollFreeInPerMin),
-        intlMultiplier: Number(p!.intlMultiplier),
-        intlMinPerMin: Number(p!.intlMinPerMin),
+        usPerMin: p.usPerMin,
+        tollFreeInPerMin: p.tollFreeInPerMin,
+        intlMultiplier: p.intlMultiplier,
+        intlMinPerMin: p.intlMinPerMin,
       },
     };
+  });
+
+  app.get('/billing/rates', withDoc({}, docs.rates), async (req) => {
+    const q = parse(RatesQuery, req.query);
+    return listRates(sql, { ...q, after: q.cursor });
+  });
+
+  app.get('/billing/rates/lookup', withDoc({}, docs.lookup), async (req) => {
+    const { number } = parse(LookupQuery, req.query);
+    const e164 = normalizeDialed(number);
+    if (!e164) throw new HttpError(400, 'invalid_request', 'number: not a phone number (10 digits, 1+10 digits, +E.164 or 011...)');
+    return rateForNumber(sql, e164);
   });
 
   app.get('/billing', withDoc(ownerOnly, docs.get), async (req) => billingState(tenantOf(req)));

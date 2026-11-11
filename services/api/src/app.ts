@@ -10,12 +10,14 @@ import type { DidProvider } from './numbers/provider.js';
 import type { MediaStore } from './object-store.js';
 import { collectOpenApi, withDoc } from './openapi/document.js';
 import { authRoutes } from './routes/auth.js';
+import { billingItemRoutes } from './routes/billing-items.js';
 import { billingRoutes } from './routes/billing.js';
 import { blockedNumberRoutes } from './routes/blocked-numbers.js';
 import { businessHoursRoutes } from './routes/business-hours.js';
 import { callRoutes } from './routes/calls.js';
 import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
+import { invoiceRoutes } from './routes/invoices.js';
 import { ivrMenuRoutes } from './routes/ivr-menus.js';
 import { mailboxRoutes } from './routes/mailboxes.js';
 import { mediaRoutes } from './routes/media.js';
@@ -121,6 +123,8 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   const cardSetup = { stripe: deps.stripe, publishableKey: cfg.STRIPE_PUBLISHABLE_KEY, stripeJsUrl: cfg.STRIPE_JS_URL };
   await app.register(authRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingRoutes, { sql: deps.sql, ...cardSetup });
+  await app.register(billingItemRoutes, { sql: deps.sql, stripe: deps.stripe });
+  await app.register(invoiceRoutes, { sql: deps.sql });
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
   await app.register(extensionRoutes, { sql: deps.sql, sipDomain: cfg.SIP_DOMAIN });
 

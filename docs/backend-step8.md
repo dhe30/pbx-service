@@ -90,7 +90,8 @@ DIDWW's DID list would catch it.
 
 `DELETE /numbers/:id` tells the provider to stop renewing the DID first, then sets
 `status = released`. `paid_until` is kept, so calls still route until then (contract §4). The
-number stays in `GET /numbers` until then, can't be re-routed (404), and isn't refunded. If the
+number stays in `GET /numbers` until then, can still be re-routed, and isn't refunded. After
+`paid_until` it is 404 and no longer counts as "in use" for deletes (`references.ts`). If the
 provider call fails, nothing changes (502, retry). Releasing twice is a no-op.
 
 A lapsed number can be bought again (by anyone): the insert reuses its `phone_numbers` row when

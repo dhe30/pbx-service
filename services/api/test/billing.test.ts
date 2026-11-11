@@ -104,6 +104,9 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     expect(charge.amountCents).toBeLessThanOrEqual(PLAN.priceCents);
     const [payment] = await sql`select purpose, amount_cents, status from payments where tenant_id = ${t.tenantId}`;
     expect(payment).toEqual({ purpose: 'plan', amountCents: charge.amountCents, status: 'succeeded' });
+    // The plan is a recurring item, renewed by the billing scheduler.
+    const items = await sql`select kind, price_cents, paid_through, removed_at from account_items where tenant_id = ${t.tenantId}`;
+    expect(items).toEqual([{ kind: 'plan', priceCents: PLAN.priceCents, paidThrough: period.end, removedAt: null }]);
 
     // Retrying (lost response) charges nothing more.
     expect((await t.call('POST', '/billing/card', { setupIntentId: t.cardSetup.setupIntentId })).statusCode).toBe(200);
@@ -189,5 +192,74 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
       extensionCents: PRICES.extensionCents,
       perMinute: { usPerMin: Number(p!.usPerMin) },
     });
+  });
+});
+
+describe.skipIf(!db)('per-minute rates by prefix (Postgres)', () => {
+  // Own connection: the suite above ends the shared one.
+  let sql: Sql;
+  let app: FastifyInstance;
+  // Prefixes no real deck uses (+882 is "international networks"), so parallel tests don't collide.
+  const rows = [
+    { vendor: 'intl', prefix: '8820', destination: 'Rates test network', per_min: 0.5 },
+    { vendor: 'intl', prefix: '88201', destination: 'Rates test land', per_min: 0.002 },
+    { vendor: 'intl', prefix: '88202', destination: 'Rates test island', per_min: 0.03 },
+  ];
+  let pricing: { usPerMin: number; intlMultiplier: number; intlMinPerMin: number };
+
+  beforeAll(async () => {
+    sql = (await connectTestDb())!;
+    app = await build({ sql });
+    await sql`insert into rate_decks ${sql(rows)} on conflict (vendor, prefix) do update set per_min = excluded.per_min`;
+    const [p] = await sql<{ usPerMin: string; intlMultiplier: string; intlMinPerMin: string }[]>`
+      select us_per_min, intl_multiplier, intl_min_per_min from call_pricing`;
+    pricing = { usPerMin: Number(p!.usPerMin), intlMultiplier: Number(p!.intlMultiplier), intlMinPerMin: Number(p!.intlMinPerMin) };
+  });
+  afterAll(async () => {
+    await sql`delete from rate_decks where vendor = 'intl' and prefix like '8820%'`;
+    await sql.end({ timeout: 2 });
+  });
+
+  const retail = (vendorPerMin: number) => Math.round(Math.max(pricing.intlMinPerMin, vendorPerMin * pricing.intlMultiplier) * 1e6) / 1e6;
+  const get = (url: string) => app.inject({ method: 'GET', url });
+
+  it('lists the deck with our prices (public), filtered and paged by prefix', async () => {
+    const res = await get('/billing/rates?region=intl&prefix=8820&limit=2');
+    expect(res.statusCode).toBe(200);
+    const page1 = res.json();
+    expect(page1.items).toEqual([
+      { prefix: '8820', destination: 'Rates test network', region: 'intl', perMin: retail(0.5) },
+      { prefix: '88201', destination: 'Rates test land', region: 'intl', perMin: retail(0.002) },
+    ]);
+    expect(page1.nextCursor).toBe('88201');
+    const page2 = (await get(`/billing/rates?region=intl&prefix=8820&limit=2&cursor=${page1.nextCursor}`)).json();
+    expect(page2).toEqual({ items: [{ prefix: '88202', destination: 'Rates test island', region: 'intl', perMin: retail(0.03) }], nextCursor: null });
+    const byName = (await get('/billing/rates?destination=test%20island')).json();
+    expect(byName.items.map((r: { prefix: string }) => r.prefix)).toEqual(['88202']);
+    // LIKE wildcards in the search text are literal.
+    expect((await get('/billing/rates?destination=%25')).json().items).toEqual([]);
+    expect((await get('/billing/rates?prefix=4x')).statusCode).toBe(400);
+  });
+
+  it('prices one number like the call path: longest prefix, US flat, Canada international', async () => {
+    const land = (await get('/billing/rates/lookup?number=%2B882015551234')).json();
+    expect(land).toEqual({
+      number: '+882015551234', region: 'intl', prefix: '88201', destination: 'Rates test land', perMin: retail(0.002),
+      usesIncludedMinutes: false, needsIntlCalling: true,
+    });
+    const viaZeroOneOne = (await get('/billing/rates/lookup?number=011882025551234')).json();
+    expect(viaZeroOneOne).toMatchObject({ number: '+882025551234', prefix: '88202', perMin: retail(0.03) });
+
+    const us = (await get('/billing/rates/lookup?number=(201)%20555-0100')).json();
+    expect(us).toMatchObject({ number: '+12015550100', region: 'us', perMin: pricing.usPerMin, usesIncludedMinutes: true, needsIntlCalling: false });
+
+    const canada = (await get('/billing/rates/lookup?number=4165550100')).json();
+    expect(canada).toMatchObject({ number: '+14165550100', region: 'intl', needsIntlCalling: true });
+    // No deck row for it here: the international minimum applies (same as the ARI app's rating).
+    if (canada.prefix === null) expect(canada.perMin).toBe(pricing.intlMinPerMin);
+
+    const bad = await get('/billing/rates/lookup?number=hello');
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error).toBe('invalid_request');
   });
 });

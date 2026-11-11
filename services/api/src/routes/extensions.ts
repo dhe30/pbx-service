@@ -18,7 +18,8 @@ import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 // GET    /extensions/:id      any user   200 extension     404
 // POST   /extensions          owner      201 extension     400, 402 payment_required, 409 number_taken | extension_limit
 // PUT    /extensions/:id      owner      200 extension     400, 404, 409 number_taken
-// DELETE /extensions/:id      owner      204               404, 409 in_use (something routes to it)
+// DELETE /extensions/:id      owner      204               404, 409 in_use (something routes to it, or it is a
+//                                                                     ring group's only member)
 //
 // extension = { id, number, name, sipUsername, sipPassword, mailboxId, ringTimeoutSec,
 //               forwardAlways, forwardBusy, forwardNoAnswer, externalNumbers, callerIdNumber, userId }
@@ -200,7 +201,9 @@ const docs = crudDocs({
   },
   replaceErrors: { 409: 'Another extension already has this number (`number_taken`).' },
   deleteDescription: 'Deletes its SIP account (its phones stop working). Its mailbox and voicemails stay.',
-  deleteErrors: { 409: `${IN_USE} (numbers, IVR digits, ring groups, business hours, other extensions' forwarding).` },
+  deleteErrors: {
+    409: `${IN_USE} (numbers, IVR digits, ring groups, business hours, other extensions' forwarding, or a ring group it is the only member of).`,
+  },
 });
 docs.create.description = 'Creates the extension, its SIP account and (unless mailboxId is given) a mailbox, in one step.';
 
@@ -303,11 +306,21 @@ export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app,
           select sip_username from extensions where id = ${id} and tenant_id = ${tenantId} for update`;
         if (!ext) throw notFound();
         // Numbers, IVR digits, business hours, ring group no-answer or another extension's
-        // forwarding may route here; the ARI app would hang up on those callers. Refuse.
-        refuseIfUsed(await destinationUsages(tx, tenantId, 'extension', id));
+        // forwarding may route here; the ARI app would hang up on those callers. Refuse. Same for
+        // a ring group it is the only member of: the group would ring nobody.
+        const soleMemberOf = await tx<{ name: string }[]>`
+          select g.name from ring_groups g join ring_group_members m on m.ring_group_id = g.id
+           where g.tenant_id = ${tenantId} and m.extension_id = ${id}
+             and not exists (select 1 from ring_group_members o where o.ring_group_id = g.id and o.extension_id <> ${id})
+           order by g.name, g.id`;
+        refuseIfUsed([
+          ...(await destinationUsages(tx, tenantId, 'extension', id)),
+          ...soleMemberOf.map((g) => ({ kind: 'ring group', name: g.name, note: 'its only member' })),
+        ]);
         // Its devices can't authenticate any more; existing registrations (in Kamailio memory)
         // expire within max_expires, and the ARI app stops ringing it as soon as its cache drops
-        // the account (NOTIFY). Ring group memberships cascade; its mailbox (and voicemails) stay.
+        // the account (NOTIFY). Memberships in ring groups that have other members cascade; its
+        // mailbox (and voicemails) stay.
         await tx`delete from kamailio.subscriber where username = ${ext.sipUsername}`;
         await tx`delete from extensions where id = ${id} and tenant_id = ${tenantId}`;
       }),

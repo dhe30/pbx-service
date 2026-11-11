@@ -63,6 +63,14 @@ const EnvSchema = z.object({
   SIP_DOMAIN: z.string().min(1),
 
   /**
+   * Billing scheduler (src/billing/scheduler.ts): weekly invoices, charge retries, past due. Safe to
+   * run on every app node at once (row locks). false only for debugging.
+   */
+  BILLING_SCHEDULER: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  /** Seconds between scheduler runs. The spec allows one hour after period end; keep it small. */
+  BILLING_TICK_SEC: z.coerce.number().int().min(5).max(3600).default(60),
+
+  /**
    * On SIGTERM: how long /ready reports 503 (so the edge HAProxies stop sending new requests)
    * before the server stops accepting connections. Should exceed HAProxy's health-check
    * interval x fall count. 0 is fine for local dev.

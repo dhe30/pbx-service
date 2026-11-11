@@ -129,8 +129,8 @@ describe('HttpDidwwProvider', () => {
     expect(url.searchParams.get('include')).toContain('did_group.stock_keeping_units');
     // The filter is "contains": only numbers starting with +1201 are kept (not av-2, +1973...).
     expect(res).toEqual([
-      { id: 'av-1', number: '+12015550101', kind: 'local', country: 'US', region: 'New Jersey', city: 'Newark', areaCode: '201', skuId: 'sku-small' },
-      { id: 'av-3', number: '+12015550102', kind: 'local', country: 'US', region: 'New Jersey', city: 'Newark', areaCode: '201', skuId: 'sku-small' },
+      { id: 'av-1', number: '+12015550101', kind: 'local', country: 'US', region: 'New Jersey', city: 'Newark', areaCode: '201', skuId: 'sku-small', incomingCostPerMin: null },
+      { id: 'av-3', number: '+12015550102', kind: 'local', country: 'US', region: 'New Jersey', city: 'Newark', areaCode: '201', skuId: 'sku-small', incomingCostPerMin: null },
     ]);
     expect(await didww.searchAvailable({ country: 'ZZ', limit: 5 })).toEqual([]);
   });
@@ -181,5 +181,16 @@ describe('HttpDidwwProvider', () => {
     expect(err).toMatchObject({ status: 401, message: expect.stringContaining('Unauthorized') });
     const down = new HttpDidwwProvider({ baseUrl: 'http://127.0.0.1:1/v3', apiKey: 'k', trunk: { type: 'voice_in_trunks', id: 't' } });
     await expect(down.countries()).rejects.toMatchObject({ status: null, message: expect.stringContaining('unreachable') });
+  });
+});
+
+describe('meteredCostPerMin', () => {
+  it('reads a per-minute or per-second incoming fee from the SKU, then the DID group', async () => {
+    const { meteredCostPerMin } = await import('../src/numbers/didww.js');
+    const res = (attributes: Record<string, unknown>) => ({ id: 'x', type: 't', attributes });
+    expect(meteredCostPerMin(res({ per_minute_price: '0.024' }), res({}))).toBe(0.024);
+    expect(meteredCostPerMin(res({ monthly_price: '1.00' }), res({ per_second_price: 0.0004 }))).toBe(0.024);
+    expect(meteredCostPerMin(res({}), undefined)).toBeNull();
+    expect(meteredCostPerMin(res({ per_minute_price: '' }), res({ metered_price: 'n/a' }))).toBeNull();
   });
 });

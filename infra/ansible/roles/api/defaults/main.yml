@@ -1,1 +1,10 @@
 ---
+# API (services/api) on the app nodes. Shared names (did_provider_*, stripe_*, web_domain) live in
+# group_vars/all/main.yml; secrets (vault_jwt_secret, vault_did_api_key, vault_stripe_*) in vault.yml.
+api_port: 3000
+api_log_level: info
+# Postgres connections per API process (pg_stat_activity: api@<host>). Size max_connections for it.
+api_db_pool_max: 10
+# On SIGTERM, /ready answers 503 this long before the server closes. Must exceed the edge HAProxy's
+# check interval x fall count (edge_haproxy: inter 2s fall 2 = 4 s), so no request hits a closing replica.
+api_shutdown_drain_ms: 6000

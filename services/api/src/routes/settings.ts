@@ -12,9 +12,9 @@ import { tenantOf } from '../tenancy.js';
 //
 // Read-only on purpose. Call recording and international calling are paid add-ons
 // (docs/billing-flows.md §2-§3): turning one on is a purchase (prorated charge, then the flag), and
-// turning it off keeps it until the paid period ends. Both belong to the add-on purchase routes
-// (not built yet), not to a free toggle here. CLAUDE.md §11's `PUT /settings {record_calls}`
-// predates the course spec.
+// turning it off keeps it until the paid period ends. Both go through POST / DELETE /billing/items
+// (src/routes/billing-items.ts), which keep these flags in sync with the account's items.
+// CLAUDE.md §11's `PUT /settings {record_calls}` predates the course spec.
 
 const SettingsSchema = z
   .object({
@@ -47,8 +47,8 @@ export const settingsRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sq
         auth: 'user',
         summary: 'Get account settings',
         description:
-          'Active add-ons (call recording, international calling) and plan allowances. Read-only: add-ons are ' +
-          'bought and cancelled through billing.',
+          'Active add-ons (call recording, international calling) and plan allowances. Read-only: add-ons and ' +
+          'additional extensions are bought and cancelled with POST / DELETE /billing/items.',
         responses: { 200: { description: 'The settings', schema: SettingsSchema } },
       },
     ),

@@ -37,9 +37,18 @@ backend kamailio_ws
 {% endfor %}
 
 backend api
-    option httpchk GET /health
+    # /ready (not /health): it turns 503 as soon as an API process gets SIGTERM (deploys run
+    # serial: 1), so this edge stops sending it requests before it closes (SHUTDOWN_DRAIN_MS 6 s >
+    # inter 2s x fall 2). Trade-off (backend-for-team.md): if the database is down cluster-wide,
+    # every API node is marked down and HAProxy answers 503 itself, which clients retry the same way.
+    option httpchk GET /ready
+    http-check expect status 200
+    default-server inter 2s fall 2 rise 2
+    # Retry another app node when a connection fails (node died between checks).
+    retries 2
+    option redispatch
 {% for host in groups['app'] | default([]) %}
-    server {{ host }} {{ hostvars[host].private_ip }}:3000 check
+    server {{ host }} {{ hostvars[host].private_ip }}:{{ api_port | default(3000) }} check
 {% endfor %}
 
 # Local stats + Prometheus metrics (private IP only).

@@ -1,0 +1,11 @@
+# Docker build context (services/*/Dockerfile are built from the repo root).
+**/node_modules
+**/dist
+.git
+.env
+infra
+loadtest
+dev
+docs
+telephony
+**/test

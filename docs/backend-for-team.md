@@ -1,8 +1,21 @@
 # Backend API: what the rest of the team needs to know
 
-From: Aaron (Track 3 backend). Updated 2026-11-09 (course-spec update).
+From: Aaron (Track 3 backend). Updated 2026-11-12 (billing completed, API deployable).
 Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
+
+**What changed on 2026-11-12:**
+- New: `GET /billing/rates`, `GET /billing/rates/lookup` (per-minute price by prefix / number),
+  `GET/POST/DELETE /billing/items` (buy and cancel additional extensions, international calling,
+  call recording), `GET /invoices`, `GET /invoices/:id`.
+- The billing scheduler runs in every API process: weekly invoices, retries, past due, recovery
+  when a card is added (`POST /billing/card` with a replacement card now charges unpaid invoices;
+  `402 payment_failed` if that fails). Config: `BILLING_SCHEDULER`, `BILLING_TICK_SEC`.
+- A released number can be re-routed until `paidUntil`, and stops blocking deletes after it.
+- `DELETE /extensions/:id` is `409 in_use` for a ring group's only member.
+- Migrations `20261112000000_account_items.sql`, `20261113000000_invoices.sql`,
+  `20261114000000_purchase_incoming_cost.sql` (run `npm run db:migrate`).
+- Deployment: Ansible role `api`, `services/api/Dockerfile`; the edge HAProxy checks `/ready`.
 
 **What changed on 2026-11-09 (read this if you built against an earlier version):**
 - `POST /auth/signup` needs `timezone`, and returns `cardSetup` for the card form.
@@ -44,6 +57,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 | 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
 | 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
 | 8 | Number search, purchase (idempotent, prorated charge), list, release | Done (DIDWW clone details [VERIFY]) |
+| 9 | Review fixes (2026-11-12): rates by prefix, additional extensions + add-ons, weekly invoices / past due / recovery, deployment role, toll-free cost, voicemail audio cleanup | Done |
 
 ## For everyone
 
@@ -156,6 +170,9 @@ The signup form must also save a card. Card fields go to Stripe.js only, **never
    prorated. `402 payment_failed` = card declined: restart from `POST /billing/setup-intent`.
 
 Other routes: `GET /billing/prices` (public; show the plan price on the signup page),
+`GET /billing/rates?region=intl&prefix=&destination=&limit=&cursor=` (public; per-minute price by
+destination prefix, exactly what calls are charged), `GET /billing/rates/lookup?number=` (public;
+price of calling one number, e.g. next to the dial pad or the forwarding field),
 `GET /billing` (card, `planPaidThrough`, extension usage). Until the plan is paid,
 `POST /extensions` answers `402 payment_required`; past the plan's limit it answers
 `409 extension_limit`. Details and the decisions taken: [backend-card-signup.md](backend-card-signup.md).
@@ -212,7 +229,7 @@ Other routes: `GET /billing/prices` (public; show the plan price on the signup p
 | `GET /extensions`, `GET /extensions/:id` | any user | extension(s), by number; `sipPassword` only for owners |
 | `POST /extensions` | owner | `201 extension` (creates its SIP account and, unless `mailboxId` is given or `null`, a mailbox) |
 | `PUT /extensions/:id` | owner | `200 extension` (full replace; omitted `mailboxId` = keep) |
-| `DELETE /extensions/:id` | owner | `204`; `409 in_use` while something routes to it |
+| `DELETE /extensions/:id` | owner | `204`; `409 in_use` while something routes to it or it is a ring group's only member |
 
 extension = `{ id, number, name, sipUsername, sipPassword, mailboxId, ringTimeoutSec, forwardAlways,
 forwardBusy, forwardNoAnswer, externalNumbers, callerIdNumber, userId }`.
@@ -294,7 +311,7 @@ extensions' mailboxes**. Details: `docs/backend-step7.md`.
   audioUrl }`. `heard: false` = new, `true` = saved; the phone menu (`*98`) sees the same state.
   Playing doesn't mark it heard: send the `PATCH`.
 - **Settings are read-only.** Recording and international calling are paid add-ons
-  (billing-flows §2-§3), bought and cancelled through billing (not built yet).
+  (billing-flows §2-§3), bought and cancelled through `/billing/items` (below).
 
 ### Phone numbers (available now, step 8)
 
@@ -320,12 +337,47 @@ Details: `docs/backend-step8.md`.
 - `202 { status: "processing" }`: the provider is still working; wait `Retry-After` seconds and
   repeat the same request.
 - After buying, route it with `PUT /numbers/:id/route`. Until then calls to it are hung up.
-- Release: the number keeps working until `paidUntil`; nothing is refunded. It can't be re-routed
-  after release.
+- Release: the number keeps working until `paidUntil`; nothing is refunded. It can still be
+  re-routed until then (`PUT /numbers/:id/route`); after `paidUntil` it is gone (404) and no longer
+  blocks deleting what it routed to.
 
-### Not available yet
+### Additional extensions and add-ons
 
-- Buying add-ons and extra extensions; invoices.
+| Request | Who | Response |
+|---|---|---|
+| `GET /billing/items` | owner | `[item]`: plan, additional extensions, numbers, add-ons (incl. cancelled ones until `paidThrough`) |
+| `POST /billing/items { kind }` + header `Idempotency-Key` | owner | `201 { item, chargedCents, replayed }` |
+| `DELETE /billing/items/:id` | owner | `200 item` with `renews: false` |
+
+item = `{ id, kind, priceCents, startedAt, paidThrough, removedAt, renews, phoneNumberId, did }`,
+`kind` = `plan | extension | number | intl_calling | recording`.
+- `kind` to buy: `extension` (one more extension slot), `intl_calling`, `recording`. Charged now,
+  prorated (show `GET /billing/prices` first); Idempotency-Key works like number purchases.
+- `409 already_active`: the add-on already renews. Buying a cancelled add-on that is still paid
+  for renews it again for free (`chargedCents: 0`).
+- Cancel: an add-on keeps working until `paidThrough`. An extension slot stops counting at once,
+  so cancelling it is `409 extension_limit` while the extensions in use need it.
+- Numbers are released with `DELETE /numbers/:id`; the plan can't be cancelled (400).
+
+### Invoices and past due
+
+| Request | Who | Response |
+|---|---|---|
+| `GET /invoices` | owner | `[invoice]`, newest first |
+| `GET /invoices/:id` | owner | `invoice` + `lines` |
+
+invoice = `{ id, periodStart, periodEnd, usageFrom, usageTo, recurringCents, usageCents, totalCents,
+includedMinutesUsed, status, pastDue, attempts, lastError, nextAttemptAt, paidAt, createdAt }`;
+line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billableSec, amount }`.
+- The billing scheduler (in every API process, `src/billing/scheduler.ts`) issues an invoice
+  within about a minute after each 7-day period ends: the new period's items (plan, additional
+  extensions, numbers, add-ons) plus the ended period's call usage, one line per charged leg.
+  It charges the card at once and retries declines (5 min, 15 min, 1 h, 3 h, then every 6 h).
+- `status: failed` + `pastDue: true` (unpaid 24 h after the period ended): `GET /me` shows
+  `tenant.status: "past_due"` and outgoing calls are blocked. Show a banner with "add a card".
+  Adding a card (`POST /billing/setup-intent` -> Stripe.js -> `POST /billing/card`) charges every
+  unpaid invoice immediately and reactivates the account; `402 payment_failed` = that charge was
+  declined too (the card stays saved).
 
 ### Errors to handle on upcoming forms (from step 3)
 
@@ -367,7 +419,11 @@ Details: `docs/backend-step8.md`.
   on the phase-1 VM. Details: `docs/backend-step5.md`.
 - **The API refuses to delete what call routing still depends on** (409 `in_use`): a mailbox, ring
   group, IVR menu, business hours schedule or extension that a Destination points at (IVR digits,
-  number routing, ring group no-answer, forwarding, extension mailboxes). Seeds or scripts that
+  number routing, ring group no-answer, forwarding, extension mailboxes), and an extension that
+  is the only member of a ring group. Numbers released and past their paid period don't count.
+- **Voicemails deleted with `*98` key 3:** the ARI app keeps deleting only the `voicemails` row
+  (S13); the API's background ticker deletes the leftover `media` row and its object after an
+  hour (`src/maintenance.ts`). Seeds or scripts that
   delete these rows directly should keep the same rule. Staff logins are not routing targets, so
   deleting one no longer checks anything.
 
@@ -402,8 +458,11 @@ Details: `docs/backend-step8.md`.
 | `GET /health` | Process alive. Never checks dependencies. Use for systemd/docker restarts. |
 | `GET /ready` | DB + object store reachable, not shutting down. Use for HAProxy routing and alerts. Answers within ~1.5 s even if a dependency hangs. Body names the failing check. |
 
-- If HAProxy routes on `/ready`, a cluster-wide DB outage marks **every** app replica down. That
-  matches CLAUDE.md §11, but please make it a conscious choice.
+- **The edge HAProxy routes on `/ready`** (decided 2026-11-12, `edge_haproxy` role: `inter 2s fall 2
+  rise 2`, `retries 2` + `redispatch`). Reason: `/ready` turns 503 on SIGTERM, so rolling deploys
+  drain without failed requests; with `/health` they didn't. Cost: a cluster-wide DB (or object
+  store) outage marks every app replica down and HAProxy answers 503 itself; clients retry 503s
+  either way.
 - **Graceful shutdown:** on SIGTERM, `/ready` returns 503 for `SHUTDOWN_DRAIN_MS` (default 5 s)
   before the server closes. Keep this above HAProxy's check interval x fall count, so HAProxy
   stops routing before connections close.
@@ -421,6 +480,22 @@ Details: `docs/backend-step8.md`.
     `warn` with the failing check.
   - Each request has a `reqId`; if HAProxy sets `X-Request-Id`, that value is used.
 
+### Deployment (role `api`)
+
+- `site.yml` runs role `api` on the `app` hosts, `serial: 1`: Node 24 + ffmpeg from apt, the repo
+  synced to `/opt/pbx/src`, `npm ci` + build of `@pbx/shared` and `@pbx/api`, systemd unit
+  `pbx-api` (user `pbx-api`), env file `/etc/pbx/api.env`. It waits for `/ready` before moving to
+  the next app node.
+- **Migrations** run once per deploy in the `db_schema` role (dbmate against the current Patroni
+  primary), which `site.yml` runs before any app node is updated. Migrations must stay backward
+  compatible with the running API (split-contracts §5).
+- To fill in before the first deploy: `did_provider_url` and `did_trunk_group_id` (or
+  `did_trunk_id`) in `group_vars/all/main.yml`; `vault_jwt_secret`, `vault_did_api_key`,
+  `vault_stripe_secret_key`, `vault_stripe_publishable_key` in `vault.yml`. The role refuses to run
+  without them. `web_domain` defaults to `sip_domain`.
+- A container image is also available: `docker build -f services/api/Dockerfile -t pbx-api .` from
+  the repo root (Node 24 + ffmpeg).
+
 ### Config and secrets (for Ansible / Vault)
 
 - Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
@@ -436,8 +511,45 @@ Details: `docs/backend-step8.md`.
 - **`JWT_SECRET` must be identical on every app node** (otherwise logins break when HAProxy
   switches replicas) and at least 16 characters; keep it in Vault.
 - Production: set `HOST` to the app node's private IP (default `127.0.0.1`).
-- Capacity: each login or signup hashes with argon2 (~64 MiB memory, ~50-100 ms CPU). Up to 4
-  run at once per process, so budget roughly 256 MiB of extra memory per app node at peak.
+- Capacity: each login or signup hashes with argon2id (19 MiB memory, ~25 ms CPU; OWASP minimum
+  parameters, chosen 2026-11-12 for latency). Up to 4 run at once per process (libuv thread
+  pool), so budget roughly 80 MiB of extra memory per app node at peak. Measured on a 16-vCPU dev
+  machine with `loadtest/api/argon2-bench.mjs`: ~160 hashes/s per process, p95 0.2 s at 32
+  concurrent (the old 64 MiB default: ~28/s, p95 1.1 s). Re-measure on an app VM.
+
+---
+
+## Decisions taken in the 2026-11-12 review fixes
+
+Taken while implementing the backend review (branch `feature/backend-review-fixes`). Each is
+local to the code it names; change it there. **Review** marks the ones the team should confirm
+before merging.
+
+| # | Decision | Why | Where |
+|---|---|---|---|
+| R1 | A released number counts as "in use" (blocks deleting its target) only while it still routes calls (`paid_until > now`), and can be re-routed until then | Otherwise its target could never be deleted, and the number was invisible and un-routable after `paidUntil` | `references.ts`, `routes/numbers.ts` |
+| R2 | `/billing/rates` and `/billing/rates/lookup` are **public** and compute prices with the ARI app's rules (US flat price; else intl vendor rate x multiplier, at least the minimum; no deck row = the minimum) | Spec: prices shown before purchase and in the API; one rule set so shown = charged | `billing/rates.ts` |
+| R3 | **Review:** one table `account_items` for every recurring item (plan, extension slot, number, intl_calling, recording) with `price_cents` locked at purchase, `paid_through`, `removed_at` | billing-flows §7; one renewal loop for everything; existing plans/numbers backfilled at the catalog prices of the migration | migration `20261112000000_account_items.sql` |
+| R4 | **Review:** `tenant_settings.intl_calling` / `record_calls` / `extra_extensions` are **derived** from the items on every purchase, cancellation and lapse. The call path keeps reading `tenant_settings` | No telephony change. Side effect: flags set by hand on an account that has items of that kind are overwritten (accounts without items are left alone) | `billing/items.ts` `syncSettings()` |
+| R5 | **Review:** add-on and extension purchases reuse the number purchase's idempotency (`purchase_requests`, kind `item`) and hold a row lock on the account's `tenant_settings` **while the card is charged** | Two purchases of the same add-on with different keys can't both charge. Cost: one DB connection held for up to the gateway timeout (10 s) per purchase | `billing/items.ts`, `billing/purchase-requests.ts` |
+| R6 | Buying an add-on that already renews is `409 already_active`; buying one that was cancelled but is still paid for renews it again for free | No double charge for the same period | `billing/items.ts` |
+| R7 | **Review:** a cancelled extension slot lowers the limit **at once** (`extra_extensions` counts renewing slots), so cancelling is `409 extension_limit` while the extensions in use need it | Otherwise an owner could cancel and still create an extension in the slot, leaving more extensions than paid for at period end | `billing/items.ts` `cancelItem()` |
+| R8 | Past-due accounts can't buy add-ons or extensions (402), like numbers | Same rule as number purchases | `billing/purchase-requests.ts` `assertCanBuy()` |
+| R9 | **Review:** the billing scheduler runs in **every** API process (tick `BILLING_TICK_SEC`, 60 s); each unit of work is claimed with `FOR UPDATE SKIP LOCKED`; no leader | Survives losing any app node without failover logic | `billing/scheduler.ts` |
+| R10 | The account's **plan item** drives its periods: when it is paid only up to now, the next period is invoiced. Accounts that never paid the plan get no invoices. Missed periods are caught up one per pass | The plan is the one item every paying account has | `billing/scheduler.ts` |
+| R11 | Invoice = new period's recurring items (each renewed to the new period end; numbers' `paid_until` and `plan_paid_through` follow) + one usage line per leg with `charge > 0` in the ended period | Spec §5 ("itemized by call") | `billing/scheduler.ts` |
+| R12 | Usage is summed per invoice, **then rounded once** to the nearest cent | billing-flows §8.3: never round each call up | `billing/scheduler.ts` |
+| R13 | An invoice below Stripe's 50-cent minimum is marked paid without a charge (same as prorated amounts) | The gateway rejects smaller charges | `billing/scheduler.ts` |
+| R14 | Each charge attempt has its own Idempotency-Key `invoice:<id>:<attempt>`; retries after 5 min, 15 min, 1 h, 3 h, then every 6 h; a gateway outage counts as a failed attempt | A new attempt (later or with a new card) must really retry; Stripe replays a reused key's decline | `billing/scheduler.ts` |
+| R15 | Past due = an invoice still unpaid 24 h after its period ended. A paid invoice sets the account `active` once nothing else is unpaid. A replacement card (`POST /billing/card`) charges every unpaid invoice at once; `402 payment_failed` if declined (the card stays saved) | billing-flows §5; unblocking goes through `tenants` -> NOTIFY, well inside one minute | `billing/scheduler.ts`, `billing/account.ts` |
+| R16 | Cancelled add-ons are switched off by the scheduler once their period ends; only accounts that ever had items of that kind are touched | Keeps hand-set flags (seeds, tests) on accounts without items | `billing/scheduler.ts` `expireLapsedAddons()` |
+| R17 | The scheduler makes **no DIDWW calls**: DIDWW renews kept numbers from our prepaid balance and stops renewing released ones (`billing_cycles_count = 0` at release) | Fewer moving parts; [VERIFY] the clone behaves that way | `billing/scheduler.ts` |
+| R18 | **Review:** the edge HAProxy routes on `/ready` (`inter 2s fall 2 rise 2`, `retries 2` + `redispatch`); the API drains 6 s on SIGTERM | Rolling deploys without failed requests. Cost: a cluster-wide DB or object-store outage marks every app node down. The `edge_haproxy` role belongs to T2 | `edge_haproxy` template, role `api` |
+| R19 | The API runs under systemd (role `api`, user `pbx-api`), built on the host like the ARI app; the Dockerfile is an alternative, not what Ansible deploys. Migrations stay in `db_schema` (dbmate on the current primary, before app nodes update) | Same deployment pattern as the other Node service | role `api`, `services/api/Dockerfile` |
+| R20 | **Review:** the toll-free incoming cost is read from guessed DIDWW attribute names (`per_minute_price`, `metered_price`, ..., or `per_second_price` x 60). Unknown = `null` = `call_pricing` default | The public DIDWW API documents no field for it; [VERIFY] against the clone | `numbers/didww.ts` `meteredCostPerMin()` |
+| R21 | Voicemail audio whose message was deleted by phone (`*98`) is deleted by the scheduler after a 1 h grace | S13 left it behind; the ARI app writes media + voicemail together, the grace is extra safety | `maintenance.ts` |
+| R22 | Deleting an extension that is a ring group's **only** member is `409 in_use`; memberships in groups with other members still cascade | A group with no members rings nobody | `routes/extensions.ts` |
+| R23 | **Review:** dashboard passwords use argon2id with OWASP's minimum parameters (19 MiB, t=2, p=1) instead of the library default (64 MiB, t=3, p=4) | Measured ~160 vs ~28 hashes/s per process, p95 0.2 s vs 1.1 s at 32 concurrent (16-vCPU dev box). A weaker hash for latency under graded load; old hashes still verify | `passwords.ts`, `loadtest/api/argon2-bench.mjs` |
 
 ---
 
@@ -447,18 +559,13 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Decisions needed from others
 
-- **Justin:** whether `GET /me` has the fields the UI needs, and request/response shapes for each
-  dashboard page. Needed before steps 6-7. (Staff and call configuration shapes are already built; say if they
-  don't suit the UI.)
+- **Justin:** whether the response shapes (all in `GET /openapi.json`) suit each dashboard page,
+  including the new billing pages (items, invoices, rates).
 - **Daniel:** confirm on the phase-1 VM that an IVR `on_timeout` action now runs (fixed in
   `services/shared` in step 5; see the Daniel section above).
 - **Muhammad:** the production Garage key and bucket must match what the dev setup assumes:
   bucket `pbx-media`, `s3_region = "garage"`, path-style S3 API, a key with read/write on the
   bucket (`dev/garage-setup.sh` shows the commands).
-- **Muhammad:** who runs `dbmate` migrations during a deploy (once, before the new API version
-  starts). Needed before the first multi-node deploy.
-- **Muhammad / edge owner:** whether the edge HAProxy routes on `/ready` (a cluster-wide DB
-  outage then marks every app replica down). Needed before the edge HAProxy role.
 - **Muhammad:** Postgres `max_connections` sizing for API + ARI apps + Kamailio pools. Needed
   before the Patroni setup.
 - **Team:** the plan contents and prices chosen in `services/api/src/billing/catalog.ts`
@@ -475,13 +582,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - Changing a staff member's dashboard password (no reset or change-password route yet).
-- Billing: buying extra extensions / numbers / add-ons (turning `record_calls` / `intl_calling`
-  on and off; `GET /settings` only shows them), weekly invoices, past due and recovery
-  (billing-flows §3-§5).
-- Renewal and release at the provider on the weekly cycle (billing scheduler): numbers are only
-  released at DIDWW when the customer releases them; renewal charges aren't built.
-- `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include
-  ffmpeg.
 
 ### Gaps in what exists
 
@@ -492,10 +592,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
   would remove the trap.
 - **No end-to-end test over a real socket or browser yet.** Auth and staff are covered by
   `app.inject()` tests only; a curl/browser run with the Vite proxy is still to do.
-- **Voicemails deleted by phone (`*98` key 3) leave their audio behind.** The ARI app deletes
-  only the `voicemails` row; the `media` row and the object stay (spec-transition S13). Deletes
-  through the API remove all three. A periodic cleanup of unreferenced voicemail media is still
-  to do.
 - **No call has gone through an API-created IVR menu yet** (phase-1 VM test).
 - **No softphone has registered with API-created credentials yet.** Needs the phase-1 VM (or a
   local Kamailio) pointed at the same database.

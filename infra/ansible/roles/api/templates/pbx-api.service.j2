@@ -1,0 +1,26 @@
+[Unit]
+Description=PBX API (Fastify)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pbx-api
+Group=pbx-api
+EnvironmentFile=/etc/pbx/api.env
+WorkingDirectory=/opt/pbx/src/services/api
+ExecStart=/usr/bin/node dist/index.js
+# SIGTERM: /ready -> 503 for SHUTDOWN_DRAIN_MS, finish in-flight requests, exit (src/index.ts).
+KillSignal=SIGTERM
+TimeoutStopSec={{ ((api_shutdown_drain_ms / 1000) | int) + 15 }}
+# The API starts and listens even while the DB is down (/ready reports it); restart only on crashes.
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
