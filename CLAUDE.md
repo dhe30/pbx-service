@@ -337,6 +337,11 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
   POST /billing/setup-intent, POST /billing/card, GET/POST/DELETE /billing/items (additional
   extensions, intl calling, recording; table account_items), GET /invoices(/:id). Weekly invoices,
   retries and past due: background scheduler in every API process (src/billing/scheduler.ts).
+- Support tickets (spec §3, docs/backend-for-team.md): POST /tickets {subject, description},
+  GET /tickets (paged, newest first, ?status=open|closed), GET /tickets/:id, POST /tickets/:id/close
+  (any user of the account). Provider view of all accounts: GET /operator/tickets (open by default),
+  GET /operator/tickets/:id, with `Authorization: Bearer <OPERATOR_TOKEN>` (vault_operator_token),
+  a separate secret, not a user role, so the operator stays outside tenant isolation.
 - GET /health (liveness), GET /ready (DB + object store reachable), GET /metrics
 
 ---------------------------------------------------------------------------------------------

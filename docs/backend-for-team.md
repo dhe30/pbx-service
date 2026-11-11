@@ -4,6 +4,16 @@ From: Aaron (Track 3 backend). Updated 2026-11-12 (billing completed, API deploy
 Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
 
+**What changed on 2026-11-11 (support tickets, course spec §3):**
+- New: `POST /tickets`, `GET /tickets`, `GET /tickets/:id`, `POST /tickets/:id/close` (any
+  logged-in user of the account), and the provider view `GET /operator/tickets`,
+  `GET /operator/tickets/:id` (operator bearer token, not a login). Details: "Support tickets"
+  in the Justin section and "Provider (operator) access" below it.
+- New migration `20261115000000_support_tickets.sql` (run `npm run db:migrate`).
+- New config `OPERATOR_TOKEN` (Vault `vault_operator_token`, at least 32 characters; the `api`
+  role refuses to run without it). Locally optional: unset = operator routes refuse everyone.
+- New metrics `pbx_api_support_tickets_opened_total`, `pbx_api_support_tickets_closed_total`.
+
 **What changed on 2026-11-12:**
 - New: `GET /billing/rates`, `GET /billing/rates/lookup` (per-minute price by prefix / number),
   `GET/POST/DELETE /billing/items` (buy and cancel additional extensions, international calling,
@@ -57,6 +67,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 | 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
 | 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
 | 8 | Number search, purchase (idempotent, prorated charge), list, release | Done (DIDWW clone details [VERIFY]) |
+| — | Support tickets (spec §3): account side + provider view of all accounts' open tickets | Done (2026-11-11) |
 | 9 | Review fixes (2026-11-12): rates by prefix, additional extensions + add-ons, weekly invoices / past due / recovery, deployment role, toll-free cost, voicemail audio cleanup | Done |
 
 ## For everyone
@@ -73,7 +84,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 | 400 | `invalid_reference` | The body points at an id that doesn't exist or belongs to another business; `message` names the field (`memberIds.1: no such extension`) |
 | 400 | `invalid_audio` | Upload isn't a supported audio file, is empty, or is longer than 300 s (`POST /media`) |
 | 400 | `card_not_saved` | Card setup not confirmed with Stripe.js yet (`POST /billing/card`) |
-| 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password |
+| 401 | `unauthorized` / `invalid_credentials` | Not logged in, session expired / wrong email or password (on `/operator/*`: missing or wrong operator token) |
 | 402 | `payment_required`, `payment_failed` | Plan not paid yet (or account past due) / a card charge was declined |
 | 403 | `forbidden` | Logged in, but wrong role (e.g. staff on an owner-only route) |
 | 404 | `not_found` | Doesn't exist, **or belongs to another business** (deliberately indistinguishable) |
@@ -379,6 +390,56 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
   unpaid invoice immediately and reactivates the account; `402 payment_failed` = that charge was
   declined too (the card stays saved).
 
+### Support tickets (spec §3)
+
+| Request | Who | Response |
+|---|---|---|
+| `POST /tickets` `{ subject, description }` | any user | `201 ticket` |
+| `GET /tickets?status=open\|closed&limit&cursor` | any user | `{ items: [ticket], nextCursor }`, newest first |
+| `GET /tickets/:id` | any user | `ticket`; 404 |
+| `POST /tickets/:id/close` | any user | `200 ticket` (closed); 404. Idempotent |
+
+ticket = `{ id, subject, description, status: open|closed, createdAt, createdBy, createdByEmail,
+closedAt, closedBy }`. `createdBy` / `closedBy` are user ids (null once that user is deleted);
+`closedAt` / `closedBy` are null while open.
+- Every user of the account (owner and staff) sees and can close every ticket of the account.
+- `subject` 1-200 characters, `description` 1-10000 (both trimmed); other fields are a 400.
+- Tickets only go open -> closed. Closing a closed ticket returns it unchanged; a problem that
+  comes back gets a new ticket. There is no delete.
+- Paging is the same as `/calls` and `/voicemails` (`limit` 1-200, default 50; pass `nextCursor`
+  back as `cursor`).
+- **Graded behaviour:** simulated customers open a ticket when something fails for them and close
+  it when it works again. Put "Open a ticket" somewhere easy to find (a page listing the account's
+  tickets with status, a form with subject + description, a Close button per open ticket).
+
+### Provider (operator) access
+
+The provider (us) must see the open tickets of **all** accounts as they come in. That is not a
+customer feature, so it doesn't use the login cookie:
+
+| Request | Who | Response |
+|---|---|---|
+| `GET /operator/tickets?status=open\|closed\|all&limit&cursor` | operator token | `{ items: [operatorTicket], nextCursor }`, newest first; `status` defaults to `open` |
+| `GET /operator/tickets/:id` | operator token | `operatorTicket`; 404 |
+
+operatorTicket = ticket + `{ tenantId, tenantName }`. Authenticate with
+`Authorization: Bearer <OPERATOR_TOKEN>`; anything else (no header, wrong token, a customer
+cookie, token not configured) is `401 unauthorized`. Quick look from an app node:
+
+```sh
+curl -s -H "Authorization: Bearer $OPERATOR_TOKEN" http://<app private IP>:3000/operator/tickets | jq
+```
+
+Why a separate token and not an "operator" user role: every user and every login token belongs to
+exactly one account, and all account routes trust that account id (step 3 rules). An operator
+user would have to live inside some customer account, with a cross-account power inside a
+customer-style token. A separate secret keeps the provider outside accounts entirely: a bug in an
+account route can't leak other accounts' tickets, and a customer cookie never opens an operator
+route. It also needs no schema change, signup path or UI to manage operators; rotate it by
+changing the vault value and redeploying role `api`. If the team later wants a provider
+dashboard page, it can send this header (keep the token out of the customer bundle: paste it into
+the page, keep it in `sessionStorage`).
+
 ### Errors to handle on upcoming forms (from step 3)
 
 - `404 not_found` on a detail page: show "not found"; the id may simply belong to another
@@ -472,6 +533,10 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
 - `GET /metrics` (Prometheus) on the API port (default 3000, private IP only):
   - `pbx_api_http_request_duration_seconds{method,route,status}`: latency per route template,
     usable for error-rate alerts (`status=~"5.."`);
+  - `pbx_api_support_tickets_opened_total`, `pbx_api_support_tickets_closed_total`: support
+    tickets opened / closed by customers (per process; `sum` over app nodes). Customers open one
+    when something fails for them, so `increase(...opened_total[5m]) > 0` is a useful Discord
+    alert ("a customer is unhappy"); details via `GET /operator/tickets`.
   - standard Node process metrics (CPU, memory, event loop lag, GC).
 - Logs: pino **JSON to stdout** (journald / docker), field `svc: "api"`. Your log retention
   settings cover the API; it writes no log files itself.
@@ -491,8 +556,8 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
   compatible with the running API (split-contracts §5).
 - To fill in before the first deploy: `did_provider_url` and `did_trunk_group_id` (or
   `did_trunk_id`) in `group_vars/all/main.yml`; `vault_jwt_secret`, `vault_did_api_key`,
-  `vault_stripe_secret_key`, `vault_stripe_publishable_key` in `vault.yml`. The role refuses to run
-  without them. `web_domain` defaults to `sip_domain`.
+  `vault_stripe_secret_key`, `vault_stripe_publishable_key`, `vault_operator_token` in `vault.yml`.
+  The role refuses to run without them. `web_domain` defaults to `sip_domain`.
 - A container image is also available: `docker build -f services/api/Dockerfile -t pbx-api .` from
   the repo root (Node 24 + ffmpeg).
 
@@ -502,7 +567,9 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
   `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DID_PROVIDER_URL`, `DID_PROVIDER_API_KEY` (Vault),
   `DID_TRUNK_GROUP_ID` or `DID_TRUNK_ID` (the DIDWW inbound trunk group / trunk bought numbers
   are pointed at), `SIP_WS_URI`, `SIP_DOMAIN`, `STRIPE_SECRET_KEY` (Vault),
-  `STRIPE_PUBLISHABLE_KEY`. Optional: `DID_PROVIDER_MODE` (`didww` default; `fake` only for dev), `STRIPE_API_URL`,
+  `STRIPE_PUBLISHABLE_KEY`. Production also sets `OPERATOR_TOKEN` (Vault, at least 32
+  characters; provider access to every account's support tickets; unset = those routes refuse
+  everyone). Optional: `DID_PROVIDER_MODE` (`didww` default; `fake` only for dev), `STRIPE_API_URL`,
   `STRIPE_JS_URL` (defaults: the course gateway), `FFMPEG_PATH` (default `ffmpeg`; app nodes need ffmpeg installed), `S3_REGION` (default `garage`; must match
   Garage's `s3_region`), `COOKIE_SECURE` (default `true`; keep it in production),
   `ACCESS_TOKEN_TTL_SEC` (900) / `REFRESH_TOKEN_TTL_SEC` (7 days), `HOST`, `PORT` (3000),
@@ -582,6 +649,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - Changing a staff member's dashboard password (no reset or change-password route yet).
+- **Web UI for support tickets** (frontend track): the account pages (list / open / close), and
+  optionally a provider page for `GET /operator/tickets`.
+- **Alert on new support tickets** (monitoring track): a Prometheus rule on
+  `pbx_api_support_tickets_opened_total` -> Discord.
 
 ### Gaps in what exists
 
@@ -599,6 +670,10 @@ Everything backend-related that is still missing or undecided. Remove items as t
 
 ### Known limitations to revisit (hardening phase)
 
+- **No limit on how many tickets an account opens** (only the body size is bounded). Add a
+  per-account cap of open tickets if this is ever abused.
+- **`POST /tickets` takes no `Idempotency-Key`:** a client retry after a lost response can open
+  a duplicate ticket (harmless; the customer can close it).
 - **No login rate limiting.** `@fastify/rate-limit` isn't installed, and with several replicas it
   needs shared state.
 - **Tokens can't be revoked before they expire** (stateless design): up to 15 min for access

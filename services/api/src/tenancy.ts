@@ -31,6 +31,7 @@ export const TENANT_TABLES = [
   'phone_numbers',
   'cdrs',
   'voicemails',
+  'support_tickets',
 ] as const;
 export type TenantTable = (typeof TENANT_TABLES)[number];
 
@@ -141,6 +142,7 @@ const SINGULAR: Record<TenantTable, string> = {
   phone_numbers: 'phone number',
   cdrs: 'call record',
   voicemails: 'voicemail',
+  support_tickets: 'support ticket',
 };
 
 function singular(table: TenantTable): string {
