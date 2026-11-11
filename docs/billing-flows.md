@@ -169,6 +169,18 @@ Stripe.js).
   and `usage_periods`.
 - Invoices only need to **sum `cdrs.charge`**; they don't need to re-rate calls.
 
+## 7a. Implemented (2026-11-12)
+
+- Account items: `account_items` (migration `20261112000000_account_items.sql`), `/billing/items`.
+- Weekly invoices, retries, past due, recovery: `invoices` / `invoice_lines` (migration
+  `20261113000000_invoices.sql`), `services/api/src/billing/scheduler.ts`, `GET /invoices`.
+  Decisions: usage is summed per invoice and rounded once to the nearest cent (§8.3); an invoice
+  below Stripe's 50-cent minimum is marked paid without a charge; a gateway outage counts as a
+  failed attempt (retried with backoff); every attempt has its own Idempotency-Key
+  (`invoice:<id>:<attempt>`) so a retry with a new card is a real new attempt. DIDWW renews kept
+  numbers on its own (prepaid balance) and stops renewing released ones (release sets
+  `billing_cycles_count = 0`), so the scheduler makes no provider calls.
+
 ## 8. Decisions still open (check these in review)
 
 1. **Charge first or provision first?** DECIDED (2026-11-10, numbers): **order first, then

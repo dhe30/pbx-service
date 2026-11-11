@@ -345,6 +345,26 @@ item = `{ id, kind, priceCents, startedAt, paidThrough, removedAt, renews, phone
   so cancelling it is `409 extension_limit` while the extensions in use need it.
 - Numbers are released with `DELETE /numbers/:id`; the plan can't be cancelled (400).
 
+### Invoices and past due
+
+| Request | Who | Response |
+|---|---|---|
+| `GET /invoices` | owner | `[invoice]`, newest first |
+| `GET /invoices/:id` | owner | `invoice` + `lines` |
+
+invoice = `{ id, periodStart, periodEnd, usageFrom, usageTo, recurringCents, usageCents, totalCents,
+includedMinutesUsed, status, pastDue, attempts, lastError, nextAttemptAt, paidAt, createdAt }`;
+line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billableSec, amount }`.
+- The billing scheduler (in every API process, `src/billing/scheduler.ts`) issues an invoice
+  within about a minute after each 7-day period ends: the new period's items (plan, additional
+  extensions, numbers, add-ons) plus the ended period's call usage, one line per charged leg.
+  It charges the card at once and retries declines (5 min, 15 min, 1 h, 3 h, then every 6 h).
+- `status: failed` + `pastDue: true` (unpaid 24 h after the period ended): `GET /me` shows
+  `tenant.status: "past_due"` and outgoing calls are blocked. Show a banner with "add a card".
+  Adding a card (`POST /billing/setup-intent` -> Stripe.js -> `POST /billing/card`) charges every
+  unpaid invoice immediately and reactivates the account; `402 payment_failed` = that charge was
+  declined too (the card stays saved).
+
 ### Errors to handle on upcoming forms (from step 3)
 
 - `404 not_found` on a detail page: show "not found"; the id may simply belong to another
@@ -508,9 +528,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 ### Not built yet
 
 - Changing a staff member's dashboard password (no reset or change-password route yet).
-- Billing: weekly invoices, past due and recovery (billing-flows §4-§5).
-- Renewal and release at the provider on the weekly cycle (billing scheduler): numbers are only
-  released at DIDWW when the customer releases them; renewal charges aren't built.
 
 ### Gaps in what exists
 

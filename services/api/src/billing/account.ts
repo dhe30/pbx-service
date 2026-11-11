@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import { HttpError } from '../errors.js';
 import { MIN_CHARGE_CENTS, PLAN, proratedCents } from './catalog.js';
+import { payOverdue } from './scheduler.js';
 import type { StripeClient } from './stripe.js';
 
 // Saved card + first plan charge (docs/billing-flows.md §1, steps 2-7):
@@ -100,8 +101,21 @@ export async function saveCard(
        where tenant_id = ${tenantId}`,
   );
 
-  if (acct.planPaidThrough) return { chargedCents: 0 }; // a replacement card; nothing due now
-  return chargeFirstPeriod(sql, stripe, tenantId, acct.stripeCustomerId, pm, log, now);
+  if (!acct.planPaidThrough) return chargeFirstPeriod(sql, stripe, tenantId, acct.stripeCustomerId, pm, log, now);
+
+  // A replacement card. Billing-flows §5: "charge every overdue invoice immediately; on success set
+  // status active" (the scheduler's charge reactivates the account; the call path unblocks within
+  // seconds through NOTIFY pbx_config, well inside the spec's one minute).
+  const overdue = await payOverdue({ sql, stripe, log }, tenantId, now);
+  if (overdue.unpaid > 0) {
+    throw new HttpError(
+      402,
+      'payment_failed',
+      `The card was saved, but the unpaid invoice could not be charged: ${overdue.lastError ?? 'declined'}. Add another card.`,
+    );
+  }
+  if (overdue.paid > 0) log.info({ tenantId, invoices: overdue.paid }, 'overdue invoices paid with a new card');
+  return { chargedCents: 0 };
 }
 
 /** "Items bought mid-period (including the plan at signup) are charged immediately, prorated." */

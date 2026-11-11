@@ -2,6 +2,7 @@ import { createDb } from '@pbx/shared';
 import { hostname } from 'node:os';
 import { buildApp } from './app.js';
 import { FfmpegConverter } from './audio.js';
+import { startBillingScheduler } from './billing/scheduler.js';
 import { HttpStripeClient } from './billing/stripe.js';
 import { ConfigError, loadConfig } from './config.js';
 import { HttpDidwwProvider } from './numbers/didww.js';
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
   const store = new ObjectStore(cfg);
 
   let draining = false;
+  const stripe = new HttpStripeClient(cfg.STRIPE_API_URL, cfg.STRIPE_SECRET_KEY);
   const app = await buildApp(cfg, {
     sql,
     readinessChecks: {
@@ -31,7 +33,7 @@ async function main(): Promise<void> {
       objectStore: (signal) => store.ping(signal),
     },
     isDraining: () => draining,
-    stripe: new HttpStripeClient(cfg.STRIPE_API_URL, cfg.STRIPE_SECRET_KEY),
+    stripe,
     store,
     audio: new FfmpegConverter(cfg.FFMPEG_PATH),
     didProvider:
@@ -45,6 +47,10 @@ async function main(): Promise<void> {
               : { type: 'voice_in_trunks', id: cfg.DID_TRUNK_ID! },
           }),
   });
+
+  const stopBilling = cfg.BILLING_SCHEDULER
+    ? startBillingScheduler({ sql, stripe, log: app.log.child({ component: 'billing' }) }, cfg.BILLING_TICK_SEC * 1000)
+    : async () => {};
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -61,6 +67,7 @@ async function main(): Promise<void> {
 
     await new Promise((r) => setTimeout(r, cfg.SHUTDOWN_DRAIN_MS));
     try {
+      await stopBilling(); // lets a running tick finish its current step
       await app.close(); // stops accepting connections, waits for in-flight requests
       await sql.end({ timeout: 5 });
       store.close();

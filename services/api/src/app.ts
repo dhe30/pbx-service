@@ -17,6 +17,7 @@ import { businessHoursRoutes } from './routes/business-hours.js';
 import { callRoutes } from './routes/calls.js';
 import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
+import { invoiceRoutes } from './routes/invoices.js';
 import { ivrMenuRoutes } from './routes/ivr-menus.js';
 import { mailboxRoutes } from './routes/mailboxes.js';
 import { mediaRoutes } from './routes/media.js';
@@ -123,6 +124,7 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
   await app.register(authRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingItemRoutes, { sql: deps.sql, stripe: deps.stripe });
+  await app.register(invoiceRoutes, { sql: deps.sql });
   await app.register(staffRoutes, { sql: deps.sql, sipWsUri: cfg.SIP_WS_URI, sipDomain: cfg.SIP_DOMAIN });
   await app.register(extensionRoutes, { sql: deps.sql, sipDomain: cfg.SIP_DOMAIN });
 

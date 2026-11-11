@@ -65,16 +65,16 @@ export function listItems(db: Db, tenantId: string, id: string | null = null) {
      order by array_position(array['plan','extension','number','intl_calling','recording'], i.kind), i.started_at, i.id`;
 }
 
-/** Derives the tenant_settings flags the call path reads from the account's items. */
-export async function syncSettings(db: Db, tenantId: string): Promise<void> {
+/** Derives the tenant_settings flags the call path reads from the account's items (as of `at`). */
+export async function syncSettings(db: Db, tenantId: string, at: Date = new Date()): Promise<void> {
   await db`
     insert into tenant_settings (tenant_id, intl_calling, record_calls, extra_extensions)
     values (
       ${tenantId},
       exists (select 1 from account_items
-               where tenant_id = ${tenantId} and kind = 'intl_calling' and (removed_at is null or paid_through > now())),
+               where tenant_id = ${tenantId} and kind = 'intl_calling' and (removed_at is null or paid_through > ${at})),
       exists (select 1 from account_items
-               where tenant_id = ${tenantId} and kind = 'recording' and (removed_at is null or paid_through > now())),
+               where tenant_id = ${tenantId} and kind = 'recording' and (removed_at is null or paid_through > ${at})),
       (select count(*)::int from account_items where tenant_id = ${tenantId} and kind = 'extension' and removed_at is null))
     on conflict (tenant_id) do update
       set intl_calling = excluded.intl_calling, record_calls = excluded.record_calls,
