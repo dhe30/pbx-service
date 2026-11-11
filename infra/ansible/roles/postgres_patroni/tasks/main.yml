@@ -12,7 +12,14 @@
 # ---- Packages -----------------------------------------------------------------------------
 
 # Debian's postgresql packages create and start a "main" cluster on 5432 at install time. Patroni
-# owns the data directory instead, so tell postgresql-common not to create one.
+# owns the data directory instead, so tell postgresql-common not to create one. The setting must be
+# in place BEFORE the package is installed, so create its directory first.
+- name: postgresql-common config directory
+  ansible.builtin.file:
+    path: /etc/postgresql-common
+    state: directory
+    mode: "0755"
+
 - name: Don't let the postgresql package create a default cluster
   ansible.builtin.copy:
     dest: /etc/postgresql-common/createcluster.conf
