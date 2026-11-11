@@ -320,8 +320,9 @@ Details: `docs/backend-step8.md`.
 - `202 { status: "processing" }`: the provider is still working; wait `Retry-After` seconds and
   repeat the same request.
 - After buying, route it with `PUT /numbers/:id/route`. Until then calls to it are hung up.
-- Release: the number keeps working until `paidUntil`; nothing is refunded. It can't be re-routed
-  after release.
+- Release: the number keeps working until `paidUntil`; nothing is refunded. It can still be
+  re-routed until then (`PUT /numbers/:id/route`); after `paidUntil` it is gone (404) and no longer
+  blocks deleting what it routed to.
 
 ### Not available yet
 

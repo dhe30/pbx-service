@@ -52,6 +52,9 @@ export async function destinationUsages(db: Db, tenantId: string, type: Destinat
     db<{ name: string }[]>`
       select did as name from phone_numbers
        where tenant_id = ${tenantId}
+         -- Only numbers that still deliver calls (same rule as kamailio_did_tenant and the ARI app):
+         -- a released number whose paid period ended routes nothing and must not block deletes.
+         and (status = 'assigned' or paid_until > now())
          and (jsonb_path_exists(coalesce(destination, '{}'), ${DEST_PATH}::jsonpath, ${vars})
               ${type === 'ivr_menu' ? db`or (destination is null and ivr_menu_id = ${id})` : db``})
        order by did`,

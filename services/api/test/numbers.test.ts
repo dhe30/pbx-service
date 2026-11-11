@@ -351,13 +351,33 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     // Still listed and still delivering calls until paidUntil.
     expect((await call(t.cookies, 'GET', '/numbers')).json().map((x: { id: string }) => x.id)).toContain(n.id);
     expect(await sql`select 1 from kamailio_did_tenant where did_digits = ${o.number.slice(1)}`).toHaveLength(1);
-    // Can't be re-routed; releasing again is fine and doesn't call the provider.
-    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: null })).statusCode).toBe(404);
+    // Still routable until paidUntil; releasing again is fine and doesn't call the provider.
+    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: null })).statusCode).toBe(200);
     const releases = provider.calls.filter(([op]) => op === 'release').length;
     expect((await call(t.cookies, 'DELETE', `/numbers/${n.id}`)).statusCode).toBe(200);
     expect(provider.calls.filter(([op]) => op === 'release').length).toBe(releases);
     // After the paid period it disappears from the list.
     await sql`update phone_numbers set paid_until = now() - interval '1 minute' where id = ${n.id}`;
     expect((await call(t.cookies, 'GET', '/numbers')).json().map((x: { id: string }) => x.id)).not.toContain(n.id);
+    // ... and can't be routed any more.
+    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: null })).statusCode).toBe(404);
+  });
+
+  it('a released number blocks deleting its target only while it still routes calls', async () => {
+    const t = await makeTenant();
+    const n = (await buy(t, (await offer(t, 'areaCode=973')).id)).json().number;
+    const mb = (await call(t.cookies, 'POST', '/mailboxes', { name: 'Released number target' })).json();
+    const dest = { type: 'voicemail', id: mb.id };
+    expect((await call(t.cookies, 'PUT', `/numbers/${n.id}/route`, { destination: dest })).statusCode).toBe(200);
+    expect((await call(t.cookies, 'DELETE', `/numbers/${n.id}`)).statusCode).toBe(200);
+
+    // During the paid period the number still delivers calls to the mailbox: refuse, naming it.
+    const busy = await call(t.cookies, 'DELETE', `/mailboxes/${mb.id}`);
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json().message).toContain(n.did);
+
+    // Lapsed: it routes nothing any more, so it no longer blocks the delete.
+    await sql`update phone_numbers set paid_until = now() - interval '1 minute' where id = ${n.id}`;
+    expect((await call(t.cookies, 'DELETE', `/mailboxes/${mb.id}`)).statusCode).toBe(204);
   });
 });

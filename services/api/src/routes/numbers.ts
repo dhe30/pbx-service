@@ -25,7 +25,7 @@ import { parse } from '../validation.js';
 //                                          owner      201 { number, chargedCents, replayed }
 //                                                     202 still processing (retry with the same key)
 //                                                     400, 402, 409, 502
-// PUT    /numbers/:id/route { destination }  owner    200 number            400, 404
+// PUT    /numbers/:id/route { destination }  owner    200 number            400, 404 (also after release, until paidUntil)
 // DELETE /numbers/:id                      owner      200 number (released) 404, 502
 //
 // number = { id, did, status, kind, destination, paidUntil, purchasedAt }
@@ -241,11 +241,12 @@ const docs = {
     summary: 'Route a phone number',
     description:
       'Sets where calls to the number go: an extension, ring group, IVR menu or business hours schedule ' +
-      '(voicemail, external and hangup work too). The phase-1 body `{ "ivrMenuId" }` is still accepted.',
+      '(voicemail, external and hangup work too). A released number can be re-routed until `paidUntil`. ' +
+      'The phase-1 body `{ "ivrMenuId" }` is still accepted.',
     params: IdParams,
     body: RouteBody,
     responses: { 200: { description: 'The routed number', schema: NumberSchema } },
-    errors: { 404: 'No such number in this account, or it was released (`not_found`).' },
+    errors: { 404: 'No such number in this account, or it was released and its paid period has ended (`not_found`).' },
   },
   release: {
     tag: 'Numbers',
@@ -341,11 +342,12 @@ export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; 
         await assertOwned(tx, tenantId, destinationRefs(destination, 'destination'));
         // ivr_menu_id is the phase-1 column; kept in sync for anything still reading it.
         const ivrMenuId = destination?.type === 'ivr_menu' ? destination.id : null;
-        // Released numbers no longer belong to the tenant: "not found" like any other id.
+        // A released number still routes calls until paidUntil, so it can be re-routed until then
+        // (e.g. to free an extension the owner wants to delete). After that it is "not found".
         const [row] = await tx<PhoneNumber[]>`
           update phone_numbers
              set destination = ${destination ? tx.json(destination) : null}, ivr_menu_id = ${ivrMenuId}
-           where id = ${id} and tenant_id = ${tenantId} and status = 'assigned'
+           where id = ${id} and tenant_id = ${tenantId} and (status = 'assigned' or paid_until > now())
           returning ${cols}`;
         if (!row) throw notFound();
         return row;
