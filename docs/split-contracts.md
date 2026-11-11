@@ -81,6 +81,10 @@ Stable names. Values may change only through the owning track.
 | `kamailio_ws_port` | 8080 | T2 | kamailio, edge_haproxy |
 | `edge_trunk_names`, `rtpengine_ips`, `edge_peer_ips` | derived from `groups['edge']` (`rtpengine_ips` from `groups['media']` when that group exists) | T2 | asterisk, ari_app, kamailio |
 | `ari_user`, `hold_max_sec` | `pbxapp`, 1800 | T2 | asterisk, ari_app |
+| `web_domain` | public name of the dashboard/API; softphone WebSocket `wss://<web_domain>/ws` (default: `sip_domain`) | T3 | api |
+| `did_provider_url`, `did_trunk_group_id` / `did_trunk_id` | DIDWW clone base URL; inbound trunk group (or trunk) bought numbers are assigned to | T3 | api |
+| `stripe_api_url`, `stripe_js_url` | course payment gateway | T3 | api |
+| vault `vault_jwt_secret`, `vault_did_api_key`, `vault_stripe_secret_key`, `vault_stripe_publishable_key` | API secrets (JWT secret identical on every app node) | T3 | api |
 | `*_version` pins | see file | owner of the component | roles |
 
 ## 4. Ports

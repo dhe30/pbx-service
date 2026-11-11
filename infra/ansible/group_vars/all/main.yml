@@ -83,6 +83,21 @@ garage_replication_factor: "{{ [groups['db'] | length, 3] | min }}"
 # all-in-one VM) talks to its own Garage, which listens on its private IP.
 s3_endpoint: "http://{{ private_ip if inventory_hostname in groups['db'] else '127.0.0.1' }}:{{ s3_port }}"
 
+# ---- API (role api, app nodes) -------------------------------------------------------------------
+# Public name of the dashboard/API and the softphone's WebSocket (wss://<web_domain>/ws), served by
+# the edge HAProxies. Same name as the SIP domain unless the team gets a separate one.
+web_domain: "{{ sip_domain }}"
+# Course payment gateway (Stripe clone). [VERIFY] both URLs on the Course Services tab.
+stripe_api_url: "https://stripe.cse356.compas.cs.stonybrook.edu"
+stripe_js_url: "https://stripe.cse356.compas.cs.stonybrook.edu/v3/"
+# DID provider (DIDWW API v3 clone): base URL from the Course Services tab, e.g. https://<host>/v3.
+# Required on app nodes (the api role refuses to deploy without it).
+did_provider_url: ""
+# DIDWW inbound trunk group (both edges, A7) that bought numbers are assigned to; or a single trunk
+# in did_trunk_id. Exactly one must be set.
+did_trunk_group_id: ""
+did_trunk_id: ""
+
 # ---- Test data (phase 1) -----------------------------------------------------------------------
 load_test_seed: true
 test_did: "+15555550100"

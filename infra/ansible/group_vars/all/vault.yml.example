@@ -28,3 +28,12 @@ vault_vendor_us_user: CHANGE_ME
 vault_vendor_us_password: CHANGE_ME
 vault_vendor_intl_user: CHANGE_ME
 vault_vendor_intl_password: CHANGE_ME
+
+# API (app nodes). JWT secret: identical on every app node, at least 16 chars:  openssl rand -hex 32
+vault_jwt_secret: CHANGE_ME_to_openssl_rand_hex_32
+# DID provider (DIDWW clone) Api-Key, Course Services tab.
+vault_did_api_key: CHANGE_ME
+# Payment gateway (Stripe clone) test-mode keys, Course Services tab. The publishable key is not
+# secret (browsers get it) but comes from the same place.
+vault_stripe_secret_key: CHANGE_ME
+vault_stripe_publishable_key: CHANGE_ME

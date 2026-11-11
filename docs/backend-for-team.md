@@ -420,8 +420,11 @@ item = `{ id, kind, priceCents, startedAt, paidThrough, removedAt, renews, phone
 | `GET /health` | Process alive. Never checks dependencies. Use for systemd/docker restarts. |
 | `GET /ready` | DB + object store reachable, not shutting down. Use for HAProxy routing and alerts. Answers within ~1.5 s even if a dependency hangs. Body names the failing check. |
 
-- If HAProxy routes on `/ready`, a cluster-wide DB outage marks **every** app replica down. That
-  matches CLAUDE.md §11, but please make it a conscious choice.
+- **The edge HAProxy routes on `/ready`** (decided 2026-11-12, `edge_haproxy` role: `inter 2s fall 2
+  rise 2`, `retries 2` + `redispatch`). Reason: `/ready` turns 503 on SIGTERM, so rolling deploys
+  drain without failed requests; with `/health` they didn't. Cost: a cluster-wide DB (or object
+  store) outage marks every app replica down and HAProxy answers 503 itself; clients retry 503s
+  either way.
 - **Graceful shutdown:** on SIGTERM, `/ready` returns 503 for `SHUTDOWN_DRAIN_MS` (default 5 s)
   before the server closes. Keep this above HAProxy's check interval x fall count, so HAProxy
   stops routing before connections close.
@@ -438,6 +441,22 @@ item = `{ id, kind, priceCents, startedAt, paidThrough, removedAt, renews, phone
   - `/health`, `/ready` and `/metrics` don't log every request; failed readiness checks log at
     `warn` with the failing check.
   - Each request has a `reqId`; if HAProxy sets `X-Request-Id`, that value is used.
+
+### Deployment (role `api`)
+
+- `site.yml` runs role `api` on the `app` hosts, `serial: 1`: Node 24 + ffmpeg from apt, the repo
+  synced to `/opt/pbx/src`, `npm ci` + build of `@pbx/shared` and `@pbx/api`, systemd unit
+  `pbx-api` (user `pbx-api`), env file `/etc/pbx/api.env`. It waits for `/ready` before moving to
+  the next app node.
+- **Migrations** run once per deploy in the `db_schema` role (dbmate against the current Patroni
+  primary), which `site.yml` runs before any app node is updated. Migrations must stay backward
+  compatible with the running API (split-contracts §5).
+- To fill in before the first deploy: `did_provider_url` and `did_trunk_group_id` (or
+  `did_trunk_id`) in `group_vars/all/main.yml`; `vault_jwt_secret`, `vault_did_api_key`,
+  `vault_stripe_secret_key`, `vault_stripe_publishable_key` in `vault.yml`. The role refuses to run
+  without them. `web_domain` defaults to `sip_domain`.
+- A container image is also available: `docker build -f services/api/Dockerfile -t pbx-api .` from
+  the repo root (Node 24 + ffmpeg).
 
 ### Config and secrets (for Ansible / Vault)
 
@@ -473,10 +492,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - **Muhammad:** the production Garage key and bucket must match what the dev setup assumes:
   bucket `pbx-media`, `s3_region = "garage"`, path-style S3 API, a key with read/write on the
   bucket (`dev/garage-setup.sh` shows the commands).
-- **Muhammad:** who runs `dbmate` migrations during a deploy (once, before the new API version
-  starts). Needed before the first multi-node deploy.
-- **Muhammad / edge owner:** whether the edge HAProxy routes on `/ready` (a cluster-wide DB
-  outage then marks every app replica down). Needed before the edge HAProxy role.
 - **Muhammad:** Postgres `max_connections` sizing for API + ARI apps + Kamailio pools. Needed
   before the Patroni setup.
 - **Team:** the plan contents and prices chosen in `services/api/src/billing/catalog.ts`
@@ -496,8 +511,6 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - Billing: weekly invoices, past due and recovery (billing-flows §4-§5).
 - Renewal and release at the provider on the weekly cycle (billing scheduler): numbers are only
   released at DIDWW when the customer releases them; renewal charges aren't built.
-- `services/api/Dockerfile`: still a TODO. It also names `node:20`; should be Node 24 and include
-  ffmpeg.
 
 ### Gaps in what exists
 
