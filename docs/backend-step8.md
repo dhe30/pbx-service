@@ -107,25 +107,38 @@ A lapsed number can be bought again (by anyone): the insert reuses its `phone_nu
   631, toll-free 833) in New Jersey / New York. Local dev and tests only; the state is per
   process.
 
-**[VERIFY] against the clone** (written from DIDWW's public v3 API; `test/didww.test.ts` pins
-what we send):
+**Checked against the clone** (read-only probes, 2026-11-11; `test/didww.test.ts` mocks the
+observed behaviour):
 - filters `available_dids?filter[country.id|region.id|city.id|did_group_type.id|number_contains]`,
-  `dids?filter[number]`, `regions` / `cities` `?filter[country.id]`;
-- `include=did_group.stock_keeping_units,did_group.did_group_type,did_group.city,did_group.region,did_group.country`;
+  `dids?filter[number|order.id]`, `regions` / `cities` `?filter[country.id]` (+ `[region.id]`)
+  are accepted. The `did_group.`-prefixed spellings from DIDWW's docs are rejected (400).
+- `available_dids` accepts **only** `include=did_group,did_group.stock_keeping_units`. Asking
+  for `did_group.did_group_type` / `.city` / `.region` / `.country` is a 400 (this broke every
+  search before the fix). The group carries those as relationship ids, plus `prefix`,
+  `area_name` and `is_metered` (true = toll-free); the provider names them from cached
+  `did_group_types` / `countries` / `regions` / `cities` lookups.
+- `page[size]` is ignored on `available_dids` (up to 100 come back), so the provider re-checks
+  type, region, city and area code on the results and applies the limit itself.
+- SKU attributes: `setup_price`, `monthly_price` (per 7-day period here), `channels_included_count`.
+  Observed: local 0.00 setup / 1.50 per period, toll-free 2.00 / 3.00.
+- there's no area code filter, so the client asks for numbers containing
+  `<calling code><area code>` and keeps those starting with it.
+
+**Still [VERIFY]** (needs a real purchase; the probes were GET-only):
 - `POST /orders` with `did_order_items {sku_id, available_did_id}`; order status
   `Pending | Completed | Canceled`; "taken" answered with 422 / 404 / 409;
 - trunk assignment: `PATCH /dids/:id` relationship `voice_in_trunk_group` (or `voice_in_trunk`);
-- release: `PATCH /dids/:id {billing_cycles_count: 0}` = stop renewing, works until the cycle
-  ends (DIDWW cycles are monthly; the course says 7 days);
-- there's no area code filter, so the client asks for numbers containing
-  `<calling code><area code>` and keeps those starting with it.
+- release: `PATCH /dids/:id {billing_cycles_count: 0}` = stop renewing, works until the 7-day
+  period ends. The course spec says a released number works until its paid period ends, "then
+  release it at the provider": check whether the clone needs an explicit call at that point.
 
 ## Not done here
 
 - **Weekly renewal charges** and releasing lapsed numbers at the provider on our own schedule
   (billing scheduler, billing-flows §4).
-- **Toll-free incoming cost per number** (`incoming_cost_per_min`) is left null, so the
-  `call_pricing` default is used.
+- ~~Toll-free incoming cost per number~~: done. It isn't in the clone's API; the Course
+  Services tab publishes it (US $0.025/min, UK $0.05/min), kept in
+  `TOLL_FREE_IN_COST_PER_MIN` (`numbers/didww.ts`). Other countries: null = `call_pricing` default.
 - **Price vs DIDWW cost** (billing-flows §8.7): check the setup and renewal fees once the clone
   is reachable.
 - **Reconciliation** of DIDWW's DID list against `phone_numbers` (orphans after rare crashes).
