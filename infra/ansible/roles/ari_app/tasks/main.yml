@@ -38,6 +38,8 @@
       - "--exclude=infra"
       - "--exclude=loadtest"
       - "--exclude=dev"
+      - "--exclude=.env"                       # local dev secrets, never on servers
+      - "--exclude=telephony/tests/.rendered"  # test renders (incl. a test TLS key)
   register: ari_src
 
 - name: Check for a previous build

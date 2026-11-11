@@ -44,12 +44,18 @@ what to check and what to change if a check fails. Background:
   pbx-aio ansible_host=... public_ip=... private_ip=... asterisk_sip_port=5080 carrier_cidrs="['130.245.136.142/32', '<your public IP>:5062']"
   ```
 
-**Vault:** `group_vars/all/vault.yml` from `vault.yml.example`. In addition to the passwords:
+**Vault:** generate `group_vars/all/vault.yml` with fresh random secrets, never copy the example
+(the repo is public): `infra/ansible/scripts/new-vault.sh`, fill in its `CHANGE_ME` values, then
+`ansible-vault encrypt`. One vault per deployment, shared by the whole team (encrypted file and
+vault password over separate channels). The `CHANGE_ME` values:
 - `vault_vendor_us_user` / `_password` and `vault_vendor_intl_user` / `_password`: the **digest
   credentials** from the Course Services tab. They go only in the encrypted vault, never in any
   other file.
-- `vault_test_alice_password` / `vault_test_bob_password`: use real passwords. Port 5060 is
-  public and will be scanned.
+- `vault_stripe_secret_key` / `vault_stripe_publishable_key` (payment gateway test keys) and
+  `vault_did_api_key` (DID provider): needed by the API (split deployment, §5).
+
+The script also generates random `vault_test_alice_password` / `vault_test_bob_password`: keep
+them random, port 5060 is public and will be scanned.
 
 **DNS (Group tab):**
 - an A record for `group-4.cse356.compas.cs.stonybrook.edu` -> the public IP;
@@ -136,15 +142,35 @@ Record what you find (especially for 8, 11 and 12) in [spec-transition.md](spec-
 
 ## 5. Then: split deployment
 
-Once §4 passes on one VM:
-1. Create the edge, pbx, app and db-1..3 VMs (`inventory/staging.ini` layout). On Clanode the VMs
-   only get a private IP: add a public IPv4 to the edges (and to one VM you SSH through), and
-   create them with an SSH key (password logins are refused).
-2. Run `site.yml`.
-3. Additionally check:
+Once §4 passes on one VM (or, if you skip the all-in-one VM, run §4 against the split
+deployment after step 3 here):
+1. Create the edge, pbx, app and db-1..3 VMs. On Clanode the VMs only get a private IP: add a
+   public IPv4 to the two edges, and create every VM with an SSH key (password logins are
+   refused). Check that a private-only VM can reach the internet (`apt update`, `curl
+   https://github.com`): pbx, app and db nodes download packages, the Asterisk source, Patroni,
+   etcd, Garage and npm packages.
+2. Fill in the addresses in `inventory/production.ini` (the default inventory); the other VMs
+   are reached through edge-1 (ProxyJump). Set `did_provider_url` and the inbound trunk group id
+   (`did_trunk_group_id`, or `did_trunk_id` for a single trunk; §3.2) in
+   `group_vars/all/main.yml`, not in the inventory: values under `[app:vars]` lose to main.yml.
+   The vault needs the API keys (§2). The `api` role refuses to run until all of these are set.
+3. Deploy layer by layer, checking each before the next (from the WSL copy of the repo,
+   [local-vm.md](local-vm.md) §2):
+   ```bash
+   ansible-playbook site.yml --ask-vault-pass --limit db    # then on db-1: patronictl list
+   ansible-playbook site.yml --ask-vault-pass               # everything (idempotent)
+   ```
+   `--limit db` stops after the data tier's own plays (one leader, two replicas, `garage status`
+   shows 3 nodes). The full run then adds the local proxies, API, pbx and edges in that order.
+   Each app/pbx/edge node is updated one at a time (`serial: 1`) and must pass its health check
+   (`/ready`, ARI `/health`) before the next one is touched.
+   - Code updates later: `ansible-playbook site.yml --ask-vault-pass --limit app` (API) or
+     `--limit pbx` (ARI app). After adding or replacing a VM, run everything: the db nodes'
+     `pg_hba` and the edges' HAProxy/dispatcher lists are built from the inventory.
+4. Additionally check:
    - registration replication: REGISTER via edge-1, then `kamcmd ul.dump` on edge-2 shows it;
    - a call routed through edge-2 to a phone connected to edge-1 has audio;
    - all of one account's calls land on the same pbx node (`pbx_node` in `cdrs`);
    - killing one edge or one pbx VM mid-test: new calls still work, browsers reconnect.
-4. Kamailio already reads through the local proxy's read-only port (`db_ro_port` = 5433, replicas
+5. Kamailio already reads through the local proxy's read-only port (`db_ro_port` = 5433, replicas
    first), so SIP auth survives a primary failover; nothing to set.

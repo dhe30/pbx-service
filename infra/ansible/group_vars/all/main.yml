@@ -92,10 +92,10 @@ stripe_api_url: "https://stripe.cse356.compas.cs.stonybrook.edu"
 stripe_js_url: "https://stripe.cse356.compas.cs.stonybrook.edu/v3/"
 # DID provider (DIDWW API v3 clone): base URL from the Course Services tab, e.g. https://<host>/v3.
 # Required on app nodes (the api role refuses to deploy without it).
-did_provider_url: ""
+did_provider_url: "https://didww.cse356.compas.cs.stonybrook.edu/v3"
 # DIDWW inbound trunk group (both edges, A7) that bought numbers are assigned to; or a single trunk
 # in did_trunk_id. Exactly one must be set.
-did_trunk_group_id: ""
+did_trunk_group_id: "4fba3ce0-568d-4a88-879b-d767f26eca4c"
 did_trunk_id: ""
 
 # ---- Test data (phase 1) -----------------------------------------------------------------------
