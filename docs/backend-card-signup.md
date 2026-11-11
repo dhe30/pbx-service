@@ -57,7 +57,7 @@ Stripe itself. It never takes the browser's word for it.
 |---|---|---|
 | `STRIPE_SECRET_KEY` | yes | Vault. Server only. |
 | `STRIPE_PUBLISHABLE_KEY` | yes | Given to browsers. |
-| `STRIPE_API_URL` | no | Default `https://stripe.cse356.compas.cs.stonybrook.edu` **[VERIFY]** |
+| `STRIPE_API_URL` | no | Default `https://stripe.cse356.compas.cs.stonybrook.edu` (Course Services tab; verify-backlog V-S1) |
 | `STRIPE_JS_URL` | no | Default `https://stripe.cse356.compas.cs.stonybrook.edu/v3/` (from the spec) |
 
 ## Decisions taken (review these; billing-flows §8)

@@ -87,7 +87,8 @@ s3_endpoint: "http://{{ private_ip if inventory_hostname in groups['db'] else '1
 # Public name of the dashboard/API and the softphone's WebSocket (wss://<web_domain>/ws), served by
 # the edge HAProxies. Same name as the SIP domain unless the team gets a separate one.
 web_domain: "{{ sip_domain }}"
-# Course payment gateway (Stripe clone). [VERIFY] both URLs on the Course Services tab.
+# Course payment gateway (Stripe clone). Both URLs as on the Course Services tab (checked
+# 2026-11-11, docs/verify-backlog.md V-S1).
 stripe_api_url: "https://stripe.cse356.compas.cs.stonybrook.edu"
 stripe_js_url: "https://stripe.cse356.compas.cs.stonybrook.edu/v3/"
 # DID provider (DIDWW API v3 clone): base URL from the Course Services tab, e.g. https://<host>/v3.

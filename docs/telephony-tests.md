@@ -38,7 +38,7 @@ Layer 2 without root: extract Kamailio's .debs (`apt-get download` + `dpkg-deb -
 ## What the fake Asterisk does NOT prove
 
 It is a model of the ARI behaviour we rely on. The behaviours below are only checked on a VM; the
-[VERIFY] list in [spec-transition.md](spec-transition.md) §6 tracks them:
+[verify-backlog.md](verify-backlog.md) tracks them (telephony: V-T*):
 - the real field names of `ChannelTransfer` / `transfer_progress`;
 - rtpengine actually transcoding and forking media;
 - Kamailio's runtime behaviour (DMQ, Path relay, TLS);

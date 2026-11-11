@@ -35,7 +35,7 @@ const EnvSchema = z.object({
    */
   COOKIE_SECURE: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   /**
-   * Course payment gateway (Stripe clone). STRIPE_API_URL: REST API base ([VERIFY] the host);
+   * Course payment gateway (Stripe clone). STRIPE_API_URL: REST API base (Course Services tab);
    * STRIPE_JS_URL: where browsers load Stripe.js from (the spec requires the gateway's copy).
    * The secret key stays on the server; the publishable key is given to browsers.
    */

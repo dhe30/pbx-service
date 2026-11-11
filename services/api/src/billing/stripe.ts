@@ -5,7 +5,8 @@
 // The secret key stays on the server. Card numbers never reach us: browsers save cards with
 // Stripe.js (confirmCardSetup with the SetupIntent client_secret we return), and we only see ids.
 // Every POST carries an Idempotency-Key, so retrying a request can never create or charge twice.
-// [VERIFY] the clone's API base URL (default below) and that it accepts these exact parameters.
+// Base URL checked (docs/verify-backlog.md V-S1). [VERIFY] that the clone accepts these exact
+// parameters (V-S3: first signup through the deployed API).
 
 export interface SetupIntent {
   id: string;

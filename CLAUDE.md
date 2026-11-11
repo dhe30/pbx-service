@@ -3,6 +3,7 @@
 This file is the single source of context for AI coding sessions (e.g., Claude Code).
 It can be placed at the repo root as CLAUDE.md. Sections marked [ASSUMPTION] may change;
 sections marked [VERIFY] must be checked against the docs for the versions actually deployed.
+Every open [VERIFY] is tracked in docs/verify-backlog.md (what to check, how, what it needs).
 
 ---------------------------------------------------------------------------------------------
 ## 0. Who I am / how to help me
@@ -527,3 +528,6 @@ Rules for further work:
 - Every telephony template must keep passing `npm run test:configs` (`kamailio -c` on rendered
   edges) and the content assertions in services/ari-app/test/configs.test.ts.
 - Call-flow behaviour changes need a spec test in services/ari-app/test/spec/ (fake Asterisk).
+- Unverified assumptions: whenever you write [VERIFY], add a row to docs/verify-backlog.md in the
+  same change; when you check one, mark it done there with the result and evidence and remove
+  the marker. Course pages (grading site) are the ground truth.
