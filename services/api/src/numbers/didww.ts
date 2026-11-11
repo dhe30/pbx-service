@@ -13,20 +13,26 @@ import {
 // DID provider client for the course's DIDWW API v3 clone (CLAUDE.md §3 A6, docs/cloud-deploy.md
 // §3.2). JSON:API over HTTPS, authenticated with the `Api-Key` header.
 //
-// [VERIFY] against the clone before relying on it (written from DIDWW's public v3 API):
-//   - filters: available_dids filter[country.id] / [region.id] / [city.id] / [did_group_type.id] /
-//     [number_contains]; dids filter[number]; regions / cities filter[country.id] (+ [region.id]);
-//   - include=did_group.stock_keeping_units,did_group.did_group_type,did_group.city,did_group.region,
-//     did_group.country
-//     on available_dids;
+// CHECKED against the clone (read-only probes, 2026-11-11; shapes pinned in test/didww.test.ts):
+//   - filters accepted: available_dids filter[country.id] / [region.id] / [city.id] /
+//     [did_group_type.id] / [number_contains]; dids filter[number] / [order.id]; regions / cities
+//     filter[country.id] (+ [region.id]). The did_group.-prefixed spellings are rejected (400).
+//   - available_dids accepts ONLY include=did_group and did_group.stock_keeping_units (city,
+//     region, country, did_group_type -> 400). A DID group carries those as relationship ids, plus
+//     area_name, prefix and is_metered (true = toll-free); names are looked up and cached here.
+//   - available_dids ignores page[size] (returns up to 100), so we can't tell from a probe whether
+//     the region/city/type filters are applied: every one is re-checked on the results.
+//   - SKU attributes: setup_price, monthly_price (the price per 7-day renewal period despite the
+//     name), channels_included_count.
+//   - The incoming toll-free per-minute fee is NOT in the API: the Course Services tab publishes it
+//     (TOLL_FREE_IN_COST_PER_MIN below). "Setup and weekly prices are in the API" = the SKU.
+// Still [VERIFY] (needs a purchase; the probes were GET-only):
 //   - POST /orders with did_order_items {sku_id, available_did_id}; order status
 //     Pending | Completed | Canceled;
 //   - assigning a DID: PATCH /dids/:id relationship voice_in_trunk or voice_in_trunk_group;
 //   - releasing: PATCH /dids/:id billing_cycles_count = 0 (stop renewing; works until the paid
-//     cycle ends). Course spec: renewal every 7 days;
-//   - the per-second / per-minute fee on answered incoming toll-free calls: read from the SKU or
-//     the DID group under the attribute names in meteredCostPerMin() (the public API doesn't
-//     document one; the course spec says the prices are "in its API").
+//     cycle ends). The course spec says a released number works until its paid period ends, "then
+//     release it at the provider": check whether the clone needs an explicit call at that point.
 // Everything provider-specific stays in this file; src/numbers/purchase.ts only sees DidProvider.
 
 interface Resource {
@@ -53,9 +59,32 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? 
 const e164 = (digits: string) => (digits.startsWith('+') ? digits : `+${digits}`);
 const kindOf = (groupTypeName: string | null): NumberKind => (/toll.?free/i.test(groupTypeName ?? '') ? 'toll_free' : 'local');
 
+/**
+ * What the DID provider charges us per minute of an answered incoming call to a toll-free number,
+ * by country ISO (USD). Not in the API: published on the Course Services tab ("Incoming minutes",
+ * read 2026-11-11: United Kingdom Toll-free $0.05, United States Toll-free $0.025; other numbers
+ * no per-minute charge). Billed per second. A country missing here gets null, and the ARI app then
+ * uses call_pricing.toll_free_in_cost_per_min. Update this if the tab changes.
+ */
+export const TOLL_FREE_IN_COST_PER_MIN: Readonly<Record<string, number>> = { US: 0.025, GB: 0.05 };
+
+export function tollFreeCostPerMin(kind: NumberKind, countryIso: string): number | null {
+  return kind === 'toll_free' ? (TOLL_FREE_IN_COST_PER_MIN[countryIso.toUpperCase()] ?? null) : null;
+}
+
+type Rel = { id: string; type: string };
+const relOf = (res: Resource | undefined, name: string): Rel | undefined => {
+  const d = res?.relationships?.[name]?.data;
+  return Array.isArray(d) ? d[0] : (d ?? undefined);
+};
+
 export class HttpDidwwProvider implements DidProvider {
   private readonly countryIds = new Map<string, Country & { id: string }>();
-  private groupTypeIds: Map<NumberKind, string[]> | null = null;
+  private readonly countriesById = new Map<string, Country & { id: string }>();
+  /** did_group_types id -> name (5 types, loaded once). */
+  private groupTypeNames: Map<string, string> | null = null;
+  /** Per country id: region and city id -> name, for describing offers (loaded once per country). */
+  private readonly placeNames = new Map<string, Promise<{ regions: Map<string, string>; cities: Map<string, string> }>>();
 
   constructor(private readonly o: DidwwOptions) {}
 
@@ -111,7 +140,38 @@ export class HttpDidwwProvider implements DidProvider {
     if (!c) return null;
     const country = { id: c.id, iso: key, name: str(c.attributes?.name) ?? key, prefix: str(c.attributes?.prefix) ?? '' };
     this.countryIds.set(key, country);
+    this.countriesById.set(c.id, country);
     return country;
+  }
+
+  /** Country of a DID group, by the group's country relationship id (getAvailable has no ISO). */
+  private async countryById(id: string): Promise<(Country & { id: string }) | null> {
+    if (!this.countriesById.has(id)) {
+      const { data } = await this.list('/countries?page[size]=500');
+      for (const c of data) {
+        const iso = str(c.attributes?.iso)?.toUpperCase();
+        if (!iso) continue;
+        const country = { id: c.id, iso, name: str(c.attributes?.name) ?? iso, prefix: str(c.attributes?.prefix) ?? '' };
+        this.countriesById.set(c.id, country);
+        this.countryIds.set(iso, country);
+      }
+    }
+    return this.countriesById.get(id) ?? null;
+  }
+
+  private places(countryId: string) {
+    let p = this.placeNames.get(countryId);
+    if (!p) {
+      const names = (rs: Resource[]) => new Map(rs.map((r) => [r.id, str(r.attributes?.name) ?? r.id]));
+      p = Promise.all([
+        this.list(`/regions?filter[country.id]=${countryId}&page[size]=500`),
+        this.list(`/cities?filter[country.id]=${countryId}&page[size]=500`),
+      ]).then(([r, c]) => ({ regions: names(r.data), cities: names(c.data) }));
+      // A failed lookup isn't cached: the next search tries again.
+      p.catch(() => this.placeNames.delete(countryId));
+      this.placeNames.set(countryId, p);
+    }
+    return p;
   }
 
   async countries(): Promise<Country[]> {
@@ -137,20 +197,16 @@ export class HttpDidwwProvider implements DidProvider {
     return places(data);
   }
 
-  private async groupTypes(kind: NumberKind): Promise<string[]> {
-    if (!this.groupTypeIds) {
+  private async groupTypes(): Promise<Map<string, string>> {
+    if (!this.groupTypeNames) {
       const { data } = await this.list('/did_group_types');
-      const m = new Map<NumberKind, string[]>([
-        ['local', []],
-        ['toll_free', []],
-      ]);
-      for (const t of data) m.get(kindOf(str(t.attributes?.name)))!.push(t.id);
-      this.groupTypeIds = m;
+      this.groupTypeNames = new Map(data.map((t) => [t.id, str(t.attributes?.name) ?? '']));
     }
-    return this.groupTypeIds.get(kind) ?? [];
+    return this.groupTypeNames;
   }
 
-  private static INCLUDE = 'include=did_group.stock_keeping_units,did_group.did_group_type,did_group.city,did_group.region,did_group.country';
+  /** The only includes the clone accepts on available_dids (see the header). */
+  private static INCLUDE = 'include=did_group,did_group.stock_keeping_units';
 
   async searchAvailable(q: AvailableSearch): Promise<AvailableNumber[]> {
     const c = await this.country(q.country);
@@ -159,7 +215,8 @@ export class HttpDidwwProvider implements DidProvider {
     if (q.regionId) f.push(`filter[region.id]=${encodeURIComponent(q.regionId)}`);
     if (q.cityId) f.push(`filter[city.id]=${encodeURIComponent(q.cityId)}`);
     if (q.kind) {
-      const ids = await this.groupTypes(q.kind);
+      const types = await this.groupTypes();
+      const ids = [...types].filter(([, name]) => kindOf(name) === q.kind).map(([id]) => id);
       if (ids.length === 0) return [];
       f.push(`filter[did_group_type.id]=${ids.join(',')}`);
     }
@@ -169,10 +226,18 @@ export class HttpDidwwProvider implements DidProvider {
     if (start) f.push(`filter[number_contains]=${encodeURIComponent(start.slice(1))}`);
     const size = Math.min(100, start ? q.limit * 4 : q.limit);
     const doc = await this.list(`/available_dids?${f.join('&')}&page[size]=${size}&${HttpDidwwProvider.INCLUDE}`);
-    return doc.data
-      .map((r) => this.toAvailable(r, doc.included, c.iso))
-      .filter((n): n is AvailableNumber => n !== null && (!start || n.number.startsWith(start)))
-      .slice(0, q.limit);
+    const out: AvailableNumber[] = [];
+    for (const r of doc.data) {
+      // Re-check every filter on the result: the clone's filters can't be observed (see header).
+      const group = included(doc.included, relOf(r, 'did_group'));
+      if (q.regionId && !relMatches(group, 'region', q.regionId)) continue;
+      if (q.cityId && !relMatches(group, 'city', q.cityId)) continue;
+      const n = await this.toAvailable(r, doc.included, c);
+      if (!n || (start && !n.number.startsWith(start)) || (q.kind && n.kind !== q.kind)) continue;
+      out.push(n);
+      if (out.length >= q.limit) break;
+    }
+    return out;
   }
 
   async getAvailable(id: string): Promise<AvailableNumber | null> {
@@ -188,33 +253,44 @@ export class HttpDidwwProvider implements DidProvider {
     return this.toAvailable(r, doc.included ?? [], null);
   }
 
-  private toAvailable(r: Resource, included: Resource[], countryIso: string | null): AvailableNumber | null {
-    const find = (rel: { id: string; type: string } | undefined) =>
-      rel ? included.find((i) => i.id === rel.id && i.type === rel.type) : undefined;
-    const one = (res: Resource | undefined, name: string) => {
-      const d = res?.relationships?.[name]?.data;
-      return Array.isArray(d) ? d[0] : (d ?? undefined);
-    };
-    const group = find(one(r, 'did_group'));
+  /**
+   * One offer as an AvailableNumber. The clone only includes the DID group and its SKUs; the
+   * group's type, country, region and city come as relationship ids and are named from cached
+   * lookups (did_group_types, countries, regions, cities). Null if it can't be ordered (no SKU).
+   */
+  private async toAvailable(r: Resource, inc: Resource[], country: (Country & { id: string }) | null): Promise<AvailableNumber | null> {
+    const group = included(inc, relOf(r, 'did_group'));
     const number = str(r.attributes?.number);
     // Cheapest SKU of the group (DIDWW SKUs differ in included channels).
-    const skus = (group?.relationships?.stock_keeping_units?.data ?? []) as { id: string; type: string }[];
+    const skus = (group?.relationships?.stock_keeping_units?.data ?? []) as Rel[];
     const sku = skus
-      .map((s) => find(s))
+      .map((s) => included(inc, s))
       .filter((s): s is Resource => s !== undefined)
       .sort((a, b) => Number(a.attributes?.monthly_price ?? 0) - Number(b.attributes?.monthly_price ?? 0))[0];
     const skuId = sku?.id ?? skus[0]?.id;
     if (!number || !skuId) return null; // can't be ordered without a SKU
+
+    const typeId = relOf(group, 'did_group_type')?.id;
+    const typeName = typeId ? ((await this.groupTypes()).get(typeId) ?? null) : null;
+    // The type's name decides; is_metered (true for toll-free in the clone) when the type is unknown.
+    const kind: NumberKind = typeName ? kindOf(typeName) : group?.attributes?.is_metered === true ? 'toll_free' : 'local';
+
+    const countryId = relOf(group, 'country')?.id;
+    const c = country ?? (countryId ? await this.countryById(countryId) : null);
+    // Region/city names are nice-to-have: an outage of those lookups must not break buying.
+    const names = c ? await this.places(c.id).catch(() => null) : null;
+    const regionId = relOf(group, 'region')?.id;
+    const cityId = relOf(group, 'city')?.id;
     return {
       id: r.id,
       number: e164(number),
-      kind: kindOf(str(find(one(group, 'did_group_type'))?.attributes?.name)),
-      country: countryIso ?? str(find(one(group, 'country'))?.attributes?.iso) ?? '',
-      region: str(find(one(group, 'region'))?.attributes?.name),
-      city: str(find(one(group, 'city'))?.attributes?.name) ?? str(group?.attributes?.area_name),
+      kind,
+      country: c?.iso ?? '',
+      region: (regionId && names?.regions.get(regionId)) || null,
+      city: (cityId && names?.cities.get(cityId)) || str(group?.attributes?.area_name),
       areaCode: str(group?.attributes?.prefix),
       skuId,
-      incomingCostPerMin: meteredCostPerMin(sku, group),
+      incomingCostPerMin: tollFreeCostPerMin(kind, c?.iso ?? ''),
     };
   }
 
@@ -282,6 +358,14 @@ export class HttpDidwwProvider implements DidProvider {
   }
 }
 
+const included = (inc: Resource[], rel: Rel | undefined) => (rel ? inc.find((i) => i.id === rel.id && i.type === rel.type) : undefined);
+
+/** True when the group's relationship has this id, or when the group doesn't say (can't tell). */
+const relMatches = (group: Resource | undefined, name: string, id: string) => {
+  const rel = relOf(group, name);
+  return rel === undefined || rel.id === id;
+};
+
 const places = (data: Resource[]): Place[] =>
   data
     .map((r) => ({ id: r.id, name: str(r.attributes?.name) ?? r.id }))
@@ -291,26 +375,4 @@ function numberFromItems(order: Resource): string | null {
   const items = order.attributes?.items as { attributes?: { did_number?: unknown; number?: unknown } }[] | undefined;
   const n = str(items?.[0]?.attributes?.did_number) ?? str(items?.[0]?.attributes?.number);
   return n ? e164(n) : null;
-}
-
-/**
- * Incoming per-minute cost of a metered (toll-free) number in USD, from the first attribute found on
- * the SKU, then the DID group. [VERIFY] the clone's attribute name; unknown -> null (the ARI app
- * then uses call_pricing.toll_free_in_cost_per_min).
- */
-export function meteredCostPerMin(...sources: (Resource | undefined)[]): number | null {
-  const perMinute = ['per_minute_price', 'price_per_minute', 'metered_price', 'metered_rate', 'toll_free_per_minute_price'];
-  const perSecond = ['per_second_price', 'price_per_second'];
-  for (const src of sources) {
-    const a = src?.attributes ?? {};
-    for (const k of perMinute) {
-      const v = Number(a[k]);
-      if (a[k] != null && a[k] !== '' && Number.isFinite(v) && v >= 0) return v;
-    }
-    for (const k of perSecond) {
-      const v = Number(a[k]);
-      if (a[k] != null && a[k] !== '' && Number.isFinite(v) && v >= 0) return Math.round(v * 60 * 1e6) / 1e6;
-    }
-  }
-  return null;
 }
