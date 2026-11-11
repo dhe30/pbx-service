@@ -206,5 +206,7 @@ an inline host var (`host-1 ... name=value`), never `[group:vars]`.
   (`pbx-dbproxy`, separate from the edge's public HAProxy so reloading one never touches the
   other).
 - **O3 (T1/T4):** backup target for WAL archiving (mon-1 volume?) and restore drill.
-- **O4 (T2):** HAProxy on each edge sends `/api` to app-1/app-2 (`backend api` already templates
-  `groups['app']`); confirm the API health path with T3.
+- **O4 (T2/T3), health path decided (PR #11, R18):** HAProxy on each edge health-checks
+  `GET /ready` on app-1/app-2 (inter 2 s, fall 2); the API drains 6 s on SIGTERM. Still open: path
+  routing once the web build lands (the web calls `/api/...`; today every path except `/ws` goes
+  to the API unchanged).

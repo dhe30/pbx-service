@@ -1,39 +1,48 @@
-# Copy to group_vars/all/vault.yml, fill in, then encrypt:
-#   ansible-vault encrypt group_vars/all/vault.yml
-# Generate values with:  openssl rand -hex 24
-vault_db_app_password: c062f9cadd59f920b075c3841d465cb2ac2f5af2615c6f2b
-vault_db_kamailio_password: fd602a362eeac911a110dcc1803f581cb116421f4d353972
-vault_ari_password: 34805994b7e346ccae0151a7a16d6a38d67ebeefe7b0bab8
+# Every key group_vars/all/vault.yml must have, with its format. Don't copy this file: generate a
+# vault with fresh random values instead (this repo is public, so any value written here is known):
+#
+#   infra/ansible/scripts/new-vault.sh            # writes group_vars/all/vault.yml
+#   (fill in the CHANGE_ME values from the Course Services tab)
+#   ansible-vault encrypt infra/ansible/group_vars/all/vault.yml
+#
+# One vault per deployment, shared by everyone who deploys it (see the script's header).
+
+# Postgres users of the app and of Kamailio; ARI. Format: openssl rand -hex 24
+vault_db_app_password: GENERATED
+vault_db_kamailio_password: GENERATED
+vault_ari_password: GENERATED
 
 # Patroni cluster (db hosts): Postgres superuser, streaming replication user, pg_rewind user.
-vault_db_superuser_password: CHANGE_ME
-vault_db_replication_password: CHANGE_ME
-vault_db_rewind_password: CHANGE_ME
+vault_db_superuser_password: GENERATED
+vault_db_replication_password: GENERATED
+vault_db_rewind_password: GENERATED
 
 # Garage: rpc secret must be exactly 32 bytes hex:   openssl rand -hex 32
-vault_garage_rpc_secret: f89ec329b5790672d95eb6b9e84f2207d2e8995cfaa5715c84f5065b77722cef
+vault_garage_rpc_secret: GENERATED
 # S3 key imported into Garage. Format is fixed by Garage:
 #   access key = "GK" + 24 hex chars:  echo GK$(openssl rand -hex 12)
 #   secret     = 64 hex chars:         openssl rand -hex 32
-vault_s3_access_key: GK7c242abd269f788588aef585
-vault_s3_secret_key: 214040ebe7680d848c1f25287d4b103f80300da9f60ad75e29e4767adbef39fe
+vault_s3_access_key: GENERATED
+vault_s3_secret_key: GENERATED
 
-# SIP passwords for the seeded test staff (alice = browser, bob = UDP phone / SIPp).
-vault_test_alice_password: test123
-vault_test_bob_password: test123
+# API (app nodes). JWT secret: identical on every app node, at least 16 chars: openssl rand -hex 32
+vault_jwt_secret: GENERATED
+
+# SIP passwords for the seeded test staff (alice = browser, bob = UDP phone / SIPp). Port 5060 is
+# public and these accounts can place billed vendor calls: keep them random.
+vault_test_alice_password: GENERATED
+vault_test_bob_password: GENERATED
 
 # PSTN vendor digest credentials (Course Services tab -> US / International PSTN vendor).
-# Never commit the real values anywhere but the encrypted vault.yml.
+# On the local VM any placeholder works (the vendors are unreachable from there).
 vault_vendor_us_user: CHANGE_ME
 vault_vendor_us_password: CHANGE_ME
 vault_vendor_intl_user: CHANGE_ME
 vault_vendor_intl_password: CHANGE_ME
 
-# API (app nodes). JWT secret: identical on every app node, at least 16 chars:  openssl rand -hex 32
-vault_jwt_secret: CHANGE_ME_to_openssl_rand_hex_32
-# DID provider (DIDWW clone) Api-Key, Course Services tab.
+# DID provider (DIDWW clone) Api-Key, Course Services tab. Required by the api role.
 vault_did_api_key: CHANGE_ME
 # Payment gateway (Stripe clone) test-mode keys, Course Services tab. The publishable key is not
-# secret (browsers get it) but comes from the same place.
+# secret (browsers get it) but comes from the same place. Required by the api role.
 vault_stripe_secret_key: CHANGE_ME
 vault_stripe_publishable_key: CHANGE_ME

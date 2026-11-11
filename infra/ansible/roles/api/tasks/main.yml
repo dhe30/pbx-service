@@ -64,6 +64,7 @@
       - "--exclude=loadtest"
       - "--exclude=dev"
       - "--exclude=.env"
+      - "--exclude=telephony/tests/.rendered"  # test renders (incl. a test TLS key)
   register: api_src
 
 - name: Check for a previous build

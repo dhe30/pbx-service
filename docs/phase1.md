@@ -50,8 +50,7 @@ Local VirtualBox VM instead of a cloud VM: follow `docs/local-vm.md` (uses
 3. Secrets:
    ```bash
    cd infra/ansible
-   cp group_vars/all/vault.yml.example group_vars/all/vault.yml
-   # fill in values (generation commands are in the file), then:
+   scripts/new-vault.sh       # fresh random secrets; fill in its CHANGE_ME values, then:
    ansible-vault encrypt group_vars/all/vault.yml
    ```
 
