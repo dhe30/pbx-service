@@ -519,6 +519,40 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
 
 ---
 
+## Decisions taken in the 2026-11-12 review fixes
+
+Taken while implementing the backend review (branch `feature/backend-review-fixes`). Each is
+local to the code it names; change it there. **Review** marks the ones the team should confirm
+before merging.
+
+| # | Decision | Why | Where |
+|---|---|---|---|
+| R1 | A released number counts as "in use" (blocks deleting its target) only while it still routes calls (`paid_until > now`), and can be re-routed until then | Otherwise its target could never be deleted, and the number was invisible and un-routable after `paidUntil` | `references.ts`, `routes/numbers.ts` |
+| R2 | `/billing/rates` and `/billing/rates/lookup` are **public** and compute prices with the ARI app's rules (US flat price; else intl vendor rate x multiplier, at least the minimum; no deck row = the minimum) | Spec: prices shown before purchase and in the API; one rule set so shown = charged | `billing/rates.ts` |
+| R3 | **Review:** one table `account_items` for every recurring item (plan, extension slot, number, intl_calling, recording) with `price_cents` locked at purchase, `paid_through`, `removed_at` | billing-flows §7; one renewal loop for everything; existing plans/numbers backfilled at the catalog prices of the migration | migration `20261112000000_account_items.sql` |
+| R4 | **Review:** `tenant_settings.intl_calling` / `record_calls` / `extra_extensions` are **derived** from the items on every purchase, cancellation and lapse. The call path keeps reading `tenant_settings` | No telephony change. Side effect: flags set by hand on an account that has items of that kind are overwritten (accounts without items are left alone) | `billing/items.ts` `syncSettings()` |
+| R5 | **Review:** add-on and extension purchases reuse the number purchase's idempotency (`purchase_requests`, kind `item`) and hold a row lock on the account's `tenant_settings` **while the card is charged** | Two purchases of the same add-on with different keys can't both charge. Cost: one DB connection held for up to the gateway timeout (10 s) per purchase | `billing/items.ts`, `billing/purchase-requests.ts` |
+| R6 | Buying an add-on that already renews is `409 already_active`; buying one that was cancelled but is still paid for renews it again for free | No double charge for the same period | `billing/items.ts` |
+| R7 | **Review:** a cancelled extension slot lowers the limit **at once** (`extra_extensions` counts renewing slots), so cancelling is `409 extension_limit` while the extensions in use need it | Otherwise an owner could cancel and still create an extension in the slot, leaving more extensions than paid for at period end | `billing/items.ts` `cancelItem()` |
+| R8 | Past-due accounts can't buy add-ons or extensions (402), like numbers | Same rule as number purchases | `billing/purchase-requests.ts` `assertCanBuy()` |
+| R9 | **Review:** the billing scheduler runs in **every** API process (tick `BILLING_TICK_SEC`, 60 s); each unit of work is claimed with `FOR UPDATE SKIP LOCKED`; no leader | Survives losing any app node without failover logic | `billing/scheduler.ts` |
+| R10 | The account's **plan item** drives its periods: when it is paid only up to now, the next period is invoiced. Accounts that never paid the plan get no invoices. Missed periods are caught up one per pass | The plan is the one item every paying account has | `billing/scheduler.ts` |
+| R11 | Invoice = new period's recurring items (each renewed to the new period end; numbers' `paid_until` and `plan_paid_through` follow) + one usage line per leg with `charge > 0` in the ended period | Spec §5 ("itemized by call") | `billing/scheduler.ts` |
+| R12 | Usage is summed per invoice, **then rounded once** to the nearest cent | billing-flows §8.3: never round each call up | `billing/scheduler.ts` |
+| R13 | An invoice below Stripe's 50-cent minimum is marked paid without a charge (same as prorated amounts) | The gateway rejects smaller charges | `billing/scheduler.ts` |
+| R14 | Each charge attempt has its own Idempotency-Key `invoice:<id>:<attempt>`; retries after 5 min, 15 min, 1 h, 3 h, then every 6 h; a gateway outage counts as a failed attempt | A new attempt (later or with a new card) must really retry; Stripe replays a reused key's decline | `billing/scheduler.ts` |
+| R15 | Past due = an invoice still unpaid 24 h after its period ended. A paid invoice sets the account `active` once nothing else is unpaid. A replacement card (`POST /billing/card`) charges every unpaid invoice at once; `402 payment_failed` if declined (the card stays saved) | billing-flows §5; unblocking goes through `tenants` -> NOTIFY, well inside one minute | `billing/scheduler.ts`, `billing/account.ts` |
+| R16 | Cancelled add-ons are switched off by the scheduler once their period ends; only accounts that ever had items of that kind are touched | Keeps hand-set flags (seeds, tests) on accounts without items | `billing/scheduler.ts` `expireLapsedAddons()` |
+| R17 | The scheduler makes **no DIDWW calls**: DIDWW renews kept numbers from our prepaid balance and stops renewing released ones (`billing_cycles_count = 0` at release) | Fewer moving parts; [VERIFY] the clone behaves that way | `billing/scheduler.ts` |
+| R18 | **Review:** the edge HAProxy routes on `/ready` (`inter 2s fall 2 rise 2`, `retries 2` + `redispatch`); the API drains 6 s on SIGTERM | Rolling deploys without failed requests. Cost: a cluster-wide DB or object-store outage marks every app node down. The `edge_haproxy` role belongs to T2 | `edge_haproxy` template, role `api` |
+| R19 | The API runs under systemd (role `api`, user `pbx-api`), built on the host like the ARI app; the Dockerfile is an alternative, not what Ansible deploys. Migrations stay in `db_schema` (dbmate on the current primary, before app nodes update) | Same deployment pattern as the other Node service | role `api`, `services/api/Dockerfile` |
+| R20 | **Review:** the toll-free incoming cost is read from guessed DIDWW attribute names (`per_minute_price`, `metered_price`, ..., or `per_second_price` x 60). Unknown = `null` = `call_pricing` default | The public DIDWW API documents no field for it; [VERIFY] against the clone | `numbers/didww.ts` `meteredCostPerMin()` |
+| R21 | Voicemail audio whose message was deleted by phone (`*98`) is deleted by the scheduler after a 1 h grace | S13 left it behind; the ARI app writes media + voicemail together, the grace is extra safety | `maintenance.ts` |
+| R22 | Deleting an extension that is a ring group's **only** member is `409 in_use`; memberships in groups with other members still cascade | A group with no members rings nobody | `routes/extensions.ts` |
+| R23 | **Review:** dashboard passwords use argon2id with OWASP's minimum parameters (19 MiB, t=2, p=1) instead of the library default (64 MiB, t=3, p=4) | Measured ~160 vs ~28 hashes/s per process, p95 0.2 s vs 1.1 s at 32 concurrent (16-vCPU dev box). A weaker hash for latency under graded load; old hashes still verify | `passwords.ts`, `loadtest/api/argon2-bench.mjs` |
+
+---
+
 ## Outstanding backend items
 
 Everything backend-related that is still missing or undecided. Remove items as they're done.
