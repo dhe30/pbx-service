@@ -57,7 +57,8 @@
   register: dbproxy_stats
   retries: 30
   delay: 2
+  # "is not none": ansible-core 2.19 requires a real boolean here, not the matched text.
   until: >-
     dbproxy_stats.content is defined and
-    (dbproxy_stats.content | regex_search('^pg_primary,BACKEND,.*,UP,', multiline=True)) and
-    (dbproxy_stats.content | regex_search('^s3,BACKEND,.*,UP,', multiline=True))
+    (dbproxy_stats.content | regex_search('^pg_primary,BACKEND,.*,UP,', multiline=True)) is not none and
+    (dbproxy_stats.content | regex_search('^s3,BACKEND,.*,UP,', multiline=True)) is not none
