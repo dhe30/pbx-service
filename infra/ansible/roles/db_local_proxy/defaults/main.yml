@@ -1,1 +1,25 @@
 ---
+# Local proxy on every DB client (edge, pbx, app): a dedicated HAProxy instance ("pbx-dbproxy"),
+# separate from the edge's public HAProxy so reloading one never touches the other.
+#
+#   127.0.0.1:5432 -> the current Patroni primary      (read/write: API, ARI app)
+#   127.0.0.1:5433 -> a replica, else any healthy node (read-only: Kamailio auth + DID lookups)
+#   127.0.0.1:3900 -> any healthy Garage node          (S3: recordings, voicemail, greetings)
+dbproxy_rw_port: 5432
+dbproxy_ro_port: 5433
+dbproxy_s3_port: 3900
+# HAProxy stats + Prometheus /metrics for this proxy (loopback only).
+dbproxy_stats_port: 8405
+
+# Health checks. A dead or demoted primary is taken out after fall x inter (~2 s); Patroni itself
+# needs up to ttl (30 s) to promote a replica, so that dominates the failover time.
+dbproxy_check_inter: 1s
+dbproxy_check_fall: 2
+dbproxy_check_rise: 2
+# Replicas lagging more than this are skipped by the read-only port (fresh SIP credentials must be
+# visible to Kamailio quickly).
+dbproxy_replica_max_lag: 16MB
+
+# Idle client connections (pools, LISTEN for config changes) are closed after this; clients
+# reconnect transparently.
+dbproxy_pg_timeout: 1h

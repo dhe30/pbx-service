@@ -1,1 +1,13 @@
 ---
+# etcd: the distributed config store Patroni uses to elect ONE Postgres primary (leader key with a
+# TTL). 3 members on db-1..3 => quorum of 2, so losing any one db node keeps the cluster working.
+etcd_data_dir: /var/lib/etcd
+etcd_client_port: 2379
+etcd_peer_port: 2380
+etcd_cluster_token: pbx-etcd
+# "new" only matters the first time a member starts with an EMPTY data dir. To rebuild a dead
+# member: `etcdctl member remove <id>` + `etcdctl member add <name> --peer-urls=...` on a live
+# member, then run this role on the new VM with -e etcd_initial_cluster_state=existing.
+etcd_initial_cluster_state: new
+# Old key revisions are dropped every hour so the etcd database (and the disk) can't grow forever.
+etcd_auto_compaction_retention: "1h"

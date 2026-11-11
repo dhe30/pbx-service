@@ -1,6 +1,8 @@
 ---
 # Garage S3-compatible object store (recordings, voicemail, greetings).
-# Phase 1: one node, replication_factor 1. Phase 4: db-1..3, replication_factor 3.
+# Phase 1: one node, replication_factor 1. Phase 4: db-1..3, replication_factor 3 (every object on
+# all three nodes; reads and writes need 2 of 3, so any one db node can die).
+# Clients reach it through their local proxy at 127.0.0.1:3900 (role db_local_proxy).
 
 - name: Garage system user
   ansible.builtin.user:
@@ -69,44 +71,115 @@
   until: garage_status.rc == 0
   changed_when: false
 
-# ---- Cluster layout (first run only) ------------------------------------------------------
-# A fresh node shows "NO ROLE ASSIGNED" until it is given a zone + capacity and the layout is
-# applied. Multi-node layout changes (phase 4) are a deliberate manual step, see runbook.
+# ---- Cluster membership -------------------------------------------------------------------
+# Works for 1 node (all-in-one) and for db-1..3. Cluster-wide steps run once, on the first db host;
+# Garage spreads layout, buckets and keys to the other nodes itself.
 
 - name: Get node id
   ansible.builtin.command: garage node id -q
-  register: garage_node_id
+  register: garage_node_id      # "<64 hex id>@<private_ip>:3901"
   changed_when: false
-  when: "'NO ROLE ASSIGNED' in garage_status.stdout"
 
-- name: Assign layout
-  ansible.builtin.command: garage layout assign -z dc1 -c 20G {{ garage_node_id.stdout.split('@')[0] }}
-  when: "'NO ROLE ASSIGNED' in garage_status.stdout"
+# Nodes remember their peers, so this only does real work on the first run or after a rebuild.
+- name: Connect the first db node to the others
+  ansible.builtin.command: garage node connect {{ hostvars[item].garage_node_id.stdout }}
+  loop: "{{ groups['db'][1:] }}"
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  changed_when: false
+
+# `garage status` shows the first 16 hex chars of every node it knows.
+- name: Wait until every db node is in the cluster
+  ansible.builtin.command: garage status
+  register: garage_cluster
+  vars:
+    garage_id_prefixes: "{{ groups['db'] | map('extract', hostvars, ['garage_node_id', 'stdout']) | map('truncate', 16, True, '') | list }}"
+  until: garage_id_prefixes | reject('in', garage_cluster.stdout) | list | length == 0
+  retries: 30
+  delay: 2
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  changed_when: false
+
+# ---- Cluster layout -----------------------------------------------------------------------
+# A node stores data only once it has a role (zone + capacity) in an APPLIED layout. Nodes that
+# already have a role are left alone: changing roles moves data, so do that deliberately.
+
+- name: Current layout
+  ansible.builtin.command: garage layout show
+  register: garage_layout
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  changed_when: false
+
+- name: Give nodes without a role a zone and capacity
+  ansible.builtin.command: >-
+    garage layout assign
+    -z {{ hostvars[item].garage_zone | default(item) }}
+    -c {{ hostvars[item].garage_capacity | default(garage_capacity) }}
+    {{ hostvars[item].garage_node_id.stdout.split('@')[0] }}
+  loop: "{{ groups['db'] }}"
+  when: hostvars[item].garage_node_id.stdout[:16] not in garage_layout.stdout
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  register: garage_assigned
   changed_when: true
 
-- name: Apply layout
-  ansible.builtin.command: garage layout apply --version 1
-  when: "'NO ROLE ASSIGNED' in garage_status.stdout"
+- name: Layout with staged changes
+  ansible.builtin.command: garage layout show
+  register: garage_layout_staged
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  changed_when: false
+  when: garage_assigned is changed
+
+# `layout show` ends with "garage layout apply --version N" when changes are staged; fall back to
+# current version + 1 if that hint isn't printed.
+- name: Apply the staged layout
+  ansible.builtin.command: >-
+    garage layout apply --version
+    {{ (garage_layout_staged.stdout | regex_search('apply --version (\d+)', '\1') or
+        [((garage_layout_staged.stdout | regex_search('[Ll]ayout version: (\d+)', '\1') or ['0']) | first | int) + 1])
+       | first }}
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  when: garage_assigned is changed
   changed_when: true
 
-# ---- Bucket and access key ---------------------------------------------------------------
+- name: Wait for the layout to be usable
+  ansible.builtin.command: garage status
+  register: garage_after_layout
+  until: "'NO ROLE ASSIGNED' not in garage_after_layout.stdout"
+  retries: 30
+  delay: 2
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
+  changed_when: false
+
+# ---- Bucket and access key (cluster-wide, once) -------------------------------------------
 
 - name: Check bucket
   ansible.builtin.command: garage bucket info {{ s3_bucket }}
   register: garage_bucket
   failed_when: false
   changed_when: false
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
 
 - name: Create bucket
   ansible.builtin.command: garage bucket create {{ s3_bucket }}
   when: garage_bucket.rc != 0
   changed_when: true
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
 
 - name: Check access key
   ansible.builtin.command: garage key info pbx-media
   register: garage_key
   failed_when: false
   changed_when: false
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
 
 # Importing (instead of "key create") keeps the credentials in Vault, so a rebuilt store gets
 # the same key and no service config changes.
@@ -115,7 +188,11 @@
   when: garage_key.rc != 0
   changed_when: true
   no_log: true
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true
 
 - name: Allow key on bucket
   ansible.builtin.command: garage bucket allow --read --write --owner {{ s3_bucket }} --key pbx-media
   changed_when: false
+  delegate_to: "{{ groups['db'][0] }}"
+  run_once: true

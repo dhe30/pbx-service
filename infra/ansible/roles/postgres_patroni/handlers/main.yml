@@ -1,1 +1,14 @@
 ---
+# Reload (SIGHUP) re-reads patroni.yml without restarting Postgres. Settings that need a Postgres
+# restart show "pending_restart" in `patronictl list`; do those deliberately with
+# `patronictl restart pbx <member>` (replicas first, then `patronictl switchover`).
+- name: Reload patroni
+  ansible.builtin.systemd:
+    name: patroni
+    state: reloaded
+
+# A changed unit file only takes effect at the next (deliberate) restart: restarting Patroni on
+# the primary would cause a failover.
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

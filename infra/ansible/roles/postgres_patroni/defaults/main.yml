@@ -1,1 +1,32 @@
 ---
+# Patroni runs Postgres on every db host: one primary, the others streaming replicas. It keeps a
+# leader key in etcd; if the primary stops renewing it (node dead, network cut), a replica that is
+# up to date takes over and the old primary demotes itself.
+patroni_scope: pbx                      # cluster name (etcd key prefix /service/pbx/)
+patroni_venv: /opt/patroni              # Patroni installed from PyPI in a venv (pinned version)
+patroni_config: /etc/patroni/patroni.yml
+patroni_data_dir: "/var/lib/postgresql/{{ postgres_version }}/patroni"
+patroni_bin_dir: "/usr/lib/postgresql/{{ postgres_version }}/bin"
+patroni_restapi_port: 8008
+
+# Failover timing (seconds): leader key TTL, loop interval, DCS/Postgres retry timeout.
+# ttl 30 => a dead primary is replaced within ~30 s (the contract's failover budget).
+patroni_ttl: 30
+patroni_loop_wait: 10
+patroni_retry_timeout: 10
+# A replica more than this many bytes behind is never promoted (it would lose committed data).
+patroni_maximum_lag_on_failover: 1048576
+
+# Synchronous replication: a COMMIT returns only after one replica has the WAL, so a failover never
+# loses a committed row (chaos drill in CLAUDE.md §16). Cost: one private-network round trip per
+# commit. Not "strict": if no replica is left, the primary keeps accepting writes alone.
+patroni_synchronous_mode: true
+
+# Postgres settings applied to the whole cluster at bootstrap. After the first start, change them
+# with `patronictl edit-config` (Patroni ignores bootstrap.dcs once the cluster exists).
+# Connections: 2 api + 2 ari-app pools + 2 Kamailio x 16 workers + admin, with room to spare.
+patroni_max_connections: 300
+
+# Per-node memory settings (from this VM's RAM).
+patroni_shared_buffers_mb: "{{ (ansible_memtotal_mb * 0.25) | int }}"
+patroni_effective_cache_size_mb: "{{ (ansible_memtotal_mb * 0.70) | int }}"

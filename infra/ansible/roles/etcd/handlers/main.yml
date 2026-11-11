@@ -1,1 +1,9 @@
 ---
+# One member at a time: restarting all three together would lose quorum, and Patroni would demote
+# the primary (no leader key can be renewed without etcd).
+- name: Restart etcd
+  ansible.builtin.systemd:
+    name: etcd
+    state: restarted
+    daemon_reload: true
+  throttle: 1

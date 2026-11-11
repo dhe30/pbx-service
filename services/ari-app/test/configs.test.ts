@@ -43,7 +43,8 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[DMQ]')).toMatch(/dmq_handle_message\(\)/);
     });
     it('auth and DID lookups use the read-only DB URL', () => {
-      expect(kam).toMatch(/#!define DBURL_RO "postgres:\/\/kamailio:[^@]+@127\.0\.0\.1:5432\/pbx"/);
+      // Edges aren't db hosts: the local proxy's read-only port (replicas first).
+      expect(kam).toMatch(/#!define DBURL_RO "postgres:\/\/kamailio:[^@]+@127\.0\.0\.1:5433\/pbx"/);
       expect(kam).toMatch(/modparam\("auth_db", "db_url", DBURL_RO\)/);
       expect(kam).toMatch(/modparam\("sqlops", "sqlcon", "ro=>postgres:/);
     });

@@ -1,0 +1,21 @@
+[Unit]
+Description=Patroni: PostgreSQL {{ postgres_version }} high availability ({{ patroni_scope }})
+After=network-online.target etcd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart={{ patroni_venv }}/bin/patroni {{ patroni_config }}
+# SIGHUP: re-read patroni.yml without touching Postgres.
+ExecReload=/bin/kill -HUP $MAINPID
+# Only Patroni gets SIGTERM; it then stops Postgres cleanly itself.
+KillMode=process
+TimeoutSec=60
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

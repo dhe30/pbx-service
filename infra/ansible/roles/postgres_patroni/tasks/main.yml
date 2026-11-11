@@ -1,2 +1,144 @@
 ---
-# TODO: postgres_patroni role tasks.
+# Postgres {{ postgres_version }} managed by Patroni on the db hosts (needs the etcd role first).
+# Patroni, not the Debian postgresql service, starts/stops Postgres, runs initdb on the first
+# leader and clones replicas with pg_basebackup.
+
+- name: Assert the Patroni cluster has an odd number of etcd/db members
+  ansible.builtin.assert:
+    that: groups['db'] | length is odd
+    fail_msg: "Use 1 or 3 db hosts: etcd needs a majority, and an even count adds no tolerance."
+  run_once: true
+
+# ---- Packages -----------------------------------------------------------------------------
+
+# Debian's postgresql packages create and start a "main" cluster on 5432 at install time. Patroni
+# owns the data directory instead, so tell postgresql-common not to create one. The setting must be
+# in place BEFORE the package is installed, so create its directory first.
+- name: postgresql-common config directory
+  ansible.builtin.file:
+    path: /etc/postgresql-common
+    state: directory
+    mode: "0755"
+
+- name: Don't let the postgresql package create a default cluster
+  ansible.builtin.copy:
+    dest: /etc/postgresql-common/createcluster.conf
+    content: |
+      # Managed by Ansible: Patroni creates and runs the cluster (data_directory {{ patroni_data_dir }}).
+      create_main_cluster = false
+    mode: "0644"
+
+- name: PGDG apt signing key
+  ansible.builtin.get_url:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    dest: /usr/share/keyrings/pgdg.asc
+    mode: "0644"
+
+- name: PGDG apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pgdg.list
+    content: "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main\n"
+    mode: "0644"
+
+- name: Install PostgreSQL {{ postgres_version }} and Python venv support
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgres_version }}"
+      - "postgresql-client-{{ postgres_version }}"
+      - python3-venv
+      - python3-packaging   # needed by Ansible's pip module itself (not by Patroni)
+    update_cache: true
+
+# If a "main" cluster exists anyway (VM reused from phase 1), it must not hold port 5432.
+- name: Debian postgresql service stays off (Patroni runs Postgres)
+  ansible.builtin.systemd:
+    name: postgresql
+    state: stopped
+    enabled: false
+
+- name: Install Patroni {{ patroni_version }} (etcd v3 API + psycopg 3)
+  ansible.builtin.pip:
+    name:
+      - "patroni[etcd3]=={{ patroni_version }}"
+      - "psycopg[binary]>=3.1,<4"
+    virtualenv: "{{ patroni_venv }}"
+    virtualenv_command: python3 -m venv
+
+- name: patronictl wrapper (uses this node's config)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/patronictl
+    content: |
+      #!/bin/sh
+      # Managed by Ansible. Run as root or postgres, e.g.: patronictl list
+      exec {{ patroni_venv }}/bin/patronictl -c {{ patroni_config }} "$@"
+    mode: "0755"
+
+# ---- Config -------------------------------------------------------------------------------
+
+- name: Patroni directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/patroni, mode: "0750" }
+    - { path: "{{ patroni_data_dir | dirname }}", mode: "0755" }
+    - { path: "{{ patroni_data_dir }}", mode: "0700" }
+
+- name: Patroni config (contains passwords)
+  ansible.builtin.template:
+    src: patroni.yml.j2
+    dest: "{{ patroni_config }}"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  notify: Reload patroni
+
+- name: Patroni systemd unit
+  ansible.builtin.template:
+    src: patroni.service.j2
+    dest: /etc/systemd/system/patroni.service
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Start Patroni
+  ansible.builtin.systemd:
+    name: patroni
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending Patroni reloads
+  ansible.builtin.meta: flush_handlers
+
+# ---- Wait for a working cluster -----------------------------------------------------------
+
+# /health is 200 once Postgres runs on this node (the first leader runs initdb, the others
+# pg_basebackup from it, so replicas can take a little longer).
+- name: Wait for Postgres to run on this node
+  ansible.builtin.uri:
+    url: "http://{{ private_ip }}:{{ patroni_restapi_port }}/health"
+    status_code: 200
+  register: patroni_health
+  retries: 60
+  delay: 5
+  until: patroni_health.status == 200
+
+- name: Wait for the cluster to have a leader
+  ansible.builtin.uri:
+    url: "http://{{ private_ip }}:{{ patroni_restapi_port }}/cluster"
+    return_content: true
+  register: patroni_cluster
+  retries: 30
+  delay: 2
+  until: >-
+    patroni_cluster.json is defined and
+    (patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length) == 1
+  run_once: true
+
+- name: Show the cluster
+  ansible.builtin.debug:
+    msg: "{{ patroni_cluster.json.members | map(attribute='name') | zip(patroni_cluster.json.members | map(attribute='role')) | list }}"
+  run_once: true
