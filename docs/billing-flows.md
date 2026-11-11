@@ -194,7 +194,7 @@ Stripe.js).
 3. **Rounding:** Stripe takes integer cents; `cdrs.charge` has 6 decimals. Sum the period's usage,
    **then** round once (never round each call up), or invoices can cross a ceiling ("overcharges"
    make customers leave).
-4. **Webhooks:** not in the clone's feature list [VERIFY]. Read results from the PaymentIntent
+4. **Webhooks:** not in the clone's feature list (Project tab §1; verify-backlog V-S2). Read results from the PaymentIntent
    response (and retrieve again when unsure) instead of waiting for events.
 5. **Off-session charges that need authentication** come back `requires_action`. Treat that as a
    failure (retry, then past due) and ask the customer for a new card.

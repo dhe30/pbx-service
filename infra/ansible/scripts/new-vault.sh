@@ -49,6 +49,8 @@ vault_s3_secret_key: $(hex 32)
 
 # API: signs auth cookies (same on every app node).
 vault_jwt_secret: $(hex 32)
+# API: bearer token for the provider-only routes (/operator/..., support tickets of all accounts).
+vault_operator_token: $(hex 32)
 
 # Seeded test staff (alice = browser, bob = UDP phone / SIPp). SIP port 5060 is public: keep these
 # random, they can place billed vendor calls.

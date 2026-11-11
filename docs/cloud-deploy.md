@@ -137,8 +137,8 @@ journalctl -u kamailio -f
 | 13 | Testers' source IPs | Turn **Traffic on**, then list REGISTER/INVITE sources in Kamailio's log or `sngrep` | Put the ranges in `trusted_tester_cidrs` (pike must not throttle them) and redeploy |
 | 14 | DTMF from the carrier | IVR digits work on a real carrier call | If the carrier sends in-band DTMF only (no RFC 4733), rtpengine needs DTMF detection (CLAUDE.md §3 A4) |
 
-Record what you find (especially for 8, 11 and 12) in [spec-transition.md](spec-transition.md)
-§6, and turn each [VERIFY] into a fact.
+Record what you find (especially for 8, 11 and 12) in [verify-backlog.md](verify-backlog.md):
+mark the item done with the result and evidence, and turn its [VERIFY] into a fact.
 
 ## 5. Then: split deployment
 
