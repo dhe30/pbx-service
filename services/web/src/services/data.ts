@@ -5,6 +5,23 @@ export interface Page<T> {
     nextCursor: string | null;
 }
 
+export interface SupportTicket {
+    id: string;
+    subject: string;
+    description: string;
+    status: "open" | "closed";
+    createdAt: string;
+    createdBy: string | null;
+    createdByEmail: string | null;
+    closedAt: string | null;
+    closedBy: string | null;
+}
+
+export interface SupportTicketSummary {
+    open: number;
+    closed: number;
+}
+
 export interface CallLeg {
     id: string;
     callId: string;
@@ -351,6 +368,26 @@ export const dataService = {
     },
     async getMailboxes() {
         const { data } = await api.get<Mailbox[]>("/mailboxes");
+        return data;
+    },
+    async getTickets(params: { status?: SupportTicket["status"]; limit?: number; cursor?: string } = {}) {
+        const { data } = await api.get<Page<SupportTicket>>("/tickets", { params });
+        return data;
+    },
+    async getTicket(id: string) {
+        const { data } = await api.get<SupportTicket>(`/tickets/${id}`);
+        return data;
+    },
+    async getTicketSummary() {
+        const { data } = await api.get<SupportTicketSummary>("/tickets/summary");
+        return data;
+    },
+    async createTicket(subject: string, description: string) {
+        const { data } = await api.post<SupportTicket>("/tickets", { subject, description });
+        return data;
+    },
+    async closeTicket(id: string) {
+        const { data } = await api.post<SupportTicket>(`/tickets/${id}/close`);
         return data;
     },
     async getGreetingMedia() {

@@ -10,7 +10,7 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
   logged-in user of the account), and the provider view `GET /operator/tickets`,
   `GET /operator/tickets/:id` (operator bearer token, not a login). Details: "Support tickets"
   in the Justin section and "Provider (operator) access" below it.
-- New migration `20261115000000_support_tickets.sql` (run `npm run db:migrate`).
+- New migration `20261117000000_support_tickets.sql` (run `npm run db:migrate`).
 - New config `OPERATOR_TOKEN` (Vault `vault_operator_token`, at least 32 characters; the `api`
   role refuses to run without it). Locally optional: unset = operator routes refuse everyone.
 - New metrics `pbx_api_support_tickets_opened_total`, `pbx_api_support_tickets_closed_total`.
@@ -410,6 +410,7 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
 |---|---|---|
 | `POST /tickets` `{ subject, description }` | any user | `201 ticket` |
 | `GET /tickets?status=open\|closed&limit&cursor` | any user | `{ items: [ticket], nextCursor }`, newest first |
+| `GET /tickets/summary` | any user | `{ open, closed }`, account-wide counts independent of list filters and pagination |
 | `GET /tickets/:id` | any user | `ticket`; 404 |
 | `POST /tickets/:id/close` | any user | `200 ticket` (closed); 404. Idempotent |
 

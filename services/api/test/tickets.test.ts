@@ -19,6 +19,7 @@ describe('ticket routes without a DB', () => {
     for (const [method, url] of [
       ['POST', '/tickets'],
       ['GET', '/tickets'],
+      ['GET', '/tickets/summary'],
       ['GET', `/tickets/${id}`],
       ['POST', `/tickets/${id}/close`],
     ] as const) {
@@ -54,6 +55,7 @@ describe('ticket routes without a DB', () => {
     const app = await build();
     const doc = (await app.inject({ method: 'GET', url: '/openapi.json' })).json();
     expect(Object.keys(doc.paths['/tickets'])).toEqual(expect.arrayContaining(['get', 'post']));
+    expect(doc.paths['/tickets/summary'].get.security).toEqual([{ cookieAuth: [] }]);
     expect(doc.paths['/tickets/{id}/close'].post.security).toEqual([{ cookieAuth: [] }]);
     expect(doc.paths['/tickets'].post.requestBody.content['application/json'].schema.required).toEqual(['subject', 'description']);
     expect(doc.paths['/operator/tickets'].get.security).toEqual([{ operatorAuth: [] }]);
@@ -189,6 +191,23 @@ describe.skipIf(!db)('support tickets (Postgres)', () => {
 
     expect((await call(a.owner, 'GET', '/tickets?status=pending')).statusCode).toBe(400);
     expect((await call(a.owner, 'GET', '/tickets?cursor=bogus')).statusCode).toBe(400);
+  });
+
+  it("returns account-wide open and closed counts regardless of list filters", async () => {
+    await open(a.owner, 'summary open');
+    const closed = await open(a.staff, 'summary closed');
+    await call(a.owner, 'POST', `/tickets/${closed.id}/close`);
+    await open(b.owner, 'other account summary');
+
+    const res = await call(a.staff, 'GET', '/tickets/summary');
+    expect(res.statusCode).toBe(200);
+    const [expected] = await sql<{ open: number; closed: number }[]>`
+      select count(*) filter (where status = 'open')::int as open,
+             count(*) filter (where status = 'closed')::int as closed
+        from support_tickets where tenant_id = ${a.id}`;
+    expect(res.json()).toEqual(expected);
+    expect(res.json().open).toBeGreaterThan(0);
+    expect(res.json().closed).toBeGreaterThan(0);
   });
 
   it('gets one ticket; other accounts and unknown ids are 404', async () => {
