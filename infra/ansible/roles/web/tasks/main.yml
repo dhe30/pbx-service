@@ -36,6 +36,9 @@
     src: "{{ repo_root }}/"
     dest: "{{ web_src_dir }}/"
     delete: true
+    # rsync runs its own ssh from the control machine: without this it ignores the inventory's
+    # ansible_ssh_common_args (ProxyJump via edge-1) and can't reach private-only VMs.
+    use_ssh_args: true
     rsync_opts:
       - "--exclude=.git"
       - "--exclude=.env"
