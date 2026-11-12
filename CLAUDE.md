@@ -3,6 +3,7 @@
 This file is the single source of context for AI coding sessions (e.g., Claude Code).
 It can be placed at the repo root as CLAUDE.md. Sections marked [ASSUMPTION] may change;
 sections marked [VERIFY] must be checked against the docs for the versions actually deployed.
+Every open [VERIFY] is tracked in docs/verify-backlog.md (what to check, how, what it needs).
 
 ---------------------------------------------------------------------------------------------
 ## 0. Who I am / how to help me
@@ -218,8 +219,11 @@ Constraints: DID unique; purchase is idempotent (Idempotency-Key header -> purch
 ---------------------------------------------------------------------------------------------
 Implemented in telephony/kamailio/kamailio.cfg.j2 (validated with `kamailio -c` 6.0.8 by
 telephony/tests/check-configs.sh). Its header comment is the authoritative description.
-Listeners: UDP 5060 public (carrier, phones) + private (Asterisk, peer edge, DMQ), TLS 5061 public
-(phones via _sips._tcp; SRTP-SDES media), WS private :8080 (from HAProxy).
+Listeners: UDP 5060 public (carrier, phones, vendors), UDP 5070 internal on the private IP (Asterisk,
+peer edge, DMQ; listed first = default socket), TLS 5061 public (phones via _sips._tcp; SRTP-SDES
+media), WS private :8080 (from HAProxy). Clanode delivers public IPs by 1:1 NAT (the VM only has its
+private IP): public sockets bind public_bind_ip (= private IP) and `advertise` the public IP;
+route[SEND_PUBLIC] forces the public socket for new requests to the internet (2026-11-11, V-T10).
 - Registrations: usrloc db_mode=0 + dmq_usrloc (sync on start); unlimited contacts per extension;
   Path header with ;received so the edge holding the connection delivers.
 - DB: read-only URL (kamailio_db_ro_url) for auth_db and the DID -> account lookup (sqlops +
@@ -264,7 +268,8 @@ Listeners: UDP 5060 public (carrier, phones) + private (Asterisk, peer edge, DMQ
 - pjsip.conf:
   - transport-udp bound to private IP :5060 (no public IP, no external_* settings needed).
   - Two trunk endpoints `edge-a`, `edge-b` (one per Kamailio): context=from-edge, disallow=all,
-    allow=ulaw, direct_media=no, dtmf_mode=rfc4733, aors with contact sip:<edge private IP>:5060,
+    allow=ulaw, direct_media=no, dtmf_mode=rfc4733, aors with contact sip:<edge private IP>:5070
+    (Kamailio's internal socket, kamailio_internal_port),
     identify match both edge private IPs, qualify enabled.
   - NO per-phone endpoints and NO webrtc=yes (rtpengine handles WebRTC; Kamailio holds phones).
   - PSTN vendors: endpoint vendor-<us|intl>-<edge trunk> per edge, outbound_proxy = that edge's
@@ -337,6 +342,11 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
   POST /billing/setup-intent, POST /billing/card, GET/POST/DELETE /billing/items (additional
   extensions, intl calling, recording; table account_items), GET /invoices(/:id). Weekly invoices,
   retries and past due: background scheduler in every API process (src/billing/scheduler.ts).
+- Support tickets (spec §3, docs/backend-for-team.md): POST /tickets {subject, description},
+  GET /tickets (paged, newest first, ?status=open|closed), GET /tickets/:id, POST /tickets/:id/close
+  (any user of the account). Provider view of all accounts: GET /operator/tickets (open by default),
+  GET /operator/tickets/:id, with `Authorization: Bearer <OPERATOR_TOKEN>` (vault_operator_token),
+  a separate secret, not a user role, so the operator stays outside tenant isolation.
 - GET /health (liveness), GET /ready (DB + object store reachable), GET /metrics
 
 ---------------------------------------------------------------------------------------------
@@ -369,15 +379,17 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 ## 14. Networking, ports, security
 ---------------------------------------------------------------------------------------------
 Public (edge only): UDP 5060 (carrier, vendors, phones), TCP 5061 (SIP over TLS for phones),
-TCP 443 (HTTPS + WSS via HAProxy), UDP 30000–40000 (rtpengine media), TCP 22 (prefer restricting
-via host firewall).
-Private: Kamailio UDP 5060 (+ DMQ) + WS 8080, rtpengine ng 2223, Asterisk UDP 5060 + RTP 10000–20000,
+TCP 80 (ACME HTTP-01, else redirect to HTTPS), TCP 443 (HTTPS + WSS via HAProxy),
+UDP 30000–40000 (rtpengine media), TCP 22 (prefer restricting via host firewall).
+Private: Kamailio UDP 5070 (internal socket: Asterisk, peer edge, DMQ) + WS 8080, rtpengine ng 2223, Asterisk UDP 5060 + RTP 10000–20000,
 ARI 8088 (localhost only), API 3000, Postgres 5432, Patroni 8008, etcd 2379/2380, object store,
 node_exporter 9100 and other exporters.
 - Host firewall (nftables, via Ansible `common` role): private-port allowlists by role/IP.
 - Kamailio permissions module: only provider IPs may send INVITEs as carrier.
 - fail2ban for SSH; Kamailio pike + UA blacklist (light; testers are not malicious).
-- TLS: certificate for the app domain on HAProxy (edge); automated renewal + expiry alert.
+- TLS: one Let's Encrypt cert for the group domain (HTTP-01 via HAProxy :80 -> certbot on acme_edge,
+  copied to the other edge by Ansible) for HAProxy HTTPS/WSS + Kamailio 5061 (role edge_haproxy,
+  docs/cloud-deploy.md §2; cloud firewall needs TCP 80). Expiry alert: still TODO (monitoring).
 - Secrets in Ansible Vault (DB passwords, ARI password, JWT key, S3 keys).
 
 ---------------------------------------------------------------------------------------------
@@ -398,6 +410,10 @@ node_exporter 9100 and other exporters.
   wait until active calls == 0 (or timeout), deploy, re-enable.
 - Rebuild a dead node: recreate VM with StackScript -> update inventory -> run playbook for that
   node + dependent groups.
+- Cloud deploy (2026-11-11): inventory/production.ini (addresses, ProxyJump via edge-1); API/DID
+  settings in group_vars/all/main.yml; one shared vault generated by
+  infra/ansible/scripts/new-vault.sh (never copy the example: the repo is public).
+  Runbook: docs/cloud-deploy.md §5.
 
 ---------------------------------------------------------------------------------------------
 ## 16. Observability & testing
@@ -518,3 +534,6 @@ Rules for further work:
 - Every telephony template must keep passing `npm run test:configs` (`kamailio -c` on rendered
   edges) and the content assertions in services/ari-app/test/configs.test.ts.
 - Call-flow behaviour changes need a spec test in services/ari-app/test/spec/ (fake Asterisk).
+- Unverified assumptions: whenever you write [VERIFY], add a row to docs/verify-backlog.md in the
+  same change; when you check one, mark it done there with the result and evidence and remove
+  the marker. Course pages (grading site) are the ground truth.

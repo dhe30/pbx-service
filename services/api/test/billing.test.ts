@@ -61,15 +61,23 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
   });
 
   async function signup() {
-    const res = await app.inject({
+    const email = `b-${randomUUID()}@example.test`;
+    const account = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: 'Billing test', timezone: 'America/Los_Angeles', email: `b-${randomUUID()}@example.test`, password: 'correct horse battery' },
+      payload: { email, password: 'correct horse battery' },
     });
-    expect(res.statusCode).toBe(201);
-    const body = res.json();
+    expect(account.statusCode).toBe(201);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/businesses',
+      cookies: { [ACCESS_COOKIE]: account.cookies.find((c) => c.name === ACCESS_COOKIE)!.value },
+      payload: { name: 'Billing test', timezone: 'America/Los_Angeles' },
+    });
+    expect(created.statusCode).toBe(201);
+    const body = created.json();
     tenantIds.push(body.tenantId);
-    const cookies = { [ACCESS_COOKIE]: res.cookies.find((c) => c.name === ACCESS_COOKIE)!.value };
+    const cookies = { [ACCESS_COOKIE]: created.cookies.find((c) => c.name === ACCESS_COOKIE)!.value };
     const call = (method: 'GET' | 'POST', url: string, payload?: object): Promise<LightMyRequestResponse> =>
       app.inject({ method, url, payload, cookies });
     return { ...body, call };

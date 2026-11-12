@@ -1,15 +1,17 @@
 # Backend: card at signup, first plan charge, extension limit
 
 Owner: Aaron (Track 3 backend). Status: done 2026-11-09, on `feature/backend-course-spec`.
-Implements the API side of [billing-flows.md](billing-flows.md) §1 (signup card + first charge),
+Implements the API side of [billing-flows.md](billing-flows.md) §1 (card + first charge),
 part of §2 (price list) and §3 (extension limit). Weekly invoices, past-due recovery and buying
 items (numbers, extra extensions, add-ons) are **not** built yet.
 
 ## Flow
 
 ```
-POST /auth/signup {businessName, timezone, email, password}
-  -> 201 {userId, tenantId, role, cardSetup: {setupIntentId, clientSecret, publishableKey, stripeJsUrl}}
+POST /auth/signup {email, password}
+  -> 201 {userId, tenantId: null, role: "unassigned"} + login cookies
+POST /businesses {name, timezone}
+  -> 201 {userId, tenantId, role: "owner", cardSetup: {setupIntentId, clientSecret, publishableKey, stripeJsUrl}}
      (API: Stripe customer + SetupIntent usage=off_session)
 Browser: <script src="{stripeJsUrl}">, Stripe(publishableKey).confirmCardSetup(clientSecret, {payment_method: {card}})
 POST /billing/card {setupIntentId}
@@ -28,12 +30,13 @@ Stripe itself. It never takes the browser's word for it.
 |---|---|---|---|
 | `GET /billing/prices` | public | `200` plan, item prices (cents per 7 days), per-minute prices from `call_pricing` | |
 | `GET /billing` | owner | `200 { card, planPaidThrough, currentPeriod, extensions: { used, allowed } }` | |
+| `POST /businesses { name, timezone }` | unassigned user | `201 { userId, tenantId, role: "owner", cardSetup }` | 400, 403, 409 |
 | `POST /billing/setup-intent` | owner | `201 { setupIntentId, clientSecret, publishableKey, stripeJsUrl }` | 502 |
 | `POST /billing/card { setupIntentId }` | owner | `200` billing state | 400 `invalid_request` / `card_not_saved`, 402 `payment_failed`, 502 |
 | `POST /extensions` (changed) | owner | `201` | **402 `payment_required`** (plan not paid), **409 `extension_limit`** |
 
-- `cardSetup` in the signup response is `null` if the gateway failed; the account still exists.
-  Call `POST /billing/setup-intent`.
+- `cardSetup` in the business-creation response is `null` if the gateway failed; the business
+  still exists. Call `POST /billing/setup-intent`.
 - `502 payment_gateway_error`: the gateway was unreachable or rejected the request. Retrying is
   safe: every Stripe POST has an `Idempotency-Key`.
 - Replacing the card works the same way (`setup-intent` then `card`); a paid plan isn't charged again.
@@ -47,7 +50,8 @@ Stripe itself. It never takes the browser's word for it.
 | `services/api/src/billing/account.ts` | `startCardSetup()`, `saveCard()`, first-period charge |
 | `services/api/src/billing/catalog.ts` | Plan and prices, ceilings, `proratedCents()` |
 | `services/api/src/routes/billing.ts` | The four billing routes |
-| `services/api/src/routes/auth.ts` | Signup sets the plan's included extensions/minutes and returns `cardSetup` |
+| `services/api/src/routes/auth.ts` | Account-only signup, login and session lifecycle |
+| `services/api/src/routes/businesses.ts` | Creates tenant/settings, assigns the owner and returns `cardSetup` |
 | `services/api/src/routes/extensions.ts` | `assertCanAddExtension()` |
 | `services/api/test/billing.test.ts` | 8 tests (fake gateway: `FakeStripe` in `test/helpers.ts`) |
 
@@ -57,14 +61,15 @@ Stripe itself. It never takes the browser's word for it.
 |---|---|---|
 | `STRIPE_SECRET_KEY` | yes | Vault. Server only. |
 | `STRIPE_PUBLISHABLE_KEY` | yes | Given to browsers. |
-| `STRIPE_API_URL` | no | Default `https://stripe.cse356.compas.cs.stonybrook.edu` **[VERIFY]** |
+| `STRIPE_API_URL` | no | Default `https://stripe.cse356.compas.cs.stonybrook.edu` (Course Services tab; verify-backlog V-S1) |
 | `STRIPE_JS_URL` | no | Default `https://stripe.cse356.compas.cs.stonybrook.edu/v3/` (from the spec) |
 
 ## Decisions taken (review these; billing-flows §8)
 
 1. **Plan and prices** (§8.6, §8.7), in `catalog.ts`:
    - plan "Business": $19.00 per 7 days, 2 extensions, 100 US minutes;
-   - extra extension $9.00; local number $2.75; toll-free $3.00;
+   - extra extension $9.00; local number $2.75; toll-free $3.50 (raised from $3.00 on 2026-11-11:
+     the provider charges 2.00 setup + 3.00 per period, verify-backlog V-D15);
    - international calling $3.90; recording $3.90.
 
    All are under the ceilings (a test checks). The number prices still need checking against

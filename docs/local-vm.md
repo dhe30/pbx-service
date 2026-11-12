@@ -115,10 +115,10 @@ rsync -a --delete --chmod=go-w --exclude node_modules --exclude dist --exclude .
 cd ~/pbx-service/infra/ansible
 ansible-galaxy collection install -r requirements.yml
 
-cp group_vars/all/vault.yml.example group_vars/all/vault.yml
-nano group_vars/all/vault.yml     # fill every CHANGE_ME (generation commands are in the file);
-                                  # vault_vendor_*: any placeholder locally (the vendors are unreachable
-                                  # from the VM anyway). Real values only on a cloud deploy.
+scripts/new-vault.sh              # fresh random secrets (never copy the public example values)
+nano group_vars/all/vault.yml     # CHANGE_ME values: any placeholder locally (vendors, Stripe and
+                                  # DIDWW are unreachable from the VM anyway). Real values only on
+                                  # a cloud deploy, in the team's shared vault.
 ansible-vault encrypt group_vars/all/vault.yml
 
 ansible -i inventory/local-vm.ini all -m ping --ask-vault-pass   # expect "pong"

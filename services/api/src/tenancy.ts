@@ -31,6 +31,7 @@ export const TENANT_TABLES = [
   'phone_numbers',
   'cdrs',
   'voicemails',
+  'support_tickets',
 ] as const;
 export type TenantTable = (typeof TENANT_TABLES)[number];
 
@@ -42,6 +43,9 @@ export type TenantTable = (typeof TENANT_TABLES)[number];
 export function tenantOf(req: FastifyRequest): string {
   if (!req.auth) {
     throw new Error(`tenantOf() used without authenticate on ${req.method} ${req.routeOptions.url}`);
+  }
+  if (!req.auth.tenantId || req.auth.role === 'unassigned') {
+    throw new HttpError(403, 'business_required', 'Create or join a business before using this endpoint');
   }
   return req.auth.tenantId;
 }
@@ -141,6 +145,7 @@ const SINGULAR: Record<TenantTable, string> = {
   phone_numbers: 'phone number',
   cdrs: 'call record',
   voicemails: 'voicemail',
+  support_tickets: 'support ticket',
 };
 
 function singular(table: TenantTable): string {

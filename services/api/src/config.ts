@@ -35,7 +35,7 @@ const EnvSchema = z.object({
    */
   COOKIE_SECURE: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   /**
-   * Course payment gateway (Stripe clone). STRIPE_API_URL: REST API base ([VERIFY] the host);
+   * Course payment gateway (Stripe clone). STRIPE_API_URL: REST API base (Course Services tab);
    * STRIPE_JS_URL: where browsers load Stripe.js from (the spec requires the gateway's copy).
    * The secret key stays on the server; the publishable key is given to browsers.
    */
@@ -58,6 +58,12 @@ const EnvSchema = z.object({
    */
   DID_TRUNK_GROUP_ID: z.string().optional(),
   DID_TRUNK_ID: z.string().optional(),
+  /**
+   * Provider (PBX operator) access to the support tickets of ALL accounts (GET /operator/tickets,
+   * src/operator.ts): `Authorization: Bearer <OPERATOR_TOKEN>`. Ansible Vault; not set = operator
+   * routes refuse everyone. Generate with `openssl rand -hex 32`.
+   */
+  OPERATOR_TOKEN: z.string().min(32, 'OPERATOR_TOKEN must be at least 32 characters').optional(),
   /** Returned to staff browsers by GET /me/sip-credentials. */
   SIP_WS_URI: z.string().url(),
   SIP_DOMAIN: z.string().min(1),

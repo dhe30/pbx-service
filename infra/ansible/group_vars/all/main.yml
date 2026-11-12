@@ -35,6 +35,10 @@ vendor_hosts: ["{{ vendor_us_host }}", "{{ vendor_intl_host }}"]
 vendor_number_format: "e164"
 
 kamailio_ws_port: 8080
+# Kamailio's internal SIP socket (UDP, private IP): Asterisk, the peer edge and DMQ use it; 5060 is
+# the internet-facing socket. Separate ports because behind 1:1 NAT (Clanode, verify-backlog V-P10)
+# both sockets share the VM's only address, and each must advertise a different address.
+kamailio_internal_port: 5070
 # SIP over TLS for phones registered through _sips._tcp (SRTP-SDES media). Certificate for sip_domain.
 kamailio_tls_port: 5061
 kamailio_tls_cert: /etc/kamailio/tls/cert.pem
@@ -87,15 +91,38 @@ s3_endpoint: "http://{{ private_ip if inventory_hostname in groups['db'] else '1
 # Public name of the dashboard/API and the softphone's WebSocket (wss://<web_domain>/ws), served by
 # the edge HAProxies. Same name as the SIP domain unless the team gets a separate one.
 web_domain: "{{ sip_domain }}"
-# Course payment gateway (Stripe clone). [VERIFY] both URLs on the Course Services tab.
+
+# ---- TLS certificate (Let's Encrypt, role edge_haproxy) ----------------------------------------
+# One publicly trusted certificate for web_domain (+ sip_domain if different) serves HTTPS/WSS
+# (HAProxy) and SIP over TLS (Kamailio 5061) on every edge. Issued with HTTP-01 on ONE edge (the
+# one the A record points to; DNS-01 is impossible, no DNS API) and copied to the others by Ansible.
+# Needs inbound TCP 80 on that edge (nftables does it; the Clanode cloud firewall rule is manual).
+# Runbook: docs/cloud-deploy.md §2. false = keep the self-signed certificates.
+acme_enabled: true
+# The edge that requests and renews the certificate: must be the one the Group tab's A record
+# points to. If DNS moves to another edge, change this and rerun the edge play (cloud-deploy §2).
+acme_edge: "{{ groups['edge'][0] }}"
+# Names on the certificate.
+acme_domains: "{{ [web_domain, sip_domain] | unique }}"
+# Contact for Let's Encrypt expiry/problem mails; empty = register without an email.
+# A team address, not a personal one: the repo is public.
+acme_email: ""
+# true = Let's Encrypt STAGING (untrusted certificates, generous rate limits): use it to test the
+# flow, then set false and rerun (the role replaces a staging certificate automatically).
+acme_staging: false
+# Local port certbot's standalone HTTP-01 server listens on (127.0.0.1); HAProxy :80 forwards
+# /.well-known/acme-challenge/ to it.
+acme_http_port: 8888
+# Course payment gateway (Stripe clone). Both URLs as on the Course Services tab (checked
+# 2026-11-11, docs/verify-backlog.md V-S1).
 stripe_api_url: "https://stripe.cse356.compas.cs.stonybrook.edu"
 stripe_js_url: "https://stripe.cse356.compas.cs.stonybrook.edu/v3/"
 # DID provider (DIDWW API v3 clone): base URL from the Course Services tab, e.g. https://<host>/v3.
 # Required on app nodes (the api role refuses to deploy without it).
-did_provider_url: ""
+did_provider_url: "https://didww.cse356.compas.cs.stonybrook.edu/v3"
 # DIDWW inbound trunk group (both edges, A7) that bought numbers are assigned to; or a single trunk
 # in did_trunk_id. Exactly one must be set.
-did_trunk_group_id: ""
+did_trunk_group_id: "4fba3ce0-568d-4a88-879b-d767f26eca4c"
 did_trunk_id: ""
 
 # ---- Monitoring (Track 4) ----------------------------------------------------------------------

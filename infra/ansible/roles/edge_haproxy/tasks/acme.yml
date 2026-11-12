@@ -1,0 +1,161 @@
+---
+# Let's Encrypt certificate for acme_domains (CLAUDE.md §14, docs/cloud-deploy.md §2).
+#
+# - acme_edge (the edge the A record points to) requests it with certbot: standalone HTTP-01
+#   server on 127.0.0.1:acme_http_port, reached through HAProxy's :80 frontend. Debian's
+#   certbot.timer renews it; the deploy hook installs the renewed files on that edge.
+# - Every other edge copies cert + key from acme_edge on each playbook run (so a DNS failover to
+#   it serves the same name). Renewed certificates reach it on the next run of the edge play.
+# - Every edge installs it with pbx-install-cert: HAProxy site.pem + Kamailio TLS files, and
+#   reloads HAProxy / Kamailio TLS only when something changed.
+# Until the first issuance the self-signed certificates stay in place, so HAProxy and Kamailio
+# always have something to start with.
+
+- name: Certificate install script
+  ansible.builtin.template:
+    src: pbx-install-cert.sh.j2
+    dest: /usr/local/sbin/pbx-install-cert
+    mode: "0755"
+
+# ---- The issuing edge ------------------------------------------------------------------------
+- name: Issue and renew on {{ acme_edge }}
+  when: inventory_hostname == acme_edge
+  block:
+    - name: Install certbot
+      ansible.builtin.apt:
+        name: certbot
+
+    - name: certbot deploy-hook directory
+      ansible.builtin.file:
+        path: /etc/letsencrypt/renewal-hooks/deploy
+        state: directory
+        mode: "0755"
+
+    # certbot runs the hooks in this directory after every successful `certbot renew`
+    # (certbot.timer, twice a day). Not after the first `certonly`: Ansible installs that one.
+    - name: Renewal deploy hook (rebuilds site.pem, reloads HAProxy + Kamailio TLS)
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/pbx-install-cert
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Managed by Ansible (role edge_haproxy).
+          exec /usr/local/sbin/pbx-install-cert "$RENEWED_LINEAGE/fullchain.pem" "$RENEWED_LINEAGE/privkey.pem"
+
+    # HTTP-01 only succeeds on the edge the A record points to. Checking first avoids failed
+    # validations, which Let's Encrypt rate-limits (5 per hour per name).
+    - name: Where each name points
+      ansible.builtin.shell: set -o pipefail; getent ahostsv4 {{ item | quote }} | awk '{print $1}' | sort -u
+      args:
+        executable: /bin/bash
+      loop: "{{ acme_domains }}"
+      register: acme_dns
+      changed_when: false
+      failed_when: false
+
+    - name: Names that don't point at this edge
+      ansible.builtin.set_fact:
+        acme_dns_mismatch: >-
+          {{ acme_dns.results | rejectattr('stdout_lines', 'contains', public_ip | default('')) | map(attribute='item') | list }}
+
+    - name: Issuer of the current certificate
+      ansible.builtin.command: openssl x509 -in {{ acme_live_dir }}/cert.pem -noout -issuer
+      register: acme_issuer
+      changed_when: false
+      failed_when: false
+
+    # certbot itself keeps a valid certificate (--keep-until-expiring), so this is a no-op on most
+    # runs. Forced only when switching between staging and production.
+    - name: certbot command
+      ansible.builtin.set_fact:
+        acme_force: "{{ acme_issuer.rc == 0 and (('(STAGING)' in acme_issuer.stdout) != (acme_staging | bool)) }}"
+        acme_certbot_argv: >-
+          {{ ['certbot', 'certonly', '--non-interactive', '--agree-tos',
+              '--standalone', '--preferred-challenges', 'http',
+              '--http-01-address', '127.0.0.1', '--http-01-port', acme_http_port | string,
+              '--cert-name', acme_cert_name, '--keep-until-expiring',
+              '--key-type', 'rsa', '--rsa-key-size', '2048']
+             + (['--email', acme_email] if acme_email else ['--register-unsafely-without-email'])
+             + (acme_domains | map('regex_replace', '^', '--domains=') | list)
+             + (['--staging'] if acme_staging | bool else []) }}
+      # RSA, not certbot's default ECDSA: SIP desk phones' TLS stacks are often old.
+
+    - name: Request the certificate
+      ansible.builtin.command:
+        argv: "{{ acme_certbot_argv + (['--force-renewal'] if acme_force else []) + (['--break-my-certs'] if acme_force and acme_staging | bool else []) }}"
+      register: acme_certbot
+      when: acme_dns_mismatch | length == 0
+      changed_when: >-
+        acme_certbot.rc == 0 and 'not yet due for renewal' not in (acme_certbot.stdout + acme_certbot.stderr)
+      failed_when: false
+
+    # Not fatal: the rest of the deployment goes on with the certificates already installed
+    # (self-signed on a first deploy). Shows as "ignored" in the play recap.
+    - name: No Let's Encrypt certificate this run
+      ansible.builtin.fail:
+        msg: >-
+          {% if acme_dns_mismatch | length > 0 %}{{ acme_dns_mismatch | join(', ') }} doesn't
+          resolve to {{ public_ip | default('?') }} (this edge). Point the A record (Group tab)
+          here or set acme_edge to the edge it points to.
+          {% else %}certbot failed (rc {{ acme_certbot.rc }}): {{ acme_certbot.stderr | default('') | trim }}.
+          Is TCP 80 open in the Clanode cloud firewall? Log: /var/log/letsencrypt/letsencrypt.log.
+          {% endif %}Keeping the current certificate.
+      when: acme_dns_mismatch | length > 0 or acme_certbot.rc | default(0) != 0
+      ignore_errors: true
+
+    - name: Is there a Let's Encrypt certificate?
+      ansible.builtin.stat:
+        path: "{{ acme_live_dir }}/fullchain.pem"
+      register: acme_live
+
+    - name: Install it for HAProxy and Kamailio
+      ansible.builtin.command: /usr/local/sbin/pbx-install-cert {{ acme_live_dir }}/fullchain.pem {{ acme_live_dir }}/privkey.pem
+      register: acme_install
+      changed_when: acme_install.stdout == 'changed'
+      when: acme_live.stat.exists
+
+# ---- The other edges -------------------------------------------------------------------------
+- name: Copy the certificate from {{ acme_edge }}
+  when: inventory_hostname != acme_edge
+  block:
+    - name: Does {{ acme_edge }} have a certificate?
+      ansible.builtin.stat:
+        path: "{{ acme_live_dir }}/fullchain.pem"
+      delegate_to: "{{ acme_edge }}"
+      register: acme_src
+
+    - name: Read it from {{ acme_edge }}
+      ansible.builtin.slurp:
+        src: "{{ acme_live_dir }}/{{ item }}"
+      delegate_to: "{{ acme_edge }}"
+      loop: [fullchain.pem, privkey.pem]
+      register: acme_files
+      when: acme_src.stat.exists
+      no_log: true   # the private key
+
+    - name: Directory for the copy
+      ansible.builtin.file:
+        path: "{{ acme_copy_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Write the copy
+      ansible.builtin.copy:
+        dest: "{{ acme_copy_dir }}/{{ item.item }}"
+        content: "{{ item.content | b64decode }}"
+        owner: root
+        group: root
+        mode: "0640"
+      loop: "{{ acme_files.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: acme_src.stat.exists
+      no_log: true
+
+    - name: Install it for HAProxy and Kamailio
+      ansible.builtin.command: /usr/local/sbin/pbx-install-cert {{ acme_copy_dir }}/fullchain.pem {{ acme_copy_dir }}/privkey.pem
+      register: acme_install
+      changed_when: acme_install.stdout == 'changed'
+      when: acme_src.stat.exists

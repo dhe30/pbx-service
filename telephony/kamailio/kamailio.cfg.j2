@@ -4,10 +4,10 @@
 # Spec: CLAUDE.md §7 + docs/spec-transition.md. Kamailio only handles SIGNALING; all audio goes
 # through rtpengine.
 #
-# Who talks to us:
+# Who talks to us ("public" = the internet-facing sockets, see Listeners below):
 #   carrier   -> udp public:5060    INVITEs for our DIDs                        (FLT_CARRIER)
-#   pbx-N     -> udp private:5060   Asterisk ringing phones, vendor legs, in-dialog (FLT_PBX)
-#   peer edge -> udp private:5060   INVITE for a phone connected there; DMQ      (FLT_PEER)
+#   pbx-N     -> udp private:{{ kamailio_internal_port }}   Asterisk ringing phones, vendor legs, in-dialog (FLT_PBX)
+#   peer edge -> udp private:{{ kamailio_internal_port }}   INVITE for a phone connected there; DMQ      (FLT_PEER)
 #   phones    -> udp public:5060    REGISTER / INVITE (desk phones, _sip._udp SRV)
 #   phones    -> tls public:{{ kamailio_tls_port }}   REGISTER / INVITE (_sips._tcp SRV), SRTP-SDES media
 #   browsers  -> ws  private:{{ kamailio_ws_port }}   via HAProxy (which terminates wss:// TLS)
@@ -81,17 +81,30 @@ tcp_children={{ kamailio_tcp_children | default(16) }}
 tcp_max_connections={{ kamailio_tcp_max_connections | default(16384) }}
 tls_max_connections={{ kamailio_tcp_max_connections | default(16384) }}
 
-# Pick the outgoing socket by routing table (public vs private interface).
+# Pick the outgoing socket by routing table when the public address is its own interface.
 mhomed=1
 auto_aliases=no
 
-{% if public_bind_ip != private_ip %}
+####### Listeners #########
+# SIP writes addresses INTO its messages (Via, Record-Route, Contact; rtpengine does the SDP), and
+# the other side sends replies, BYE/re-INVITE and audio to them. So every socket must put the
+# address its audience can reach:
+#   - internal socket: the private IP, for Asterisk, the peer edge and DMQ (they can't reach the
+#     public IP from inside: no hairpin, and their source would look like an outside client);
+#   - public sockets: the public IP, for the carrier, vendors and phones.
+# Behind 1:1 NAT (Clanode: the public IP isn't on the VM, inventory public_bind_ip = private_ip)
+# both share the one local address, so they need different ports, and the public ones bind the
+# local address and "advertise" the public one. Requests toward the internet force the public
+# socket (route[SEND_PUBLIC]); with enable_double_rr, a request crossing from one socket to the
+# other gets a Record-Route per side, and in-dialog requests go back out of the right one.
+#
+# The internal socket is listed FIRST: it's the default when nothing forces a socket (DMQ, the
+# peer edge, dispatcher OPTIONS pings also set it explicitly).
+listen=udp:{{ private_ip }}:{{ kamailio_internal_port }}
 listen=udp:{{ public_bind_ip }}:5060{% if public_bind_ip != public_ip %} advertise {{ public_ip }}:5060{% endif %}
 
 listen=tls:{{ public_bind_ip }}:{{ kamailio_tls_port }}{% if public_bind_ip != public_ip %} advertise {{ public_ip }}:{{ kamailio_tls_port }}{% endif %}
 
-{% endif %}
-listen=udp:{{ private_ip }}:5060
 # WebSocket listener (HTTP upgrade). Only HAProxy connects here; never exposed publicly.
 listen=tcp:{{ private_ip }}:{{ kamailio_ws_port }}
 
@@ -155,7 +168,8 @@ modparam("tm", "fr_inv_timer", 120000)    # ms: provisional received, waiting fo
 # ----- rr -----
 modparam("rr", "enable_full_lr", 0)
 modparam("rr", "append_fromtag", 1)
-# Two Record-Route headers when the in/out sockets differ (public<->private, ws<->udp).
+# Two Record-Route headers when the in/out sockets differ (public<->internal, ws<->udp), each with
+# that socket's (advertised) address; loose_route() then forces the matching socket in-dialog.
 modparam("rr", "enable_double_rr", 1)
 
 # ----- database: READ-ONLY connection, auth + DID lookups only (B1) -----
@@ -186,13 +200,14 @@ modparam("registrar", "max_contacts", 0)
 modparam("path", "use_received", 1)
 
 # ----- dmq: replicate registrations between edges -----
-modparam("dmq", "server_address", "sip:{{ private_ip }}:5060")
+# Internal socket on every edge (sent from the default socket, which is the internal one).
+modparam("dmq", "server_address", "sip:{{ private_ip }}:{{ kamailio_internal_port }}")
 {% if edge_peer_ips | length > 0 %}
 {% for ip in edge_peer_ips %}
-modparam("dmq", "notification_address", "sip:{{ ip }}:5060")
+modparam("dmq", "notification_address", "sip:{{ ip }}:{{ kamailio_internal_port }}")
 {% endfor %}
 {% else %}
-modparam("dmq", "notification_address", "sip:{{ private_ip }}:5060")
+modparam("dmq", "notification_address", "sip:{{ private_ip }}:{{ kamailio_internal_port }}")
 {% endif %}
 modparam("dmq", "multi_notify", 1)
 modparam("dmq", "num_workers", 4)
@@ -393,6 +408,21 @@ route[RELAY] {
 	exit;
 }
 
+# A new request leaves toward the internet (carrier, vendor, phone): send it from the public UDP
+# socket so its Via / Record-Route carry the public (advertised) address. TLS and WS have one
+# socket each, which the transport already selects. In-dialog requests don't need this: the
+# double Record-Route makes loose_route() pick the socket.
+route[SEND_PUBLIC] {
+	if ($du != $null && $du != "") {
+		$var(np) = $(du{uri.transport});
+	} else {
+		$var(np) = $(ru{uri.transport});
+	}
+	if ($var(np) == $null || $var(np) == "" || $var(np) =~ "^(udp|UDP)$") {
+		force_send_socket(udp:{{ public_bind_ip }}:5060);
+	}
+}
+
 route[DMQ] {
 	# Registration replication between edges only.
 	if (!isflagset(FLT_PEER) && $si != "{{ private_ip }}") {
@@ -424,7 +454,7 @@ route[REGISTRAR] {
 	# Another edge that looks this user up relays the call to us via Path; we use received.
 	$var(rcv) = "sip:" + $si + ":" + $sp + ";transport=" + $pr;
 	remove_hf("Path");
-	append_hf("Path: <sip:{{ private_ip }}:5060;lr;received=$(var(rcv){s.escape.param})>\r\n");
+	append_hf("Path: <sip:{{ private_ip }}:{{ kamailio_internal_port }};lr;received=$(var(rcv){s.escape.param})>\r\n");
 	# Apply the header change so registrar sees the Path we just added.
 	if (!msg_apply_changes()) {
 		sl_send_reply("500", "Server Error");
@@ -572,6 +602,7 @@ route[TO_VENDOR] {
 	$avp(rtp_answer) = "{{ F.plain.pbx_answer }}";
 	t_on_reply("RTP_REPLY");
 	t_on_failure("VENDOR_FAILURE");
+	route(SEND_PUBLIC);
 	route(RELAY);
 }
 
@@ -613,11 +644,14 @@ branch_route[DEV_BRANCH] {
 	else if ($var(tp) =~ "^tls$") setbflag(FLB_TLS);
 
 	if ($var(rcv) != "" && $(du{uri.host}) == "{{ private_ip }}") {
-		# The phone is connected to THIS edge: send straight to it (drop our own Path route).
+		# The phone is connected to THIS edge: send straight to it (drop our own Path route), from
+		# the public socket.
 		remove_hf("Route");
 		$du = $var(rcv);
+		route(SEND_PUBLIC);
 	}
-	# else: leave $du = peer edge; it delivers over its own connection (route FROM_PEER).
+	# else: leave $du = peer edge; it delivers over its own connection (route FROM_PEER). That
+	# goes out of the default (internal) socket.
 
 	# Leg tag for in-dialog requests (hold/resume, transfer). They can't tell from their own
 	# transport: with two edges a browser's re-INVITE reaches the anchoring edge over UDP.
@@ -679,6 +713,7 @@ route[FROM_PEER] {
 	# path use_received=1 has set $du to the client address from our own Path ;received.
 	record_route();
 	t_on_reply("PEER_REPLY");
+	route(SEND_PUBLIC);
 	route(RELAY);
 }
 

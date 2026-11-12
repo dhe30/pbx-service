@@ -213,7 +213,8 @@ Change any of these by editing the code they point at. Each is small and local.
   functions, unknown module parameters and wrong argument counts (verified by injecting each).
 
 **[VERIFY] on the first VM deploy** (step-by-step checks: [cloud-deploy.md](cloud-deploy.md) §4) (nothing here ran against real Asterisk, rtpengine or SIP
-endpoints):
+endpoints). **Tracked, with status, in [verify-backlog.md](verify-backlog.md)** (V-T*, V-V*,
+V-D*); update it there, not here:
 1. Transfers:
    - `ChannelTransfer` event fields and `POST /channels/{id}/transfer_progress` (Asterisk
      22.11);

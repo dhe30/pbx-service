@@ -51,7 +51,7 @@ Per-host variables:
 | `ansible_host` | all | address Ansible SSHes to |
 | `private_ip` | all (**required**) | the VM's private address. Every internal service binds to it |
 | `public_ip` | edge (**required**) | public address: SIP, HTTPS/WSS, rtpengine media |
-| `public_bind_ip` | edge (optional) | local address the public IP is NATed to, if it isn't on the interface |
+| `public_bind_ip` | edge (optional) | local address the public IP is NATed to, if it isn't on the interface. On Clanode (1:1 NAT onto the only address) = `private_ip`: Kamailio, rtpengine and HAProxy bind it and advertise `public_ip` |
 | `asterisk_sip_port` | pbx (optional) | default 5060. Only the all-in-one VM uses 5080 |
 
 Group order matters: `edge_trunk_names` maps `groups['edge'][0]` -> `edge-a`, `[1]` -> `edge-b`.
@@ -98,7 +98,7 @@ lets the whole cluster reach every private port.
 | 22/tcp | SSH | all | all | admins |
 | 5060/udp | Kamailio (carrier, vendors, SIP phones) | edge | public_ip | internet (carrier, vendors, phones) |
 | 5061/tcp | Kamailio SIP over TLS (`_sips._tcp` phones) | edge | public_ip | internet (phones) |
-| 5060/udp | Kamailio (internal + DMQ registration replication) | edge | private_ip | pbx, peer edge |
+| 5070/udp | Kamailio internal socket (`kamailio_internal_port`: Asterisk trunks, peer edge, DMQ registration replication) | edge | private_ip | pbx, peer edge |
 | 443/tcp | HAProxy HTTPS + WSS | edge | public_ip | browsers |
 | 8080/tcp | Kamailio WebSocket | edge | private_ip | HAProxy on any edge |
 | 30000-40000/udp | rtpengine media (external) | edge | public_ip | internet |
@@ -206,5 +206,7 @@ an inline host var (`host-1 ... name=value`), never `[group:vars]`.
   (`pbx-dbproxy`, separate from the edge's public HAProxy so reloading one never touches the
   other).
 - **O3 (T1/T4):** backup target for WAL archiving (mon-1 volume?) and restore drill.
-- **O4 (T2):** HAProxy on each edge sends `/api` to app-1/app-2 (`backend api` already templates
-  `groups['app']`); confirm the API health path with T3.
+- **O4 (T2/T3), health path decided (PR #11, R18):** HAProxy on each edge health-checks
+  `GET /ready` on app-1/app-2 (inter 2 s, fall 2); the API drains 6 s on SIGTERM. Still open: path
+  routing once the web build lands (the web calls `/api/...`; today every path except `/ws` goes
+  to the API unchanged).

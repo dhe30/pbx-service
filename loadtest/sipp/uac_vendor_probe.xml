@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  Pre-deploy probe of a PSTN vendor (verify-backlog V-V3, V-V4, V-V5, V-V7, V-V8): ONE outgoing
+  call sent straight to the vendor from an edge VM, before Kamailio/Asterisk exist. It answers:
+  which number format the vendor accepts in the Request-URI, how it challenges (401/407, realm),
+  whether our caller ID is accepted, which codec it picks from our offer, and (V-V8) whether a
+  call to one of our own DIDs comes back in through the DID provider.
+
+  Run it with vendor-probe.sh (from WSL), which copies this file to edge-1 and fills the keys:
+    [service]   the dialed number, in the format under test (+12125550199 or 12125550199)
+    [vhost]     the vendor host (us-vendor... / intl-vendor...), Request-URI and To host
+    [pubip]     the edge's PUBLIC IP. Edges are behind 1:1 NAT (V-P10): SIPp binds the private
+                address (-i), but every address the vendor uses to answer (Via + rport, Contact,
+                SDP c=) must be the public one, or the replies are lost.
+    [callerid]  caller ID to present (From user + P-Asserted-Identity), +E.164
+    [offer]     RTP/AVP payload types offered (default set below: PCMU, PCMA, G.729, G.723, opus)
+    -au / -ap   vendor digest username / password for [authentication]. NOT
+                [authentication username=[field0] password=[field1]]: the SIPp on Debian 13 doesn't
+                expand fields inside that keyword and sends a broken line with the password in it
+                (seen 2026-11-11, verify-backlog V-V9).
+
+  Every likely failure answer has its own branch, so the message log (-trace_msg) shows exactly
+  what the vendor rejected; nothing is retried. An answered call lasts 3 s (the vendor bills
+  answered seconds) and sends no audio.
+-->
+<scenario name="Vendor probe">
+
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[vhost] SIP/2.0
+      Via: SIP/2.0/UDP [pubip]:[local_port];branch=[branch];rport
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      To: <sip:[service]@[vhost]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:[callerid]@[pubip]:[local_port]>
+      P-Asserted-Identity: <sip:[callerid]@[pubip]>
+      Max-Forwards: 70
+      User-Agent: pbx-vendor-probe
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=probe 53655765 2353687637 IN IP4 [pubip]
+      s=-
+      c=IN IP4 [pubip]
+      t=0 0
+      m=audio 30000 RTP/AVP [offer]
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:18 G729/8000
+      a=fmtp:18 annexb=no
+      a=rtpmap:4 G723/8000
+      a=rtpmap:96 opus/48000/2
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=ptime:20
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="401" optional="true" auth="true" next="auth"/>
+  <recv response="402" optional="true" next="fail1"/>
+  <recv response="403" optional="true" next="fail1"/>
+  <recv response="404" optional="true" next="fail1"/>
+  <recv response="480" optional="true" next="fail1"/>
+  <recv response="488" optional="true" next="fail1"/>
+  <recv response="503" optional="true" next="fail1"/>
+  <recv response="407" auth="true"/>
+
+  <label id="auth"/>
+  <!-- ACK for the challenge: [last_Via:] repeats the INVITE's Via (same branch), as required. -->
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[vhost] SIP/2.0
+      [last_Via:]
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      To: <sip:[service]@[vhost]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+
+      INVITE sip:[service]@[vhost] SIP/2.0
+      Via: SIP/2.0/UDP [pubip]:[local_port];branch=[branch];rport
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      To: <sip:[service]@[vhost]>
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:[callerid]@[pubip]:[local_port]>
+      P-Asserted-Identity: <sip:[callerid]@[pubip]>
+      [authentication]
+      Max-Forwards: 70
+      User-Agent: pbx-vendor-probe
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=probe 53655765 2353687638 IN IP4 [pubip]
+      s=-
+      c=IN IP4 [pubip]
+      t=0 0
+      m=audio 30000 RTP/AVP [offer]
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:18 G729/8000
+      a=fmtp:18 annexb=no
+      a=rtpmap:4 G723/8000
+      a=rtpmap:96 opus/48000/2
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=ptime:20
+      a=sendrecv
+
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="401" optional="true" next="fail2"/>
+  <recv response="402" optional="true" next="fail2"/>
+  <recv response="403" optional="true" next="fail2"/>
+  <recv response="404" optional="true" next="fail2"/>
+  <recv response="407" optional="true" next="fail2"/>
+  <recv response="480" optional="true" next="fail2"/>
+  <recv response="486" optional="true" next="fail2"/>
+  <recv response="488" optional="true" next="fail2"/>
+  <recv response="503" optional="true" next="fail2"/>
+  <recv response="200" rtd="true" rrs="true"/>
+
+  <send>
+    <![CDATA[
+
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/UDP [pubip]:[local_port];branch=[branch];rport
+      [routes]
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Contact: <sip:[callerid]@[pubip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="3000"/>
+
+  <send retrans="500">
+    <![CDATA[
+
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/UDP [pubip]:[local_port];branch=[branch];rport
+      [routes]
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 3 BYE
+      Contact: <sip:[callerid]@[pubip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" crlf="true" next="end"/>
+
+  <!-- Rejected before the challenge. -->
+  <label id="fail1"/>
+  <send next="end">
+    <![CDATA[
+
+      ACK sip:[service]@[vhost] SIP/2.0
+      [last_Via:]
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      To: <sip:[service]@[vhost]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Rejected after authenticating. -->
+  <label id="fail2"/>
+  <send>
+    <![CDATA[
+
+      ACK sip:[service]@[vhost] SIP/2.0
+      [last_Via:]
+      From: <sip:[callerid]@[pubip]>;tag=[pid]Probe[call_number]
+      To: <sip:[service]@[vhost]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="end"/>
+</scenario>

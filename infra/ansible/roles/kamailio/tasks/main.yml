@@ -33,8 +33,8 @@
     mode: "0640"
   notify: Reload dispatcher
 
-# TLS for phones using the _sips._tcp SRV record. PHASE 1: self-signed; production: a real
-# certificate for sip_domain (same issuance as HAProxy's), dropped at the same paths.
+# TLS for phones using the _sips._tcp SRV record. Self-signed until the edge_haproxy role
+# installs the Let's Encrypt certificate (same one as HTTPS) at these paths (pbx-install-cert).
 - name: TLS directory
   ansible.builtin.file:
     path: /etc/kamailio/tls
