@@ -275,4 +275,45 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(read('edge-2', 'tls.cfg')).toMatch(/^certificate = \/etc\/kamailio\/tls\/cert\.pem$/m);
     });
   });
+
+  // split-contracts O4: one origin for the website (/api/... calls), the course's tools (API at
+  // the root, from an OpenAPI document without `servers`) and browser page loads.
+  describe('§4/§6 website and API on one origin (edge HAProxy routing)', () => {
+    const hasHap = rendered && existsSync(join(R, 'edge-1', 'haproxy.cfg'));
+    const hap = hasHap ? read('edge-1', 'haproxy.cfg') : '';
+    // A top-level section by its header line ("\n" + name: not "default_backend api" etc.).
+    const section = (name: string) => {
+      const i = hap.indexOf(`\n${name}\n`) + 1;
+      return hap.slice(i, hap.indexOf('\n\n', hap.indexOf('\n', i) + 1));
+    };
+    it.skipIf(!hasHap)('/api/... is stripped and flagged BEFORE routing, and the flag picks the API', () => {
+      const https = hap.slice(hap.indexOf('\nfrontend https\n'), hap.indexOf('\nbackend kamailio_ws\n'));
+      const setVar = https.indexOf('http-request set-var(txn.api_prefix) bool(true) if api_prefix');
+      const strip = https.indexOf('http-request replace-path ^/api(/.*)$ \\1 if api_prefix');
+      expect(setVar).toBeGreaterThan(0);
+      expect(strip).toBeGreaterThan(setVar); // remembered first: after stripping, /api/ looks like /
+      // Order of use_backend = priority: WebSocket, then anything that came in under /api, then web.
+      const uses = [...https.matchAll(/^\s*(use_backend|default_backend) .*$/gm)].map((m) => m[0].trim());
+      expect(uses).toEqual([
+        'use_backend kamailio_ws if { path /ws }',
+        'use_backend api if { var(txn.api_prefix) -m bool }',
+        'use_backend web if web_static || web_files',
+        'use_backend web if page_load wants_html !api_only',
+        'default_backend api',
+      ]);
+      expect(https).toContain('acl wants_html req.hdr(accept) -m sub text/html');
+      expect(https).toMatch(/acl api_only\s+path \/openapi\.json \/health \/ready \/metrics/);
+    });
+    it.skipIf(!hasHap)('the refresh cookie (Path=/auth) is rewritten to /api/auth for /api requests only', () => {
+      expect(section('backend api')).toContain(
+        'http-response replace-header Set-Cookie ^(.*;\\s*[Pp]ath=)/auth(;.*)?$ \\1/api/auth\\2 if { var(txn.api_prefix) -m bool }',
+      );
+    });
+    it.skipIf(!hasHap)('backend web = nginx on every app node (web_port), health-checked', () => {
+      const web = section('backend web');
+      expect(web).toContain('option httpchk GET /');
+      expect(web).toMatch(/server app-1-web 127\.0\.0\.31:8081 check/);
+      expect(section('backend api')).toMatch(/server app-1 127\.0\.0\.31:3000 check/);
+    });
+  });
 });

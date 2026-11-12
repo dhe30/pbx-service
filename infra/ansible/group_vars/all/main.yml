@@ -91,6 +91,9 @@ s3_endpoint: "http://{{ private_ip if inventory_hostname in groups['db'] else '1
 # Public name of the dashboard/API and the softphone's WebSocket (wss://<web_domain>/ws), served by
 # the edge HAProxies. Same name as the SIP domain unless the team gets a separate one.
 web_domain: "{{ sip_domain }}"
+# The website's static build (role web: nginx on the app nodes, private IP). edge_haproxy sends
+# page loads and /assets/ there; the API stays on api_port (3000).
+web_port: 8081
 
 # ---- TLS certificate (Let's Encrypt, role edge_haproxy) ----------------------------------------
 # One publicly trusted certificate for web_domain (+ sip_domain if different) serves HTTPS/WSS
@@ -105,8 +108,8 @@ acme_edge: "{{ groups['edge'][0] }}"
 # Names on the certificate.
 acme_domains: "{{ [web_domain, sip_domain] | unique }}"
 # Contact for Let's Encrypt expiry/problem mails; empty = register without an email.
-# A team address, not a personal one: the repo is public.
-acme_email: ""
+# Kept in the encrypted vault (vault_acme_email): the repo is public. Optional.
+acme_email: "{{ vault_acme_email | default('') }}"
 # true = Let's Encrypt STAGING (untrusted certificates, generous rate limits): use it to test the
 # flow, then set false and rerun (the role replaces a staging certificate automatically).
 acme_staging: false

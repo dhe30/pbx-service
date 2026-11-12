@@ -1,0 +1,10 @@
+---
+# Website (services/web: React + Vite, dashboard + softphone) on the app nodes. Built on the host,
+# served as static files by nginx on <private_ip>:{{ web_port }} (web_port in group_vars, shared with
+# edge_haproxy). The edges route browser page loads and /assets/ here; API calls go to the API.
+
+# Separate build tree: the api role runs `npm ci -w @pbx/shared -w @pbx/api` in /opt/pbx/src, and
+# npm ci removes every other workspace's dependencies, so the website can't build there.
+web_src_dir: /opt/pbx/web-src
+# What nginx serves (a copy of services/web/dist, replaced after each successful build).
+web_root: /var/www/pbx-web
