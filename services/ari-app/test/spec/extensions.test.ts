@@ -141,6 +141,34 @@ describe('§3 Extensions: forwarding', () => {
     await h.settle();
   });
 
+  it('forward busy -> a voicemail box (another mailbox than the extension\'s own)', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    const shared = await a.mailbox('Front desk');
+    const e101 = await a.extension({ number: '101', forwardBusy: { type: 'voicemail', id: shared } });
+    await a.number('+12015550116', { type: 'extension', id: e101 });
+    h.ari.sip.set(a.ext['101']!.sip, { failCause: 17 });
+    const caller = h.ari.carrierCall('+12015550116', '+16315550000');
+    await until(() => h.uploads.begun.find((u) => u.kind === 'voicemail'), 2000, 'voicemail recording');
+    expect(h.uploads.begun[0]).toMatchObject({ mailboxId: shared });
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    expect((await a.cdrs())[0]).toMatchObject({ outcome: 'busy', voicemail: true });
+  });
+
+  it('busy with no forwardBusy -> the extension\'s own voicemail box', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    const e101 = await a.extension({ number: '101' });
+    await a.number('+12015550117', { type: 'extension', id: e101 });
+    h.ari.sip.set(a.ext['101']!.sip, { failCause: 17 });
+    const caller = h.ari.carrierCall('+12015550117', '+16315550000');
+    await until(() => h.uploads.begun.find((u) => u.kind === 'voicemail'), 2000, 'voicemail recording');
+    expect(h.uploads.begun[0]).toMatchObject({ mailboxId: a.ext['101']!.mailboxId });
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('forward no answer applies after the ring timeout', async () => {
     const h = makeHarness(db.sql);
     const a = await new Account(db.sql).create();

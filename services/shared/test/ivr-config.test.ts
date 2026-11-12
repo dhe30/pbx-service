@@ -21,8 +21,9 @@ describe('Destinations (§3: extension, ring group, IVR menu, voicemail box, bus
   it('external numbers must be E.164', () => {
     expect(() => DestinationSchema.parse({ type: 'external', number: '2015550123' })).toThrow();
   });
-  it('forwarding targets are only an extension or an external number', () => {
+  it('forwarding targets are only an extension, a voicemail box or an external number', () => {
     expect(ForwardDestinationSchema.safeParse({ type: 'extension', id }).success).toBe(true);
+    expect(ForwardDestinationSchema.safeParse({ type: 'voicemail', id }).success).toBe(true);
     expect(ForwardDestinationSchema.safeParse({ type: 'external', number: '+12015550123' }).success).toBe(true);
     expect(ForwardDestinationSchema.safeParse({ type: 'ring_group', id }).success).toBe(false);
   });

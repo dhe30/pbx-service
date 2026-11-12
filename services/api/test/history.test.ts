@@ -89,6 +89,7 @@ describe.skipIf(!db)('history (Postgres)', () => {
     startedAt: string;
     outcome?: 'answered' | 'busy' | 'no_answer' | 'failed' | 'blocked';
     charge?: number;
+    cost?: number;
     voicemail?: boolean;
   }
   async function cdr(t: Tenant, l: Leg): Promise<{ id: string; callId: string }> {
@@ -96,11 +97,11 @@ describe.skipIf(!db)('history (Postgres)', () => {
     const callId = l.callId ?? randomUUID();
     await sql`
       insert into cdrs (id, call_id, parent_id, tenant_id, direction, from_number, to_number, did, from_extension,
-                        to_extension, started_at, answered_at, ended_at, billable_sec, outcome, charge, voicemail, pbx_node)
+                        to_extension, started_at, answered_at, ended_at, billable_sec, outcome, cost, charge, voicemail, pbx_node)
       values (${id}, ${callId}, ${l.parentId ?? null}, ${t.id}, ${l.direction}, ${l.from ?? null}, ${l.to ?? null},
               ${l.did ?? null}, ${l.fromExt ?? null}, ${l.toExt ?? null}, ${l.startedAt}::timestamptz,
               ${l.startedAt}::timestamptz + interval '1 second', ${l.startedAt}::timestamptz + interval '61 seconds',
-              ${l.outcome === 'answered' || !l.outcome ? 60 : 0}, ${l.outcome ?? 'answered'}, ${l.charge ?? 0},
+              ${l.outcome === 'answered' || !l.outcome ? 60 : 0}, ${l.outcome ?? 'answered'}, ${l.cost ?? 0}, ${l.charge ?? 0},
               ${l.voicemail ?? false}, 'test')`;
     return { id, callId };
   }
@@ -146,7 +147,7 @@ describe.skipIf(!db)('history (Postgres)', () => {
     await audio(a, 'recording', incoming.callId);
     outgoing = await cdr(a, {
       direction: 'outgoing', from: '+15165550100', to: '+442071234567', did: '+15165550100', fromExt: '102',
-      startedAt: '2026-11-02T09:30:00Z', charge: 0.123456,
+      startedAt: '2026-11-02T09:30:00Z', cost: 0.020576, charge: 0.123456,
     });
     internal = await cdr(a, { direction: 'internal', from: '102', to: '101', fromExt: '102', toExt: '101', startedAt: '2026-11-03T12:00:00Z', outcome: 'busy' });
     missed = await cdr(a, {
@@ -179,9 +180,9 @@ describe.skipIf(!db)('history (Postgres)', () => {
         callId: outgoing.callId, parentId: null, direction: 'outgoing', fromNumber: '+15165550100',
         toNumber: '+442071234567', did: '+15165550100', fromExtension: '102', toExtension: null,
         startedAt: '2026-11-02T09:30:00.000Z', billableSec: 60, outcome: 'answered', voicemail: false,
-        charge: 0.123456, recordingUrl: null,
+        cost: 0.020576, charge: 0.123456, recordingUrl: null,
       });
-      expect(out).not.toHaveProperty('cost');
+      // Course spec §5: CDRs include cost (what we pay) and charge (what we bill).
       expect(out).not.toHaveProperty('pbxNode');
       const inc = res.json().items.find((l: { id: string }) => l.id === incoming.id);
       expect(inc.recordingUrl).toBe(`/calls/${incoming.callId}/recording`);

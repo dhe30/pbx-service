@@ -188,10 +188,16 @@ export class Account {
     return id;
   }
 
-  async ringGroup(strategy: 'all' | 'sequential', members: string[], ringTimeoutSec: number, noAnswer: Destination | null): Promise<string> {
+  async ringGroup(
+    strategy: 'all' | 'sequential',
+    members: string[],
+    ringTimeoutSec: number,
+    noAnswer: Destination | null,
+    totalTimeoutSec: number | null = null,
+  ): Promise<string> {
     const id = randomUUID();
-    await this.sql`insert into ring_groups (id, tenant_id, name, strategy, ring_timeout_sec, no_answer_destination)
-      values (${id}, ${this.id}, 'group', ${strategy}, ${ringTimeoutSec}, ${noAnswer ? this.sql.json(noAnswer) : null})`;
+    await this.sql`insert into ring_groups (id, tenant_id, name, strategy, ring_timeout_sec, total_timeout_sec, no_answer_destination)
+      values (${id}, ${this.id}, 'group', ${strategy}, ${ringTimeoutSec}, ${totalTimeoutSec}, ${noAnswer ? this.sql.json(noAnswer) : null})`;
     let pos = 0;
     for (const m of members) {
       await this.sql`insert into ring_group_members (ring_group_id, extension_id, position) values (${id}, ${this.ext[m]!.id}, ${pos++})`;

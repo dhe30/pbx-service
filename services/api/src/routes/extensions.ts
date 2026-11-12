@@ -4,22 +4,21 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { HttpError, isUniqueViolation } from '../errors.js';
-import { destinationUsages, refuseIfUsed } from '../references.js';
+import { rerouteDestination, type Usage } from '../references.js';
 import { IdParams, assertOwned, destinationRefs, tenantOf, type Ref } from '../tenancy.js';
 import { name, nullableId, parse } from '../validation.js';
-import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
+import { crudDocs, withDoc } from '../openapi/document.js';
 
 // Extensions (course spec §3): "Number unique in the account (e.g. 101), name, SIP username and
 // password (returned by your API), voicemail box, and forwarding (always, busy, no answer) to an
-// extension or external number. Any number of phones register ..."
+// extension or external number." We also accept a voicemail box as a forwarding target. Any number of phones register ..."
 // Contract with the call path: docs/telephony-contract.md §2.
 //
 // GET    /extensions          any user   200 [extension]   sorted by number (sipPassword: owner only)
 // GET    /extensions/:id      any user   200 extension     404
 // POST   /extensions          owner      201 extension     400, 402 payment_required, 409 number_taken | extension_limit
 // PUT    /extensions/:id      owner      200 extension     400, 404, 409 number_taken
-// DELETE /extensions/:id      owner      204               404, 409 in_use (something routes to it, or it is a
-//                                                                     ring group's only member)
+// DELETE /extensions/:id      owner      204               404   (whatever routed to it goes to its voicemail box)
 //
 // extension = { id, number, name, sipUsername, sipPassword, mailboxId, ringTimeoutSec,
 //               forwardAlways, forwardBusy, forwardNoAnswer, externalNumbers, callerIdNumber, userId }
@@ -38,6 +37,16 @@ export interface ExtensionOptions {
 
 const e164 = z.string().regex(/^\+[1-9][0-9]{6,14}$/, 'must be an E.164 number, e.g. +12015550123');
 
+// Where a call goes is the same for busy and no answer when nothing is set: the extension's own
+// voicemail box (services/ari-app/src/router.ts), else hang up.
+const FORWARD_ALWAYS = 'Forward every call (phones do not ring): an extension, a voicemail box or an external number. null = off.';
+const FORWARD_BUSY =
+  'Where a call goes when every device is busy: an extension, a voicemail box ({"type":"voicemail","id":<mailboxId>}) ' +
+  "or an external number. null = the extension's own voicemail box (mailboxId), or hang up if it has none.";
+const FORWARD_NO_ANSWER =
+  'Where a call goes when nobody answers within ringTimeoutSec: an extension, a voicemail box or an external number. ' +
+  "null = the extension's own voicemail box (mailboxId), or hang up if it has none.";
+
 const ExtensionBody = z.object({
   number: z.string().regex(/^[0-9]{1,8}$/, 'must be 1-8 digits').describe('Extension number: 1-8 digits, unique in the account.'),
   name,
@@ -53,9 +62,9 @@ const ExtensionBody = z.object({
     .describe('Voicemail box. Omitted on create: a new mailbox is created. null: no voicemail. Omitted on replace: unchanged.'),
   // Same bounds as the CHECK constraint on extensions.ring_timeout_sec.
   ringTimeoutSec: z.number().int().min(5).max(120).default(20).describe('Seconds to ring before no-answer handling.'),
-  forwardAlways: ForwardDestinationSchema.nullable().default(null).describe('Forward every call (phones do not ring). null = off.'),
-  forwardBusy: ForwardDestinationSchema.nullable().default(null).describe('Forward when busy. null = off.'),
-  forwardNoAnswer: ForwardDestinationSchema.nullable().default(null).describe('Forward when not answered. null = off (voicemail).'),
+  forwardAlways: ForwardDestinationSchema.nullable().default(null).describe(FORWARD_ALWAYS),
+  forwardBusy: ForwardDestinationSchema.nullable().default(null).describe(FORWARD_BUSY),
+  forwardNoAnswer: ForwardDestinationSchema.nullable().default(null).describe(FORWARD_NO_ANSWER),
   /** Rung together with the extension's devices; each is a charged outgoing leg. */
   externalNumbers: z
     .array(e164.describe('E.164 number.'))
@@ -177,9 +186,9 @@ const ExtensionSchema = z
     sipPassword: z.string().optional().describe('SIP password. Only returned to the account owner.'),
     mailboxId: z.string().uuid().nullable().describe('Voicemail box for unanswered calls and *98; null = none.'),
     ringTimeoutSec: z.number().int().describe('Seconds to ring before no-answer handling.'),
-    forwardAlways: ForwardDestinationSchema.nullable().describe('Forward every call (phones do not ring); null = off.'),
-    forwardBusy: ForwardDestinationSchema.nullable().describe('Forward when busy; null = off.'),
-    forwardNoAnswer: ForwardDestinationSchema.nullable().describe('Forward when not answered (before voicemail); null = off.'),
+    forwardAlways: ForwardDestinationSchema.nullable().describe(FORWARD_ALWAYS),
+    forwardBusy: ForwardDestinationSchema.nullable().describe(FORWARD_BUSY),
+    forwardNoAnswer: ForwardDestinationSchema.nullable().describe(FORWARD_NO_ANSWER),
     externalNumbers: z.array(z.string().describe('E.164 number.')).describe('External numbers rung together with the phones.'),
     callerIdNumber: z.string().nullable().describe("Caller ID for outgoing calls (one of the account's numbers); null = the account's first number."),
     userId: z.string().uuid().nullable().describe('Web user whose softphone uses this extension by default.'),
@@ -200,10 +209,12 @@ const docs = crudDocs({
     409: 'Another extension already has this number (`number_taken`), or the plan limit is reached (`extension_limit`; see GET /billing).',
   },
   replaceErrors: { 409: 'Another extension already has this number (`number_taken`).' },
-  deleteDescription: 'Deletes its SIP account (its phones stop working). Its mailbox and voicemails stay.',
-  deleteErrors: {
-    409: `${IN_USE} (numbers, IVR digits, ring groups, business hours, other extensions' forwarding, or a ring group it is the only member of).`,
-  },
+  deleteDescription:
+    'Deletes its SIP account (its phones stop working). Its mailbox and voicemails stay. Never refused because ' +
+    'something routes to it: numbers, IVR menu keys/timeout/invalid, business hours and ring group no-answer ' +
+    'destinations that pointed at it now go to its voicemail box ({"type":"voicemail","id":<its mailboxId>}), or ' +
+    "hang up if it had none; other extensions' forwarding to it is switched off (null); it leaves every ring group " +
+    '(a group left without members goes straight to its no-answer destination).',
 });
 docs.create.description = 'Creates the extension, its SIP account and (unless mailboxId is given) a mailbox, in one step.';
 
@@ -300,23 +311,23 @@ export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app,
   app.delete('/extensions/:id', withDoc(ownerOnly, docs.remove), async (req, reply) => {
     const tenantId = tenantOf(req);
     const { id } = parse(IdParams, req.params);
+    let rerouted: Usage[] = [];
     await withRetry(() =>
       sql.begin(async (tx) => {
-        const [ext] = await tx<{ sipUsername: string }[]>`
-          select sip_username from extensions where id = ${id} and tenant_id = ${tenantId} for update`;
+        const [ext] = await tx<{ sipUsername: string; mailboxId: string | null }[]>`
+          select sip_username, mailbox_id from extensions where id = ${id} and tenant_id = ${tenantId} for update`;
         if (!ext) throw notFound();
         // Numbers, IVR digits, business hours, ring group no-answer or another extension's
-        // forwarding may route here; the ARI app would hang up on those callers. Refuse. Same for
-        // a ring group it is the only member of: the group would ring nobody.
-        const soleMemberOf = await tx<{ name: string }[]>`
-          select g.name from ring_groups g join ring_group_members m on m.ring_group_id = g.id
-           where g.tenant_id = ${tenantId} and m.extension_id = ${id}
-             and not exists (select 1 from ring_group_members o where o.ring_group_id = g.id and o.extension_id <> ${id})
-           order by g.name, g.id`;
-        refuseIfUsed([
-          ...(await destinationUsages(tx, tenantId, 'extension', id)),
-          ...soleMemberOf.map((g) => ({ kind: 'ring group', name: g.name, note: 'its only member' })),
-        ]);
+        // forwarding may route here. Refusing (409) failed the course adapter and simulated
+        // customers, who delete extensions without unlinking them first; so callers routed here
+        // reach its voicemail box instead (the mailbox outlives the extension), else hang up.
+        rerouted = await rerouteDestination(
+          tx,
+          tenantId,
+          'extension',
+          id,
+          ext.mailboxId ? { type: 'voicemail', id: ext.mailboxId } : { type: 'hangup' },
+        );
         // Its devices can't authenticate any more; existing registrations (in Kamailio memory)
         // expire within max_expires, and the ARI app stops ringing it as soon as its cache drops
         // the account (NOTIFY). Memberships in ring groups that have other members cascade; its
@@ -325,7 +336,7 @@ export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app,
         await tx`delete from extensions where id = ${id} and tenant_id = ${tenantId}`;
       }),
     );
-    req.log.info({ tenantId, extensionId: id }, 'extension deleted');
+    req.log.info({ tenantId, extensionId: id, rerouted }, 'extension deleted');
     return reply.status(204).send();
   });
 };

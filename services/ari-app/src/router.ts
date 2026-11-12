@@ -34,10 +34,16 @@ export async function routeTo(ctx: Ctx, s: CallSession, dest: Destination | null
         const g = t.ringGroups.get(d.id);
         if (!g) return missing(s, d);
         const members = g.memberIds.map((id) => t.extensions.get(id)).filter((e): e is ExtensionCfg => !!e);
+        if (members.length === 0) {
+          // Every member was deleted: nobody to ring, go straight to the no-answer destination.
+          s.ringOutcome = 'no_answer';
+          d = g.noAnswer;
+          break;
+        }
         const r =
           g.strategy === 'sequential'
-            ? await ringSequential(ctx, s, members.map(extensionTargets), g.ringTimeoutSec)
-            : await ringTargets(ctx, s, members.flatMap(extensionTargets), g.ringTimeoutSec);
+            ? await ringSequential(ctx, s, members.map(extensionTargets), g.ringTimeoutSec, g.totalTimeoutSec)
+            : await ringTargets(ctx, s, members.flatMap(extensionTargets), Math.min(g.ringTimeoutSec, g.totalTimeoutSec ?? Infinity));
         if (r.winner) return connect(ctx, s, r.winner);
         s.ringOutcome = r.outcome;
         d = g.noAnswer;
@@ -73,9 +79,8 @@ function missing(s: CallSession, d: Destination): void {
   s.log.warn({ dest: d }, 'route: destination no longer exists; hanging up');
 }
 
-function forwardDest(f: ForwardDestination): Destination {
-  return f.type === 'extension' ? { type: 'extension', id: f.id } : { type: 'external', number: f.number };
-}
+/** ForwardDestination is a subset of Destination (extension | voicemail | external). */
+const forwardDest = (f: ForwardDestination): Destination => f;
 
 /**
  * Ring an extension with its forwarding rules: always -> straight to the forward target;

@@ -74,8 +74,8 @@ export const COMPONENTS: Record<string, JsonSchema> = {
     ],
   },
   ForwardDestination: {
-    description: 'Forwarding target of an extension: another extension or an external number.',
-    oneOf: [withId('extension', 'extension'), external],
+    description: 'Forwarding target of an extension: another extension, a voicemail box, or an external number.',
+    oneOf: [withId('extension', 'extension'), withId('voicemail', 'mailbox (voicemail)'), external],
   },
   IvrConfig: {
     type: 'object',

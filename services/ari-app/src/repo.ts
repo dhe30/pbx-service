@@ -128,8 +128,8 @@ export class Repo {
         select id, number, name, sip_username, mailbox_id, ring_timeout_sec, forward_always, forward_busy,
                forward_no_answer, external_numbers, caller_id_number
           from extensions where tenant_id = ${tenantId}`),
-      q(() => sql<{ id: string; name: string; strategy: 'all' | 'sequential'; ringTimeoutSec: number; noAnswerDestination: unknown }[]>`
-        select id, name, strategy, ring_timeout_sec, no_answer_destination from ring_groups where tenant_id = ${tenantId}`),
+      q(() => sql<{ id: string; name: string; strategy: 'all' | 'sequential'; ringTimeoutSec: number; totalTimeoutSec: number | null; noAnswerDestination: unknown }[]>`
+        select id, name, strategy, ring_timeout_sec, total_timeout_sec, no_answer_destination from ring_groups where tenant_id = ${tenantId}`),
       q(() => sql<{ ringGroupId: string; extensionId: string }[]>`
         select m.ring_group_id, m.extension_id from ring_group_members m
           join ring_groups g on g.id = m.ring_group_id
@@ -203,6 +203,7 @@ export class Repo {
         name: g.name,
         strategy: g.strategy,
         ringTimeoutSec: g.ringTimeoutSec,
+        totalTimeoutSec: g.totalTimeoutSec,
         noAnswer: dest(log, g.noAnswerDestination, `ring_groups ${g.id}`),
         memberIds: [],
       });

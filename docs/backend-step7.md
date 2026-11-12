@@ -29,11 +29,15 @@ leg has `parentId: null`; each extra leg we placed to an external number (simult
 forwarding, transfer to a number) has the same `callId` and `parentId` = the main leg.
 
 leg = `{ id, callId, parentId, direction, fromNumber, toNumber, did, fromExtension, toExtension,
-startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, charge, includedSec,
+startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, cost, charge, includedSec,
 recordingUrl }`
 - `charge`: what the customer pays for the leg, in USD (a JSON number; the column is
-  `numeric(12,6)`). `cost` (what we pay the vendor), `rate_prefix`, `hangup_cause` and `pbx_node`
-  are internal and not returned.
+  `numeric(12,6)`). `cost`: what we pay the vendor / DID provider for it (course spec §5: CDRs
+  include cost and charge; the course adapter requires it, 2026-11-12). `rate_prefix`,
+  `hangup_cause` and `pbx_node` are internal and not returned.
+- `fromExtension` / `toExtension`: extension NUMBERS ("101"), not ids.
+- `recordingUrl` / recordings in `GET /media`: appear only once the recording is uploaded
+  (seconds after the call ends); there is no "in progress" state.
 - `recordingUrl`: `/calls/<callId>/recording` if the call was recorded, else `null`.
 
 Filters (all optional, combinable):
