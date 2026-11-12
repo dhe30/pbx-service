@@ -27,6 +27,14 @@
       loop: [kamailio/kamailio.cfg, kamailio/tls.cfg, kamailio/dispatcher.list, rtpengine/rtpengine.conf]
       when: "'edge' in group_names"
 
+    - name: Edge HAProxy config + certificate install script
+      ansible.builtin.template:
+        src: "roles/edge_haproxy/templates/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/{{ item }}"
+        mode: "0644"
+      loop: [haproxy.cfg, pbx-install-cert.sh]
+      when: "'edge' in group_names"
+
     - name: PBX configs
       ansible.builtin.template:
         src: "{{ repo_root }}/telephony/asterisk/{{ item }}.j2"

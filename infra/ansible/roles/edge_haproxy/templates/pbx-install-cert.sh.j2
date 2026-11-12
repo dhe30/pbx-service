@@ -1,0 +1,56 @@
+#!/bin/sh
+# Managed by Ansible (role edge_haproxy). Installs a certificate on this edge for
+#   - HAProxy (HTTPS + WSS):   /etc/haproxy/certs/site.pem = fullchain + key
+#   - Kamailio (SIP over TLS): {{ kamailio_tls_cert }} (fullchain) + {{ kamailio_tls_key }}
+# and reloads only what changed. Called by Ansible and by certbot's deploy hook after a renewal.
+#
+#   pbx-install-cert FULLCHAIN PRIVKEY
+#
+# Prints "changed" if anything was replaced, "unchanged" otherwise (Ansible's changed_when).
+set -eu
+
+chain=$1
+key=$2
+site=/etc/haproxy/certs/site.pem
+kam_cert={{ kamailio_tls_cert }}
+kam_key={{ kamailio_tls_key }}
+
+# Refuse a key that doesn't belong to the certificate (a half-copied pair would take HTTPS down).
+cert_pub=$(openssl x509 -in "$chain" -noout -pubkey)
+key_pub=$(openssl pkey -in "$key" -pubout)
+if [ "$cert_pub" != "$key_pub" ]; then
+    echo "pbx-install-cert: $key does not match $chain" >&2
+    exit 1
+fi
+
+changed=no
+
+# HAProxy: write next to the target, then rename (atomic: a reload never sees half a file).
+tmp=$(mktemp /etc/haproxy/certs/.site.pem.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
+cat "$chain" "$key" > "$tmp"
+if ! cmp -s "$tmp" "$site"; then
+    chgrp haproxy "$tmp"
+    chmod 0640 "$tmp"
+    mv "$tmp" "$site"
+    # Reload keeps established connections (WebSockets of registered browsers) on the old process.
+    systemctl try-reload-or-restart haproxy
+    changed=yes
+fi
+
+# Kamailio: only if it's installed here (always on an edge).
+if [ -d "$(dirname "$kam_cert")" ]; then
+    if ! cmp -s "$chain" "$kam_cert" || ! cmp -s "$key" "$kam_key"; then
+        install -o root -g kamailio -m 0640 "$chain" "$kam_cert"
+        install -o root -g kamailio -m 0640 "$key" "$kam_key"
+        # tls.reload re-reads tls.cfg and the certificate files for NEW connections, without
+        # dropping registrations or calls. Fall back to a restart (DMQ re-syncs registrations
+        # from the peer edge) if the RPC fails or Kamailio isn't running.
+        if ! kamcmd tls.reload >/dev/null 2>&1; then
+            systemctl try-restart kamailio
+        fi
+        changed=yes
+    fi
+fi
+
+if [ "$changed" = yes ]; then echo changed; else echo unchanged; fi

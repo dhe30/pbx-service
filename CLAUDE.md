@@ -379,15 +379,17 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 ## 14. Networking, ports, security
 ---------------------------------------------------------------------------------------------
 Public (edge only): UDP 5060 (carrier, vendors, phones), TCP 5061 (SIP over TLS for phones),
-TCP 443 (HTTPS + WSS via HAProxy), UDP 30000–40000 (rtpengine media), TCP 22 (prefer restricting
-via host firewall).
+TCP 80 (ACME HTTP-01, else redirect to HTTPS), TCP 443 (HTTPS + WSS via HAProxy),
+UDP 30000–40000 (rtpengine media), TCP 22 (prefer restricting via host firewall).
 Private: Kamailio UDP 5070 (internal socket: Asterisk, peer edge, DMQ) + WS 8080, rtpengine ng 2223, Asterisk UDP 5060 + RTP 10000–20000,
 ARI 8088 (localhost only), API 3000, Postgres 5432, Patroni 8008, etcd 2379/2380, object store,
 node_exporter 9100 and other exporters.
 - Host firewall (nftables, via Ansible `common` role): private-port allowlists by role/IP.
 - Kamailio permissions module: only provider IPs may send INVITEs as carrier.
 - fail2ban for SSH; Kamailio pike + UA blacklist (light; testers are not malicious).
-- TLS: certificate for the app domain on HAProxy (edge); automated renewal + expiry alert.
+- TLS: one Let's Encrypt cert for the group domain (HTTP-01 via HAProxy :80 -> certbot on acme_edge,
+  copied to the other edge by Ansible) for HAProxy HTTPS/WSS + Kamailio 5061 (role edge_haproxy,
+  docs/cloud-deploy.md §2; cloud firewall needs TCP 80). Expiry alert: still TODO (monitoring).
 - Secrets in Ansible Vault (DB passwords, ARI password, JWT key, S3 keys).
 
 ---------------------------------------------------------------------------------------------

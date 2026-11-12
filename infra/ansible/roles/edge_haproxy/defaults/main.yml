@@ -1,1 +1,6 @@
 ---
+# certbot lineage name: /etc/letsencrypt/live/<name>/ on acme_edge.
+acme_cert_name: pbx
+acme_live_dir: "/etc/letsencrypt/live/{{ acme_cert_name }}"
+# Where non-ACME edges keep their copy of the certificate + key.
+acme_copy_dir: /etc/pbx-tls

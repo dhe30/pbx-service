@@ -26,6 +26,7 @@ what to check and what to change if a check fails. Background:
   |---|---|
   | UDP 5060 | carrier, vendors, desk phones |
   | TCP 5061 | SIP over TLS (`_sips._tcp` phones) |
+  | TCP 80 | Let's Encrypt HTTP-01 challenges (everything else redirects to HTTPS) |
   | TCP 443 | HTTPS + WSS (softphone) |
   | UDP 30000-40000 | rtpengine media |
   | TCP 22 | SSH (your IP only, if the platform allows) |
@@ -66,17 +67,46 @@ them random, port 5060 is public and will be scanned.
 
 Check from your machine: `dig +short SRV _sip._udp.group-4.cse356.compas.cs.stonybrook.edu`.
 
-**Certificates:** the playbook makes self-signed ones. They're fine for a first test with the
-browser (accept the warning once), but real TLS phones and the graders' browsers need a real
-certificate for `group-4...`. Get one (e.g. Let's Encrypt; [VERIFY] whether outbound access is
-allowed). Then:
-- Kamailio: `/etc/kamailio/tls/cert.pem` + `key.pem` (owner root, group kamailio, mode 0640),
-  then `systemctl restart kamailio`.
-- HAProxy: cert + key concatenated into `/etc/haproxy/certs/site.pem`, then
-  `systemctl reload haproxy`.
-
-The playbook only creates the self-signed files if they don't exist, so it won't overwrite yours.
-Automating issuance and renewal is still a TODO (phase 7).
+**Certificates (Let's Encrypt, automated by the `edge_haproxy` role).** One publicly trusted
+certificate for `group-4.cse356.compas.cs.stonybrook.edu` serves HTTPS + WSS (HAProxy, also what
+the course's API adapter fetches `/openapi.json` through: it rejects self-signed certificates)
+and SIP over TLS (Kamailio 5061, `_sips._tcp` phones).
+- **Before the first run:** add an inbound **TCP 80** rule in the Clanode cloud firewall for the
+  edges (by hand: the playbook can't change the cloud firewall; nftables on the VM is opened by
+  the `common` role). The Group tab's A record must point at the edge in `acme_edge` (default
+  the first `[edge]` host, edge-1).
+- **How it works:** HAProxy's `:80` frontend sends `/.well-known/acme-challenge/` to certbot's
+  standalone server on `127.0.0.1:8888` and redirects everything else to HTTPS. Only `acme_edge`
+  requests the certificate (HTTP-01; DNS-01 is impossible, the Group tab's DNS has no API). It
+  checks first that every name resolves to its public IP, so a wrong A record doesn't burn Let's
+  Encrypt's failed-validation limit (5 per hour). The other edge copies cert + key from it on each
+  playbook run (so a DNS failover to it serves the same name). Every edge installs it with
+  `/usr/local/sbin/pbx-install-cert`: `/etc/haproxy/certs/site.pem` (fullchain + key) and
+  `/etc/kamailio/tls/{cert,key}.pem` (group kamailio, 0640), then reloads HAProxy and runs
+  `kamcmd tls.reload` (restart only as a fallback), only when something changed.
+- **Until the first issuance** HAProxy and Kamailio use the self-signed fallback, so they always
+  start. If issuance fails (DNS points elsewhere, port 80 closed), the play shows the reason as
+  an **ignored** failure on that edge and goes on with the current certificate; fix it and rerun
+  the edge play: `ansible-playbook site.yml --limit edge --ask-vault-pass`.
+- **Settings** (`group_vars/all/main.yml`): `acme_enabled` (false = keep self-signed, e.g. the
+  local VirtualBox VM), `acme_edge`, `acme_domains` (web_domain + sip_domain), `acme_email`
+  (empty = no expiry mails; use a team address, the repo is public), `acme_staging`.
+- **Test first with staging** (untrusted certs, generous rate limits):
+  `-e acme_staging=true`, check `curl -vk https://group-4.../openapi.json` shows a `(STAGING)`
+  issuer, then rerun without it: the role replaces a staging certificate with a production one.
+  Production limits: 5 identical certificates per week, so don't loop on production.
+- **Renewal:** Debian's `certbot.timer` on `acme_edge` renews it ~30 days before expiry; the
+  deploy hook `/etc/letsencrypt/renewal-hooks/deploy/pbx-install-cert` installs it there. The
+  other edge gets the renewed certificate on the **next playbook run** of the edge play. A
+  certificate is valid 90 days, which outlasts the course, so in practice no renewal is needed.
+  Dry run: `certbot renew --dry-run` on `acme_edge`.
+- **DNS moved to the other edge** (V-P1/V-P5 manual failover): nothing to do right away, that
+  edge already serves a copy of the same certificate. For renewals to keep working there, set
+  `acme_edge: edge-2` in `group_vars/all/main.yml` and rerun the edge play (it then issues its
+  own; the old edge's certbot timer just fails its HTTP-01 renewals harmlessly).
+- Check (from your machine): `openssl s_client -connect group-4.cse356.compas.cs.stonybrook.edu:443
+  -servername group-4.cse356.compas.cs.stonybrook.edu </dev/null | openssl x509 -noout -issuer -enddate`;
+  the same with `:5061` shows Kamailio's copy.
 
 ## 3. Deploy and seed
 
