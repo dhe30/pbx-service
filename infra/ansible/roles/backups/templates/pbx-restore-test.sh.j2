@@ -34,7 +34,7 @@ tenants=-1
 cdrs=-1
 
 stop_and_clean
-mkdir -p "$DIR/run" "$DIR/data" && chown -R pgbackrest:pgbackrest "$DIR" && chmod 0700 "$DIR" "$DIR/data"
+mkdir -p "$DIR/run" "$DIR/data" "$DIR/spool" && chown -R pgbackrest:pgbackrest "$DIR" && chmod 0700 "$DIR" "$DIR/data"
 
 log "restoring the newest backup into $DIR/data"
 if as_repo pgbackrest --config="$CONF" --stanza="$STANZA" restore; then

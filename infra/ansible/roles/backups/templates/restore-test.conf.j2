@@ -2,6 +2,9 @@
 # repository, but restored into a local scratch directory on {{ inventory_hostname }}.
 [global]
 repo1-path={{ backup_repo_path }}
+# Own scratch directory: the package's /var/spool/pgbackrest belongs to postgres, and this
+# test runs as pgbackrest (restore and the restored server's archive-get both use it).
+spool-path={{ backup_restore_test_dir }}/spool
 log-path=/var/log/pgbackrest
 log-level-console=info
 log-level-file=info

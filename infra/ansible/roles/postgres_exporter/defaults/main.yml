@@ -4,7 +4,3 @@
 # locks, long transactions, replication, and the most expensive queries (pg_stat_statements).
 # Private IP only; the host firewall limits it to cluster nodes.
 postgres_exporter_port: 9187
-
-# How many statements (by total time) the pg_stat_statements collector reports. Each one becomes
-# a few time series, so keep it small.
-postgres_exporter_statements_limit: 50
