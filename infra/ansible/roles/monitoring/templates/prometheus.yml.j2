@@ -17,6 +17,11 @@
 {% set edge_hosts = groups.get('edge', []) %}
 {% set app_hosts = groups.get('app', []) %}
 {% set rtpengine_hosts = groups.get('media') or edge_hosts %}
+{# Hosts running the local DB proxy + its metrics gateway (roles/db_local_proxy). A host that is
+   also a db node (all-in-one VM) has no local proxy. #}
+{% set proxy_hosts = groups.get('db_clients', []) | reject('in', db_hosts) | list %}
+{% set gateway_pbx_hosts = groups.get('pbx', []) | select('in', proxy_hosts) | list %}
+{% set gateway_port = dbproxy_metrics_port | default(9200) %}
 global:
   scrape_interval: {{ prometheus_scrape_interval }}
   evaluation_interval: {{ prometheus_scrape_interval }}
@@ -68,6 +73,32 @@ scrape_configs:
   - job_name: api
 {{ scrape(app_hosts, api_port | default(3000)) }}
 {% endif %}
+{% if db_hosts %}
 
-# Not scraped yet (they listen on 127.0.0.1 only, docs/split-contracts.md O1): ARI app (9101),
-# Asterisk (8088), Garage (3903), local DB proxy (8405). Kamailio has no metrics endpoint yet.
+  # Garage (S3 object store): cluster health, connected nodes, request rates and errors.
+  - job_name: garage
+{{ scrape(db_hosts, 3903) }}
+{% endif %}
+{% if proxy_hosts %}
+
+  # The local DB/S3 proxy on every client node: which db node is primary/replica as THIS node
+  # sees it, connection counts, S3 backends. Read through the metrics gateway.
+  - job_name: dbproxy
+    metrics_path: /metrics/proxy
+{{ scrape(proxy_hosts, gateway_port) }}
+{% endif %}
+{% if gateway_pbx_hosts %}
+
+  # Call control (services/ari-app): active calls, finished legs by outcome, CDR/upload backlogs,
+  # vendor failures. Loopback-only on the pbx node; read through the metrics gateway.
+  - job_name: ari_app
+    metrics_path: /metrics/ari
+{{ scrape(gateway_pbx_hosts, gateway_port) }}
+
+  # Asterisk (res_prometheus): channels, bridges, endpoints. Same gateway.
+  - job_name: asterisk
+    metrics_path: /metrics/asterisk
+{{ scrape(gateway_pbx_hosts, gateway_port) }}
+{% endif %}
+
+# Not scraped yet: Kamailio (no metrics endpoint), Postgres internals (no postgres_exporter).

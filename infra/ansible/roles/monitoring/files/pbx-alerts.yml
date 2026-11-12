@@ -161,16 +161,86 @@ groups:
         annotations:
           summary: etcd has lost quorum (half or more members down)
 
+  # ---- Calls (ARI app on the pbx nodes, read through the metrics gateway) ---------------------
+  - name: calls
+    rules:
+      # The app lost its connection to Asterisk: new calls to this pbx node get 503 and Kamailio
+      # sends them to the other node, so capacity is halved until it reconnects.
+      - alert: AriDisconnected
+        expr: pbx_ari_connected == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: call-control app is not connected to Asterisk"
+          description: Calls to this node fail over to the other pbx node. Check `journalctl -u pbx-ari-app` and Asterisk.
+
+      # CDRs are written in batches from a local spool; a growing backlog means Postgres writes fail
+      # or are too slow (call history and billing fall behind; nothing is lost while the disk holds).
+      - alert: CdrBacklogGrowing
+        expr: pbx_cdr_backlog > 500
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value }} call records waiting to be written to the database"
+
+      - alert: CdrWritesFailing
+        expr: increase(pbx_cdr_write_errors_total[10m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: call record inserts are failing"
+          description: Check the database (PatroniNoPrimary?) and the ARI app log.
+
+      # Recordings/voicemail wait in the local spool until the object store accepts them.
+      - alert: UploadBacklogGrowing
+        expr: pbx_upload_backlog > 100
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value }} recordings waiting for upload to the object store"
+
+      # Q.850 cause 21 = call rejected; a PSTN vendor with a $0 prepaid balance answers 402, which
+      # arrives as 21. Many in a row usually means the vendor balance ran out.
+      - alert: VendorCallsRejected
+        expr: sum by (instance) (increase(pbx_vendor_leg_failures_total{cause="21"}[10m])) >= 5
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanize }} outgoing calls rejected by a PSTN vendor in 10 min"
+          description: Probably a vendor balance at $0 (402 Payment Required). Top up on the Course Services tab.
+
+  # ---- Object store (Garage on the db nodes) ------------------------------------------------------
+  # [VERIFY] metric names against http://<db node>:3903/metrics on the first deployment.
+  - name: storage
+    rules:
+      # Garage can't serve reads/writes (fewer than 2 of 3 copies reachable).
+      - alert: GarageUnavailable
+        expr: cluster_available == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: object store unavailable (recordings, voicemail, greetings)"
+
+      # Still serving, but a node is missing: one more failure makes it unavailable.
+      - alert: GarageDegraded
+        expr: cluster_healthy == 0 and cluster_available == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: object store degraded (a Garage node is down)"
+
   # ---- Edge ----------------------------------------------------------------------------------------
   - name: edge
     rules:
-      # e.g. every API node down: the website and API return 503.
+      # Edge HAProxy (e.g. every API node down) and the local DB/S3 proxy on every client node.
       - alert: HAProxyBackendDown
         expr: haproxy_backend_active_servers == 0
         for: 1m
         labels: { severity: critical }
         annotations:
-          summary: "{{ $labels.instance }}: HAProxy backend {{ $labels.proxy }} has no healthy servers"
+          summary: "{{ $labels.instance }}: {{ $labels.job }} backend {{ $labels.proxy }} has no healthy servers"
+          description: >-
+            edge_haproxy: website/API/WebSocket backends. dbproxy: pg_primary = no database primary
+            reachable from this node, s3 = no Garage node reachable.
 
   # ---- Monitoring itself ---------------------------------------------------------------------------
   - name: monitoring

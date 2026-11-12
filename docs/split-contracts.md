@@ -107,8 +107,8 @@ lets the whole cluster reach every private port.
 | 8404/tcp | HAProxy stats + `/metrics` | edge | private_ip | Prometheus |
 | 5060/udp | Asterisk PJSIP | pbx | private_ip | Kamailio (any edge) |
 | 10000-20000/udp | Asterisk RTP | pbx | private_ip | rtpengine (internal side) |
-| 8088/tcp | Asterisk ARI + `/metrics` | pbx | 127.0.0.1 | local ARI app only |
-| 9101/tcp | ARI app `/health`, `/metrics` | pbx | 127.0.0.1 | local (see open item O1) |
+| 8088/tcp | Asterisk ARI + `/metrics` | pbx | 127.0.0.1 | local ARI app; `/metrics` via the gateway (9200) |
+| 9101/tcp | ARI app `/health`, `/metrics` | pbx | 127.0.0.1 | local; `/metrics` via the gateway (9200) |
 | 3000/tcp | API | app | private_ip | HAProxy on edges |
 | 8081/tcp | Website (nginx, static Vite build; `web_port`) | app | private_ip | HAProxy on edges |
 | 5432/tcp | Postgres | db | private_ip | local DB proxies (+ replicas) |
@@ -116,11 +116,12 @@ lets the whole cluster reach every private port.
 | 2379, 2380/tcp | etcd client / peer | db | private_ip | Patroni / other etcd members |
 | 3900/tcp | Garage S3 API | db | private_ip | local S3 proxies |
 | 3901/tcp | Garage RPC | db | private_ip | other Garage nodes |
-| 3903/tcp | Garage admin + metrics | db | 127.0.0.1 | local (see O1) |
+| 3903/tcp | Garage admin API (`/metrics`, `/health`; no admin token = admin endpoints off) | db | private_ip | Prometheus |
 | 5432/tcp | **local DB proxy** (read/write, current primary) | db_clients | 127.0.0.1 | local services |
 | 5433/tcp | **local DB proxy** (read-only, replicas first) | db_clients | 127.0.0.1 | Kamailio |
 | 3900/tcp | **local S3 proxy** | db_clients | 127.0.0.1 | local services |
-| 8405/tcp | local proxy stats + `/metrics` | db_clients | 127.0.0.1 | local (see O1) |
+| 8405/tcp | local proxy stats + `/metrics` | db_clients | 127.0.0.1 | local; `/metrics` via the gateway (9200) |
+| 9200/tcp | **metrics gateway** in `pbx-dbproxy`: `/metrics/proxy`, `/metrics/ari` + `/metrics/asterisk` (pbx only); GET only, other paths 404 | db_clients | private_ip | Prometheus |
 | 9100/tcp | node_exporter | all | private_ip | Prometheus |
 
 ## 5. Database contract
@@ -175,16 +176,16 @@ lets the whole cluster reach every private port.
 
 | Service | Health | Metrics |
 |---|---|---|
-| ARI app | `GET 127.0.0.1:9101/health` -> 200 when ARI and DB are OK | `127.0.0.1:9101/metrics` |
+| ARI app | `GET 127.0.0.1:9101/health` -> 200 when ARI and DB are OK | `127.0.0.1:9101/metrics`; Prometheus: `private_ip:9200/metrics/ari` |
 | API | `GET :3000/health` (liveness), `/ready` (DB + S3) | `:3000/metrics` |
 | Patroni | `GET :8008/health`, `/primary`, `/replica` | `:8008/metrics` |
-| Kamailio | SIP OPTIONS -> 200 | (T4 decides: xhttp_prom or exporter) |
+| Kamailio | SIP OPTIONS -> 200 | none yet (`xhttp_prom` needs a kamailio.cfg change, T2) |
 | rtpengine | ng `ping` | `private_ip:2225/metrics` |
 | HAProxy | — | `private_ip:8404/metrics` |
-| Garage | `garage status` | `127.0.0.1:3903/metrics` |
-| Local DB/S3 proxy | `127.0.0.1:8405/stats` (backends UP/DOWN) | `127.0.0.1:8405/metrics` |
+| Garage | `garage status`, `GET private_ip:3903/health` | `private_ip:3903/metrics` |
+| Local DB/S3 proxy | `127.0.0.1:8405/stats` (backends UP/DOWN) | `127.0.0.1:8405/metrics`; Prometheus: `private_ip:9200/metrics/proxy` |
 | etcd | `etcdctl endpoint health` | `:2379/metrics` |
-| Asterisk | `pjsip show endpoints` | `127.0.0.1:8088/metrics` (res_prometheus) |
+| Asterisk | `pjsip show endpoints` | `127.0.0.1:8088/metrics` (res_prometheus); Prometheus: `private_ip:9200/metrics/asterisk` |
 
 ## 8. While a dependency hasn't landed
 
@@ -200,9 +201,10 @@ an inline host var (`host-1 ... name=value`), never `[group:vars]`.
 
 ## 9. Open items (decide in the owning track, then update this file)
 
-- **O1 (T4):** ARI app metrics (9101), Asterisk metrics (8088), Garage metrics (3903) and the
-  local proxy's metrics (8405) bind to 127.0.0.1, so Prometheus on mon-1 can't reach them.
-  Options: bind them to `private_ip`, or scrape through a local exporter/agent.
+- **O1 (T4), decided:** the loopback-only metrics (ARI app 9101, Asterisk 8088, local proxy 8405)
+  are read through a metrics gateway in `pbx-dbproxy` on `private_ip:9200` (fixed `/metrics/...`
+  paths, GET only), so ARI itself stays loopback-only and no service config changes. Garage's admin
+  API moved to `private_ip:3903` (no admin token: only `/metrics` and `/health` answer).
 - **O2 (T1), decided:** the local S3 proxy runs in the same HAProxy instance as the DB proxy
   (`pbx-dbproxy`, separate from the edge's public HAProxy so reloading one never touches the
   other).

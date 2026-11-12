@@ -97,3 +97,34 @@ frontend stats
     stats enable
     stats uri /stats
     stats refresh 5s
+
+# ---- Metrics gateway (private IP, for Prometheus on mon-1) --------------------------------
+# Several local services only listen on 127.0.0.1. This frontend lets mon-1 read their /metrics
+# and nothing else: fixed paths, GET only, everything else 404. (Asterisk's port also serves ARI
+# call control, which must never be reachable from the network.)
+{% set is_pbx = inventory_hostname in groups.get('pbx', []) %}
+frontend metrics_gateway
+    bind {{ private_ip }}:{{ dbproxy_metrics_port }}
+    mode http
+    timeout client 10s
+    http-request deny deny_status 405 unless METH_GET
+    http-request deny deny_status 404 unless { path /metrics/proxy{{ ' /metrics/ari /metrics/asterisk' if is_pbx else '' }} }
+    http-request use-service prometheus-exporter if { path /metrics/proxy }
+{% if is_pbx %}
+    use_backend metrics_ari if { path /metrics/ari }
+    use_backend metrics_asterisk if { path /metrics/asterisk }
+{% endif %}
+{% if is_pbx %}
+
+backend metrics_ari
+    mode http
+    timeout server 10s
+    http-request set-path /metrics
+    server ari 127.0.0.1:9101
+
+backend metrics_asterisk
+    mode http
+    timeout server 10s
+    http-request set-path /metrics
+    server asterisk 127.0.0.1:8088
+{% endif %}

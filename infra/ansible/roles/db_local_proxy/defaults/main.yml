@@ -10,6 +10,13 @@ dbproxy_ro_port: 5433
 dbproxy_s3_port: 3900
 # HAProxy stats + Prometheus /metrics for this proxy (loopback only).
 dbproxy_stats_port: 8405
+# Metrics gateway on the PRIVATE IP, for Prometheus on mon-1 (roles/monitoring): serves only
+#   /metrics/proxy     this proxy's own metrics
+#   /metrics/ari       ARI app      (127.0.0.1:9101, pbx nodes)
+#   /metrics/asterisk  Asterisk     (127.0.0.1:8088, pbx nodes; the same port serves ARI, which
+#                                    must stay loopback-only, hence the gateway)
+# Anything else gets 404. The host firewall limits the port to cluster nodes.
+dbproxy_metrics_port: 9200
 
 # Health checks. A dead or demoted primary is taken out after fall x inter (~2 s); Patroni itself
 # needs up to ttl (30 s) to promote a replica, so that dominates the failover time.
