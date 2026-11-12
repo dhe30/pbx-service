@@ -39,7 +39,10 @@ export interface RingGroupCfg {
   id: string;
   name: string;
   strategy: RingStrategy;
+  /** sequential: per member; all: the whole group. */
   ringTimeoutSec: number;
+  /** Cap on the whole group's ring time; null = none. */
+  totalTimeoutSec: number | null;
   noAnswer: Destination | null;
   memberIds: string[]; // extension ids, in order
 }

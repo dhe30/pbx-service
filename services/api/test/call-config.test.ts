@@ -216,6 +216,7 @@ describe.skipIf(!db)('call configuration (Postgres)', () => {
         name: 'Kitchen',
         strategy: 'sequential',
         ringTimeoutSec: 20,
+        totalTimeoutSec: null,
         noAnswerDestination: { type: 'voicemail', id: mb },
         memberIds: [a.ext2Id, a.ext1Id],
       });

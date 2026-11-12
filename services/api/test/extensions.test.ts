@@ -181,22 +181,45 @@ describe.skipIf(!db || !hasKamailio)('extensions + SIP credentials (Postgres)', 
     expect(none.statusCode).toBe(404); // the owner has no assigned extension
   });
 
-  it('DELETE removes extension + SIP account; 409 while something routes to it', async () => {
+  it('DELETE removes extension + SIP account; callers routed to it reach its voicemail box', async () => {
     const a = await makeTenant();
     const ext = (await create(a, { number: '101', name: 'x' })).json();
     const fwd = (await create(a, { number: '102', name: 'fwd', forwardAlways: { type: 'extension', id: ext.id } })).json();
-    const busy = await app.inject({ method: 'DELETE', url: `/extensions/${ext.id}`, cookies: a.owner });
-    expect(busy.statusCode).toBe(409);
-    expect(busy.json()).toEqual({ error: 'in_use', message: 'Used by extension "102"; change that first' });
+    const post = (url: string, payload: object) => app.inject({ method: 'POST', url, cookies: a.owner, payload });
+    const toExt = { type: 'extension', id: ext.id };
+    const menu = (await post('/ivr-menus', { name: 'Main', config: { options: { '1': toExt, '2': { type: 'hangup' } }, timeout: toExt } })).json();
+    const group = (await post('/ring-groups', { name: 'G', strategy: 'all', memberIds: [fwd.id], noAnswerDestination: toExt })).json();
 
-    expect((await app.inject({ method: 'DELETE', url: `/extensions/${fwd.id}`, cookies: a.owner })).statusCode).toBe(204);
+    // The course adapter deletes extensions without unlinking them first: no 409.
     const res = await app.inject({ method: 'DELETE', url: `/extensions/${ext.id}`, cookies: a.owner });
     expect(res.statusCode).toBe(204);
     expect(await sql`select 1 from kamailio.subscriber where username = ${ext.sipUsername}`).toHaveLength(0);
     expect(await sql`select 1 from mailboxes where id = ${ext.mailboxId}`).toHaveLength(1); // voicemails kept
+
+    const vm = { type: 'voicemail', id: ext.mailboxId };
+    const get = async (url: string) => (await app.inject({ method: 'GET', url, cookies: a.owner })).json();
+    expect((await get(`/ivr-menus/${menu.id}`)).config).toMatchObject({ options: { '1': vm, '2': { type: 'hangup' } }, timeout: vm });
+    expect((await get(`/ring-groups/${group.id}`)).noAnswerDestination).toEqual(vm);
+    expect((await get(`/extensions/${fwd.id}`)).forwardAlways).toBeNull();
   });
 
-  it("DELETE refuses a ring group's only member, and leaves groups with other members", async () => {
+  it('DELETE of an extension without a mailbox: routes to it hang up', async () => {
+    const a = await makeTenant();
+    const ext = (await create(a, { number: '103', name: 'nomb', mailboxId: null })).json();
+    const menu = (
+      await app.inject({
+        method: 'POST',
+        url: '/ivr-menus',
+        cookies: a.owner,
+        payload: { name: 'M', config: { options: { '1': { type: 'extension', id: ext.id } } } },
+      })
+    ).json();
+    expect((await app.inject({ method: 'DELETE', url: `/extensions/${ext.id}`, cookies: a.owner })).statusCode).toBe(204);
+    const after = (await app.inject({ method: 'GET', url: `/ivr-menus/${menu.id}`, cookies: a.owner })).json();
+    expect(after.config.options['1']).toEqual({ type: 'hangup' });
+  });
+
+  it('DELETE leaves ring groups, even as their only member', async () => {
     const a = await makeTenant();
     const one = (await create(a, { number: '201', name: 'one' })).json();
     const two = (await create(a, { number: '202', name: 'two' })).json();
@@ -205,13 +228,9 @@ describe.skipIf(!db || !hasKamailio)('extensions + SIP credentials (Postgres)', 
     const solo = (await group('Solo', [one.id])).json();
     const shared = (await group('Shared', [one.id, two.id])).json();
 
-    const refused = await app.inject({ method: 'DELETE', url: `/extensions/${one.id}`, cookies: a.owner });
-    expect(refused.statusCode).toBe(409);
-    expect(refused.json()).toEqual({ error: 'in_use', message: 'Used by ring group "Solo" (its only member); change that first' });
-
-    expect((await app.inject({ method: 'DELETE', url: `/ring-groups/${solo.id}`, cookies: a.owner })).statusCode).toBe(204);
     expect((await app.inject({ method: 'DELETE', url: `/extensions/${one.id}`, cookies: a.owner })).statusCode).toBe(204);
-    const after = (await app.inject({ method: 'GET', url: `/ring-groups/${shared.id}`, cookies: a.owner })).json();
-    expect(after.memberIds).toEqual([two.id]);
+    const get = async (id: string) => (await app.inject({ method: 'GET', url: `/ring-groups/${id}`, cookies: a.owner })).json();
+    expect((await get(shared.id)).memberIds).toEqual([two.id]);
+    expect((await get(solo.id)).memberIds).toEqual([]);
   });
 });

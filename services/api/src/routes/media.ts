@@ -175,7 +175,10 @@ export const mediaRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore; audi
       tag: 'Media',
       auth: 'owner',
       summary: 'List media',
-      description: 'Greetings, recordings and voicemail audio of the account, newest first.',
+      description:
+        'Greetings, recordings and voicemail audio of the account, newest first. Every listed item is stored and ' +
+        'playable: a call recording or voicemail is listed only once its audio has been uploaded (normally seconds ' +
+        'after the call ends), never while it is still being recorded, so there is no status field.',
       query: ListQuery,
       responses: { 200: { description: 'The media', schema: z.array(MediaSchema).describe('The media.') } },
     }),

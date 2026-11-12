@@ -1,4 +1,4 @@
-import type { Db } from '@pbx/shared';
+import type { Db, Destination } from '@pbx/shared';
 import { HttpError } from './errors.js';
 import type { DestinationWithId } from './tenancy.js';
 
@@ -85,6 +85,65 @@ export async function destinationUsages(db: Db, tenantId: string, type: Destinat
     ...usages('business hours', hours.map((r) => r.name)),
     ...usages('extension', exts.map((r) => r.name)),
   ];
+}
+
+/** Replaces every `{"type": type, "id": id}` object anywhere inside `value` with `replacement`. */
+function replaceDest(value: unknown, type: string, id: string, replacement: Destination): unknown {
+  if (Array.isArray(value)) return value.map((v) => replaceDest(v, type, id, replacement));
+  if (value === null || typeof value !== 'object') return value;
+  const o = value as Record<string, unknown>;
+  if (o.type === type && o.id === id) return replacement;
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, replaceDest(v, type, id, replacement)]));
+}
+
+/**
+ * Points everything of the tenant that routes calls to `{type, id}` at `replacement` instead: IVR
+ * menu options/timeout/invalid, number routing, ring group no-answer, business hours open/closed.
+ * Other extensions' forwarding to it is switched off (null: they fall back to their own voicemail).
+ * For deletes that must not fail just because something routes to the row (extensions: the course
+ * adapter and simulated customers delete them without unlinking first). Same locking as the
+ * refuse path: call it after locking the row FOR UPDATE. Returns what was changed, for the log.
+ */
+export async function rerouteDestination(
+  db: Db,
+  tenantId: string,
+  type: DestinationWithId,
+  id: string,
+  replacement: Destination,
+): Promise<Usage[]> {
+  const vars = db.json({ type, id });
+  const has = (col: string) => db`jsonb_path_exists(coalesce(${db(col)}, '{}'), ${DEST_PATH}::jsonpath, ${vars})`;
+  const changed: Usage[] = [];
+  const rewrite = async (table: string, kind: string, label: string, cols: string[]) => {
+    const rows = await db<Record<string, unknown>[]>`
+      select id, ${db(label)} as label, ${db(cols)} from ${db(table)}
+       where tenant_id = ${tenantId} and (${cols.map(has).reduce((a, b) => db`${a} or ${b}`)})
+       for update`;
+    for (const r of rows) {
+      for (const col of cols) {
+        // postgres.js camelCases result columns (no_answer_destination -> noAnswerDestination).
+        const v = r[col.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())];
+        if (v == null) continue;
+        await db`update ${db(table)} set ${db(col)} = ${db.json(replaceDest(v, type, id, replacement) as never)}
+                  where id = ${r.id as string}`;
+      }
+      changed.push({ kind, name: String(r.label) });
+    }
+  };
+  await rewrite('ivr_menus', 'IVR menu', 'name', ['config']);
+  await rewrite('phone_numbers', 'phone number', 'did', ['destination']);
+  await rewrite('ring_groups', 'ring group', 'name', ['no_answer_destination']);
+  await rewrite('business_hours', 'business hours', 'name', ['open_destination', 'closed_destination']);
+  const fwd = await db<{ number: string }[]>`
+    update extensions set
+           forward_always = case when ${has('forward_always')} then null else forward_always end,
+           forward_busy = case when ${has('forward_busy')} then null else forward_busy end,
+           forward_no_answer = case when ${has('forward_no_answer')} then null else forward_no_answer end
+     where tenant_id = ${tenantId} and id <> ${id}
+       and (${has('forward_always')} or ${has('forward_busy')} or ${has('forward_no_answer')})
+    returning number`;
+  changed.push(...usages('extension forwarding', fwd.map((r) => r.number)));
+  return changed;
 }
 
 /** What is still using a row, e.g. `IVR menu "Main"`, `ring group "Sales"`. */

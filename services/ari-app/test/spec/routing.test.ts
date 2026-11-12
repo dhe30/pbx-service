@@ -232,6 +232,29 @@ describe('§3 Ring groups: extensions rung all at once or in order (each for a s
     await h.settle();
   });
 
+  it('in order with an overall timeout: the member ringing when it runs out is cut short, the rest skipped', async () => {
+    const { h, a } = await acct();
+    for (const n of ['101', '102', '103']) await a.extension({ number: n });
+    const mb = await a.mailbox('Group VM');
+    // 5 s per member, 8 s in total: 101 rings 5 s, 102 the remaining ~3 s, 103 never.
+    const g = await a.ringGroup('sequential', ['101', '102', '103'], 5, { type: 'voicemail', id: mb }, 8);
+    const did = nextDid();
+    await a.number(did, { type: 'ring_group', id: g });
+    const t0 = Date.now();
+    const caller = h.ari.carrierCall(did, '+16315550000');
+    await until(() => h.uploads.begun.find((u) => u.mailboxId === mb), 3000, 'group voicemail');
+    const elapsed = Date.now() - t0;
+    expect(h.ari.originates.map((o) => o.target)).toEqual([
+      expect.objectContaining({ user: a.ext['101']!.sip }),
+      expect.objectContaining({ user: a.ext['102']!.sip }),
+    ]);
+    // Without the cap 103 would ring too (3 x 5 s); the originates above prove it didn't.
+    expect(elapsed).toBeGreaterThanOrEqual(70); // ~8 s scaled
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    expect((await a.cdrs())[0]).toMatchObject({ outcome: 'no_answer', voicemail: true });
+  });
+
   it('nobody answers within the timeout -> no-answer destination', async () => {
     const { h, a } = await acct();
     await a.extension({ number: '101' });
