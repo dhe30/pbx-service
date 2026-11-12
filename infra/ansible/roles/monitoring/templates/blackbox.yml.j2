@@ -1,0 +1,49 @@
+# Blackbox exporter modules (managed by Ansible, roles/monitoring): mon-1 checks every edge from
+# the outside like a customer would. Each probe also reports the certificate's expiry date
+# (probe_ssl_earliest_cert_expiry), so one setup covers outages and certificate renewal.
+# Certificates are verified against the system CAs when Let's Encrypt is on (acme_enabled);
+# with self-signed certificates only the expiry is checked.
+{% set skip_verify = not (acme_enabled | default(false) | bool) %}
+modules:
+  # The API through an edge: GET /ready is 200 only if an API node answers AND it reaches the
+  # database and the object store (roles/edge_haproxy routes /ready to the API).
+  pbx_api:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4
+      headers:
+        Host: "{{ web_domain }}"
+      tls_config:
+        server_name: "{{ web_domain }}"
+        insecure_skip_verify: {{ skip_verify | lower }}
+
+  # The website as a browser loads it (Accept: text/html sends "/" to the web backend).
+  pbx_web:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4
+      headers:
+        Host: "{{ web_domain }}"
+        Accept: text/html
+      tls_config:
+        server_name: "{{ web_domain }}"
+        insecure_skip_verify: {{ skip_verify | lower }}
+
+  # SIP over TLS (phones registered through _sips._tcp): the TLS handshake with Kamailio.
+  pbx_sip_tls:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      tls: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        server_name: "{{ sip_domain }}"
+        insecure_skip_verify: {{ skip_verify | lower }}

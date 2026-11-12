@@ -106,4 +106,43 @@ scrape_configs:
 {{ scrape(gateway_pbx_hosts, gateway_port) }}
 {% endif %}
 
+{% if edge_hosts %}
+{#
+  Probes through the blackbox exporter on this host: Prometheus asks it to probe each edge
+  (target = the address the edge's HAProxy/Kamailio listen on: the private IP behind Clanode's
+  1:1 NAT, else the public IP). Results: probe_success, probe_duration_seconds,
+  probe_ssl_earliest_cert_expiry. instance = the edge's inventory name.
+#}
+{% set probes = [
+     {'job': 'probe_api', 'module': 'pbx_api', 'what': 'API through the edge (GET /ready)'},
+     {'job': 'probe_web', 'module': 'pbx_web', 'what': 'website (GET / as a browser)'},
+     {'job': 'probe_sip_tls', 'module': 'pbx_sip_tls', 'what': 'SIP over TLS handshake'},
+   ] %}
+{% for p in probes %}
+
+  # Blackbox: {{ p.what }} on every edge.
+  - job_name: {{ p.job }}
+    metrics_path: /probe
+    params:
+      module: [{{ p.module }}]
+    static_configs:
+{% for host in edge_hosts %}
+{% set ip = hostvars[host].public_bind_ip %}
+{% if p.job == 'probe_api' %}
+      - targets: ["https://{{ ip }}/ready"]
+{% elif p.job == 'probe_web' %}
+      - targets: ["https://{{ ip }}/"]
+{% else %}
+      - targets: ["{{ ip }}:{{ kamailio_tls_port | default(5061) }}"]
+{% endif %}
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: "{{ private_ip }}:{{ blackbox_port }}"
+{% endfor %}
+{% endif %}
+
 # Not scraped yet: Kamailio (no metrics endpoint).

@@ -14,7 +14,7 @@
 # ---- Prometheus + Alertmanager -------------------------------------------------------------------
 - name: Install Prometheus and Alertmanager
   ansible.builtin.apt:
-    name: [prometheus, prometheus-alertmanager]
+    name: [prometheus, prometheus-alertmanager, prometheus-blackbox-exporter]
     install_recommends: false
     update_cache: true
     cache_valid_time: 3600
@@ -69,6 +69,21 @@
     dest: /etc/default/prometheus-alertmanager
     mode: "0644"
   notify: Restart alertmanager
+
+- name: Blackbox exporter probes (edges from outside, certificate expiry)
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: /etc/prometheus/blackbox.yml
+    mode: "0644"
+    validate: prometheus-blackbox-exporter --config.check --config.file=%s
+  notify: Restart blackbox exporter
+
+- name: Blackbox exporter options (listen address)
+  ansible.builtin.template:
+    src: prometheus-blackbox-exporter.default.j2
+    dest: /etc/default/prometheus-blackbox-exporter
+    mode: "0644"
+  notify: Restart blackbox exporter
 
 # ---- Grafana -------------------------------------------------------------------------------------
 - name: Grafana apt key
@@ -150,7 +165,7 @@
     enabled: true
     state: started
     daemon_reload: true
-  loop: [prometheus, prometheus-alertmanager, grafana-server]
+  loop: [prometheus, prometheus-alertmanager, prometheus-blackbox-exporter, grafana-server]
 
 - name: Apply pending restarts
   ansible.builtin.meta: flush_handlers

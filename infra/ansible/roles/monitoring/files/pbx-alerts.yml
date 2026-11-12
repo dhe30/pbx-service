@@ -309,6 +309,45 @@ groups:
             edge_haproxy: website/API/WebSocket backends. dbproxy: pg_primary = no database primary
             reachable from this node, s3 = no Garage node reachable.
 
+  # ---- Edges from outside (blackbox exporter on mon-1) ------------------------------------------
+  - name: probes
+    rules:
+      # Customers whose DNS/SRV lands on this edge see errors (API/website) or phones can't connect
+      # over TLS. probe_api also fails when the API can't reach the database or object store.
+      - alert: EdgeProbeFailing
+        expr: probe_success == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} is failing from mon-1"
+          description: >-
+            probe_api = GET /ready through the edge (API + database + object store),
+            probe_web = the website, probe_sip_tls = TLS handshake on the SIP TLS port.
+
+      - alert: EdgeProbeSlow
+        expr: probe_duration_seconds{job=~"probe_api|probe_web"} > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} takes {{ $value | humanize }}s from mon-1"
+
+      # Let's Encrypt renews 30 days before expiry, so 14 days left means renewal is failing.
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} certificate expires in {{ $value | humanize }} days"
+          description: "Renewal is failing. On the ACME edge: certbot renew --dry-run, /var/log/letsencrypt/letsencrypt.log."
+
+      - alert: CertificateExpiringVerySoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 3
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} certificate expires in {{ $value | humanize }} days"
+          description: Browsers, the course's tools and TLS phones will refuse the connection when it expires.
+
   # ---- Monitoring itself ---------------------------------------------------------------------------
   - name: monitoring
     rules:

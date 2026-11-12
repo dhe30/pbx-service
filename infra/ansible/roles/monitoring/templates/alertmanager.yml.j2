@@ -22,14 +22,18 @@ receivers:
 
 # Don't spam follow-up alerts for a node that is already reported as down.
 inhibit_rules:
-  # A dead node's services are down too: report only the NodeDown.
+  # A dead node's services (and the probes of a dead edge) are down too: report only the NodeDown.
   - source_matchers: [alertname = NodeDown]
-    target_matchers: [alertname =~ "TargetDown|NodeRestarted"]
+    target_matchers: [alertname =~ "TargetDown|NodeRestarted|EdgeProbeFailing|EdgeProbeSlow"]
     equal: [instance]
   # Down for 15 min: NodeGone replaces NodeDown.
   - source_matchers: [alertname = NodeGone]
     target_matchers: [alertname = NodeDown]
     equal: [instance]
+  # Certificate under 3 days is already reported; skip the 14-day warning for it.
+  - source_matchers: [alertname = CertificateExpiringVerySoon]
+    target_matchers: [alertname = CertificateExpiringSoon]
+    equal: [instance, job]
   # A disk above 85% is already reported; skip the 70% warning for it.
   - source_matchers: [alertname = DiskSpaceCritical]
     target_matchers: [alertname = DiskSpaceLow]
