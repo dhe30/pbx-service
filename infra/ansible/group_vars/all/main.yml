@@ -128,6 +128,10 @@ did_provider_url: "https://didww.cse356.compas.cs.stonybrook.edu/v3"
 did_trunk_group_id: "4fba3ce0-568d-4a88-879b-d767f26eca4c"
 did_trunk_id: ""
 
+# ---- Monitoring (Track 4) ----------------------------------------------------------------------
+# node_exporter on every host (roles/common), scraped by Prometheus on mon-1 (roles/monitoring).
+node_exporter_port: 9100
+
 # ---- Test data (phase 1) -----------------------------------------------------------------------
 load_test_seed: true
 test_did: "+15555550100"

@@ -1,0 +1,73 @@
+# Prometheus config for {{ inventory_hostname }} (managed by Ansible, roles/monitoring).
+# Targets come from the inventory groups: add a host to the inventory, rerun the playbook for mon,
+# and it is watched. The `instance` label is the inventory host name (edge-1, db-2, ...), so alerts
+# say "db-2" instead of an IP.
+{#
+  scrape(hosts, port): one static target per inventory host, on its private IP.
+#}
+{% macro scrape(hosts, port) %}
+    static_configs:
+{% for host in hosts %}
+      - targets: ["{{ hostvars[host].private_ip }}:{{ port }}"]
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+{% endmacro %}
+{% set mon_hosts = groups.get('mon', []) %}
+{% set db_hosts = groups.get('db', []) %}
+{% set edge_hosts = groups.get('edge', []) %}
+{% set app_hosts = groups.get('app', []) %}
+{% set rtpengine_hosts = groups.get('media') or edge_hosts %}
+global:
+  scrape_interval: {{ prometheus_scrape_interval }}
+  evaluation_interval: {{ prometheus_scrape_interval }}
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["{{ private_ip }}:{{ alertmanager_port }}"]
+
+scrape_configs:
+  # Every VM: CPU, memory, disk, network, boot time, systemd units (node_exporter, roles/common).
+  - job_name: node
+{{ scrape(groups['all'], node_exporter_port) }}
+
+  # The monitoring stack itself.
+  - job_name: prometheus
+{{ scrape(mon_hosts, prometheus_port) }}
+
+  - job_name: alertmanager
+{{ scrape(mon_hosts, alertmanager_port) }}
+{% if db_hosts %}
+
+  # Data tier (Track 1): Patroni says who is primary and how far replicas lag; etcd is the vote
+  # Patroni relies on.
+  - job_name: patroni
+{{ scrape(db_hosts, patroni_restapi_port | default(8008)) }}
+
+  - job_name: etcd
+{{ scrape(db_hosts, etcd_client_port | default(2379)) }}
+{% endif %}
+{% if rtpengine_hosts %}
+
+  # Media relay + transcoding: sessions, packet rates, errors.
+  - job_name: rtpengine
+{{ scrape(rtpengine_hosts, 2225) }}
+{% endif %}
+{% if edge_hosts %}
+
+  # Edge HAProxy (HTTPS/WSS in front of the API and Kamailio WS): backend health, request rates.
+  - job_name: edge_haproxy
+{{ scrape(edge_hosts, 8404) }}
+{% endif %}
+{% if app_hosts %}
+
+  # API: request latency histogram (pbx_api_http_request_duration_seconds) + Node.js process stats.
+  - job_name: api
+{{ scrape(app_hosts, api_port | default(3000)) }}
+{% endif %}
+
+# Not scraped yet (they listen on 127.0.0.1 only, docs/split-contracts.md O1): ARI app (9101),
+# Asterisk (8088), Garage (3903), local DB proxy (8405). Kamailio has no metrics endpoint yet.

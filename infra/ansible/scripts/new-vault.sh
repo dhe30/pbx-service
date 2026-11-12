@@ -5,7 +5,7 @@
 #   ansible-vault encrypt infra/ansible/group_vars/all/vault.yml
 #
 # Generated: every password and key we own (DB users, Patroni users, ARI, Garage, S3 key, JWT,
-# test SIP users). CHANGE_ME: values that come from the Course Services tab (PSTN vendor digest
+# test SIP users, Grafana admin). CHANGE_ME: values that come from the Course Services tab (PSTN vendor digest
 # credentials, Stripe test keys, DIDWW Api-Key); fill those in before encrypting.
 #
 # One vault per deployment, shared by everyone who deploys it: the db cluster, Garage and every
@@ -59,6 +59,11 @@ vault_acme_email: ""
 # random, they can place billed vendor calls.
 vault_test_alice_password: $(hex 12)
 vault_test_bob_password: $(hex 12)
+
+# Monitoring (mon-1): Grafana "admin" password. Discord webhook for alerts: paste it from the
+# channel's settings (Integrations -> Webhooks); empty = alerts only in Grafana's Alerting pages.
+vault_grafana_admin_password: $(hex 16)
+vault_discord_webhook_url: ""
 
 # ---- From the Course Services tab: fill in ------------------------------------------------
 # PSTN vendor digest credentials.

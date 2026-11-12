@@ -1,0 +1,36 @@
+# Alertmanager config (managed by Ansible, roles/monitoring). Contains a secret (Discord webhook).
+# Alertmanager turns firing alert rules (files/pbx-alerts.yml) into messages: it groups related
+# alerts into one message, repeats unresolved ones, and says when they are resolved.
+route:
+  receiver: team
+  # One message per alert type and node ("NodeDown on pbx-2"), not one per scraped series.
+  group_by: [alertname, instance]
+  group_wait: 30s        # wait a bit so alerts that start together arrive in one message
+  group_interval: 5m     # new alerts joining an existing group are sent at most this often
+  repeat_interval: 4h    # still broken: remind every 4 h
+
+receivers:
+  - name: team
+{% if alert_discord_webhook_url %}
+    discord_configs:
+      - webhook_url: "{{ alert_discord_webhook_url }}"
+        send_resolved: true
+{% else %}
+    # No Discord webhook in the vault yet (vault_discord_webhook_url): alerts are only shown at
+    # http://<mon-1>:{{ alertmanager_port }}.
+{% endif %}
+
+# Don't spam follow-up alerts for a node that is already reported as down.
+inhibit_rules:
+  # A dead node's services are down too: report only the NodeDown.
+  - source_matchers: [alertname = NodeDown]
+    target_matchers: [alertname =~ "TargetDown|NodeRestarted"]
+    equal: [instance]
+  # Down for 15 min: NodeGone replaces NodeDown.
+  - source_matchers: [alertname = NodeGone]
+    target_matchers: [alertname = NodeDown]
+    equal: [instance]
+  # A disk above 85% is already reported; skip the 70% warning for it.
+  - source_matchers: [alertname = DiskSpaceCritical]
+    target_matchers: [alertname = DiskSpaceLow]
+    equal: [instance, mountpoint]

@@ -1,2 +1,169 @@
 ---
-# TODO: monitoring role tasks.
+# Prometheus + Alertmanager (Debian packages) and Grafana (Grafana's apt repo) on mon-1.
+# Every config file is checked by the tool's own validator BEFORE it replaces the old one, so a
+# mistake fails the playbook instead of breaking the running service.
+
+- name: Grafana admin password is set
+  ansible.builtin.assert:
+    that:
+      - grafana_admin_password | length >= 12
+      - "'CHANGE_ME' not in grafana_admin_password"
+    fail_msg: "Set vault_grafana_admin_password in group_vars/all/vault.yml (openssl rand -hex 16)."
+    quiet: true
+
+# ---- Prometheus + Alertmanager -------------------------------------------------------------------
+- name: Install Prometheus and Alertmanager
+  ansible.builtin.apt:
+    name: [prometheus, prometheus-alertmanager]
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Prometheus rules directory
+  ansible.builtin.file:
+    path: /etc/prometheus/rules
+    state: directory
+    mode: "0755"
+
+# Alert rules: a plain file (not a template) because Prometheus uses {{ }} itself.
+- name: Alert rules
+  ansible.builtin.copy:
+    src: pbx-alerts.yml
+    dest: /etc/prometheus/rules/pbx-alerts.yml
+    mode: "0644"
+    validate: promtool check rules %s
+  notify: Reload prometheus
+
+# Scrape targets are generated from the inventory groups, so a new node is watched after the
+# next playbook run with no edits here.
+- name: Prometheus config
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/prometheus/prometheus.yml
+    mode: "0644"
+    validate: promtool check config %s
+  notify: Reload prometheus
+
+- name: Prometheus options (listen address, retention)
+  ansible.builtin.template:
+    src: prometheus.default.j2
+    dest: /etc/default/prometheus
+    mode: "0644"
+  notify: Restart prometheus
+
+# Holds the Discord webhook (a secret): readable by root and the prometheus user only.
+- name: Alertmanager config
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: /etc/prometheus/alertmanager.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+    validate: amtool check-config %s
+  no_log: true
+  notify: Restart alertmanager
+
+- name: Alertmanager options (listen address, no clustering)
+  ansible.builtin.template:
+    src: prometheus-alertmanager.default.j2
+    dest: /etc/default/prometheus-alertmanager
+    mode: "0644"
+  notify: Restart alertmanager
+
+# ---- Grafana -------------------------------------------------------------------------------------
+- name: Grafana apt key
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg.key
+    dest: /usr/share/keyrings/grafana.asc
+    mode: "0644"
+
+- name: Grafana apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/grafana.list
+    content: "deb [signed-by=/usr/share/keyrings/grafana.asc] https://apt.grafana.com stable main\n"
+    mode: "0644"
+
+- name: Install Grafana
+  ansible.builtin.apt:
+    name: "grafana{{ '=' + grafana_version if grafana_version else '' }}"
+    update_cache: true
+
+# Settings as GF_* environment variables (overrides grafana.ini without editing the packaged file).
+- name: Grafana settings (contains the admin password)
+  ansible.builtin.template:
+    src: grafana.env.j2
+    dest: /etc/grafana/pbx.env
+    owner: root
+    group: grafana
+    mode: "0640"
+  no_log: true
+  notify: Restart grafana
+
+- name: Grafana systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/grafana-server.service.d
+    state: directory
+    mode: "0755"
+
+- name: Grafana loads pbx.env
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/grafana-server.service.d/pbx.conf
+    content: |
+      [Service]
+      EnvironmentFile=/etc/grafana/pbx.env
+    mode: "0644"
+  notify: Restart grafana
+
+# Provisioning = config files Grafana reads at start: the Prometheus data source and our dashboards
+# appear without clicking anything in the UI.
+- name: Grafana provisioning
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: grafana-datasource.yml.j2, dest: /etc/grafana/provisioning/datasources/pbx.yml }
+    - { src: grafana-dashboards.yml.j2, dest: /etc/grafana/provisioning/dashboards/pbx.yml }
+  notify: Restart grafana
+
+- name: Grafana dashboards directory
+  ansible.builtin.file:
+    path: /var/lib/grafana/dashboards
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: "0755"
+
+# Grafana re-reads this directory every 30 s, so dashboard changes need no restart.
+- name: Grafana dashboards
+  ansible.builtin.copy:
+    src: "dashboards/"
+    dest: /var/lib/grafana/dashboards/
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+# ---- Start and check -----------------------------------------------------------------------------
+- name: Start monitoring services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [prometheus, prometheus-alertmanager, grafana-server]
+
+- name: Apply pending restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until Prometheus, Alertmanager and Grafana answer
+  ansible.builtin.uri:
+    url: "{{ item }}"
+  register: monitoring_ready
+  # Up to 3 min: Grafana's first start creates its database (~40 s on a 2 GB VM).
+  retries: 90
+  delay: 2
+  until: monitoring_ready.status == 200
+  loop:
+    - "http://{{ private_ip }}:{{ prometheus_port }}/-/ready"
+    - "http://{{ private_ip }}:{{ alertmanager_port }}/-/ready"
+    - "http://{{ private_ip }}:{{ grafana_port }}/api/health"

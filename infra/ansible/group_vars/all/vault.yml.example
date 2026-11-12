@@ -53,3 +53,9 @@ vault_operator_token: CHANGE_ME_to_openssl_rand_hex_32
 # Optional: contact address for Let's Encrypt expiry/problem mails (group_vars acme_email reads
 # it). Empty or absent = register without an email. Here, not in main.yml: the repo is public.
 vault_acme_email: ""
+
+# Monitoring (mon-1). Grafana "admin" password (at least 12 chars). Format: openssl rand -hex 16
+vault_grafana_admin_password: GENERATED
+# Discord webhook for alerts (channel settings -> Integrations -> Webhooks -> Copy Webhook URL).
+# Empty = no Discord messages; alerts are still shown in Grafana's Alerting pages.
+vault_discord_webhook_url: ""

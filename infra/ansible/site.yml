@@ -1,5 +1,5 @@
 ---
-# Full multi-VM deployment (phase 4+; monitoring/backups are still stubs).
+# Full multi-VM deployment (phase 4+; backups is still a stub).
 # Cloud runbook (inventory/production.ini, deploy order, code updates): docs/cloud-deploy.md §5.
 # For phase 1 use phase1-allinone.yml.
 # See CLAUDE.md §15 for ordering and cross-group dependencies.

@@ -1,1 +1,24 @@
 ---
+# Rules/targets changed: reload (re-read the files without stopping). A restart would make every
+# alert wait out part of its `for:` time again, delaying alerts after each deploy.
+- name: Reload prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: reloaded
+
+# Command-line options changed (listen address, retention): those need a restart.
+- name: Restart prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: restarted
+
+- name: Restart alertmanager
+  ansible.builtin.systemd:
+    name: prometheus-alertmanager
+    state: restarted
+
+- name: Restart grafana
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: restarted
+    daemon_reload: true

@@ -8,3 +8,5 @@ vault_vendor_us_user: test-us-user
 vault_vendor_us_password: test-us-pw
 vault_vendor_intl_user: test-intl-user
 vault_vendor_intl_password: test-intl-pw
+vault_grafana_admin_password: test-grafana-admin-pw
+vault_discord_webhook_url: "https://discord.com/api/webhooks/0/test"
