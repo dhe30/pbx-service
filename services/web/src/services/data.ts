@@ -86,7 +86,10 @@ export interface RingGroup {
     id: string;
     name: string;
     strategy: "all" | "sequential";
+    /** Sequential: seconds each member rings. All: seconds the whole group rings. */
     ringTimeoutSec: number;
+    /** Overall cap on the group's ringing (5-600 s), null = none. */
+    totalTimeoutSec: number | null;
     noAnswerDestination: Destination | null;
     memberIds: string[];
 }
