@@ -233,7 +233,7 @@ export function Purchase() {
           {kind === "local" && (
             <label className="grid gap-1 text-sm text-gray-700">
               Area code (optional)
-              <input value={areaCode} onChange={(event) => setAreaCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="w-36 rounded-lg border border-gray-300 px-3 py-2" inputMode="numeric" />
+              <input value={areaCode} onChange={(event) => setAreaCode(event.target.value.replace(/\D/g, "").slice(0, 3))} className="w-36 rounded-lg border border-gray-300 px-3 py-2" inputMode="numeric" />
             </label>
           )}
           <button type="submit" disabled={searching || !countries.length} className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white disabled:opacity-50">
