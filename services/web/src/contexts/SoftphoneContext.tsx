@@ -45,6 +45,8 @@ interface Line extends SoftphoneLineInfo {
 const AUDIO_ONLY = { constraints: { audio: true, video: false } };
 const REGISTER_EXPIRES_SEC = 180;
 const REINVITE_TIMEOUT_MS = 10_000;
+/** Cap on ICE gathering before SIP.js sends an offer/answer (host candidates take a few ms). */
+const ICE_GATHERING_TIMEOUT_MS = 500;
 /** After a transfer's NOTIFY 200 the ARI app hangs up our leg; BYE ourselves if it hasn't by then. */
 const TRANSFER_BYE_FALLBACK_MS = 4_000;
 
@@ -349,14 +351,17 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
         setConnectionError(null);
 
         try {
-            // Ask for the microphone now so answering is instant. Not fatal: we can still register
-            // (and see calls ring); answering then reports the error.
-            try {
-                const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-                mic.getTracks().forEach((t) => t.stop());
-            } catch (error) {
-                setCallError(`Microphone unavailable: ${errorMessage(error)}`);
-            }
+            // Ask for the microphone now so answering is instant. Not awaited (an unanswered
+            // permission prompt must not hold up registering) and not fatal: calls still ring;
+            // answering then reports the error.
+            navigator.mediaDevices?.getUserMedia({ audio: true, video: false }).then(
+                (mic) => mic.getTracks().forEach((t) => t.stop()),
+                (error: unknown) => {
+                    if (generation === generationRef.current) {
+                        setCallError(`Microphone unavailable: ${errorMessage(error)}`);
+                    }
+                },
+            );
 
             const sip = sipRef.current ?? await import("sip.js");
             sipRef.current = sip;
@@ -373,6 +378,15 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
                 authorizationPassword: credentials.password,
                 displayName: credentials.extensionNumber,
                 logLevel: "warn",
+                // SIP.js sends the INVITE / 200 OK only once ICE gathering is done. Its default
+                // config has a public STUN server, and gathering then often runs into the 5 s
+                // timeout: measured 5.5 s from "Call" to INVITE on the deployed system, all of it
+                // post-dial delay. We need no STUN: rtpengine (public IP, ICE) learns the
+                // browser's address from the browser's connectivity checks (peer-reflexive).
+                sessionDescriptionHandlerFactoryOptions: {
+                    peerConnectionConfiguration: { iceServers: [] },
+                    iceGatheringTimeout: ICE_GATHERING_TIMEOUT_MS,
+                },
                 delegate: {
                     onInvite: (invitation) => {
                         if (isCurrent()) handleInvite(invitation);
@@ -657,8 +671,11 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
             setCallError("There is no connected call to send tones to.");
             return;
         }
-        // RFC 4733 telephone-events through the RTCDTMFSender, not SIP INFO.
-        if (!line.session.sessionDescriptionHandler?.sendDtmf(digit)) {
+        // RFC 4733 telephone-events through the RTCDTMFSender, not SIP INFO. insertDTMF REPLACES
+        // the tones still queued, so append to them: quick key presses would otherwise send only
+        // the last digit (seen on the deployed system).
+        const queued = peerConnectionOf(line.session)?.getSenders()[0]?.dtmf?.toneBuffer ?? "";
+        if (!line.session.sessionDescriptionHandler?.sendDtmf(queued + digit)) {
             setCallError("This call could not send DTMF tones.");
         }
     }, []);

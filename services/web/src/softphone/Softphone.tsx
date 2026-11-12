@@ -65,7 +65,6 @@ export function Softphone() {
     useEffect(() => {
         let active = true;
         const load = () => {
-            if (document.visibilityState === "hidden") return;
             dataService.getExtensions()
                 .then((items) => {
                     if (!active) return;
@@ -77,7 +76,11 @@ export function Softphone() {
                 });
         };
         load();
-        const timer = window.setInterval(load, EXTENSIONS_REFRESH_MS);
+        // Periodic refresh only while the tab is visible (the first load always runs: a
+        // background tab still needs the list to register).
+        const timer = window.setInterval(() => {
+            if (document.visibilityState !== "hidden") load();
+        }, EXTENSIONS_REFRESH_MS);
         return () => {
             active = false;
             window.clearInterval(timer);
@@ -104,7 +107,7 @@ export function Softphone() {
     const inCall = lines.length > 0;
     const talking = activeLine?.status === "connected";
     const selected = extensions?.find((e) => e.id === selectedExtensionId);
-    const holdTarget = activeLine ? "hold" : "resume";
+    const holdTarget = !activeLine && lines.some((l) => l.held) ? "resume" : "hold";
 
     function pressKey(key: string) {
         if (talking) phone.sendDtmf(key);
@@ -289,7 +292,7 @@ export function Softphone() {
                         <button
                             type="button"
                             data-testid="softphone-hold"
-                            aria-pressed={!activeLine && lines.some((l) => l.held)}
+                            aria-pressed={holdTarget === "resume"}
                             onClick={() => void phone.toggleHold()}
                             disabled={!phone.canHold}
                             className={secondary}
