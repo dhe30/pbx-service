@@ -158,7 +158,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
         connectAndRegisterRef.current = connectAndRegister;
     }, [connectAndRegister]);
 
-    const connect = useCallback(async () => {
+    const connect = useCallback(async (extensionId?: string) => {
         if (connectingRef.current || connectionStatus === "connecting" || connectionStatus === "online") return;
         connectingRef.current = true;
         setConnectionError(null);
@@ -170,7 +170,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
 
             const sipModule = await import("sip.js");
             sipModuleRef.current = sipModule;
-            const credentials = await fetchSipCredentials();
+            const credentials = await fetchSipCredentials(extensionId);
             const uri = sipModule.UserAgent.makeURI(credentials.sipUri);
             if (!uri) throw new Error("The phone account returned an invalid SIP address.");
 

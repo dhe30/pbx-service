@@ -1,6 +1,7 @@
 import {
     createContext,
     useEffect,
+    useCallback,
     useReducer,
     type ReactNode,
 } from "react";
@@ -152,12 +153,12 @@ export function AuthContextProvider({children,}: {children: ReactNode;}) {
         }
     }
 
-    function updateUser(user: User) {
+    const updateUser = useCallback((user: User) => {
         dispatch({
             type: AuthActions.SET_USER,
             payload: user,
         });
-    }
+    }, []);
 
     const value: AuthContextType = {
         user: state.user,

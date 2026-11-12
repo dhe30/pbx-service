@@ -17,7 +17,7 @@ export interface SoftphoneContextValue {
     connectionError: string | null;
     call: SoftphoneCallInfo | null;
     callError: string | null;
-    connect: () => Promise<void>;
+    connect: (extensionId?: string) => Promise<void>;
     disconnect: () => Promise<void>;
     makeCall: (number: string) => Promise<void>;
     answerCall: () => Promise<void>;

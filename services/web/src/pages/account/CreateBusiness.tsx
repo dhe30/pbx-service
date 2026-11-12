@@ -125,7 +125,7 @@ export function CreateBusiness() {
     }, [authLoading, defaultTimeZone, navigate, user]);
 
     useEffect(() => {
-        if (!cardSetup || !businessCreated || !cardContainer.current) return;
+        if (!cardSetup || !businessCreated || creatingBusiness || !cardContainer.current) return;
         const setup = cardSetup;
         let active = true;
         setStripeLoading(true);
@@ -153,7 +153,7 @@ export function CreateBusiness() {
             cardField.current = null;
             stripe.current = null;
         };
-    }, [businessCreated, cardSetup, stripeLoadVersion]);
+    }, [businessCreated, cardSetup, creatingBusiness, stripeLoadVersion]);
 
     async function handleCreateBusiness(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -170,15 +170,15 @@ export function CreateBusiness() {
                 timezone,
             });
             setBusinessCreated(true);
-            try {
-                updateUser(await authService.getCurrentUser());
-            } catch (cause) {
-                setError(apiErrorMessage(cause, "Business created, but account details could not be refreshed. Reload to continue."));
-            }
             if (result.cardSetup) {
                 setCardSetup(result.cardSetup);
             } else {
                 setCardSetup(await billingService.createSetupIntent());
+            }
+            try {
+                updateUser(await authService.getCurrentUser());
+            } catch (cause) {
+                setError(apiErrorMessage(cause, "Business created, but account details could not be refreshed. Reload to continue."));
             }
         } catch (cause) {
             setError(
@@ -247,8 +247,11 @@ export function CreateBusiness() {
         }
     }
 
-    if (authLoading || restoringAccount || !user) {
-        return <p role="status" className="p-8 text-center text-gray-500">Loading…</p>;
+    if (authLoading || restoringAccount || creatingBusiness || !user) {
+        const status = creatingBusiness
+            ? businessCreated ? "Preparing secure card setup…" : "Creating your business…"
+            : "Loading…";
+        return <p role="status" className="p-8 text-center text-gray-500">{status}</p>;
     }
 
     return (

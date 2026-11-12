@@ -6,6 +6,7 @@ import { BusinessRoute } from './routes/BusinessRoute'
 import { AdminRoute } from './routes/AdminRoute'
 import { AccountRedirect } from './routes/AccountRedirect'
 import { GuestRoute } from './routes/GuestRoute'
+import { NoBusinessRoute } from './routes/NoBusinessRoute'
 import {
   BusinessLayout,
   AccountLayout,
@@ -51,7 +52,9 @@ function App() {
             {/* Account-only routes */}
             <Route path="/account" element={<AccountLayout />}>
               <Route index element={<AccountRedirect />} />
-              <Route path="create-business" element={<CreateBusiness />} />
+              <Route element={<NoBusinessRoute />}>
+                <Route path="create-business" element={<CreateBusiness />} />
+              </Route>
               <Route path="settings" element={<AccountSettings />} />
             </Route>
 

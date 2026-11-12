@@ -229,6 +229,25 @@ export const dataService = {
         const { data } = await api.get<Extension[]>("/extensions");
         return data;
     },
+    async createExtension(number: string, name: string, userId: string | null) {
+        const { data } = await api.post<Extension>("/extensions", { number, name, userId });
+        return data;
+    },
+    async updateExtension(id: string, extension: Extension) {
+        const { data } = await api.put<Extension>(`/extensions/${id}`, {
+            number: extension.number,
+            name: extension.name,
+            mailboxId: extension.mailboxId,
+            ringTimeoutSec: extension.ringTimeoutSec,
+            forwardAlways: extension.forwardAlways,
+            forwardBusy: extension.forwardBusy,
+            forwardNoAnswer: extension.forwardNoAnswer,
+            externalNumbers: extension.externalNumbers,
+            callerIdNumber: extension.callerIdNumber,
+            userId: extension.userId,
+        });
+        return data;
+    },
     async getStaff() {
         const { data } = await api.get<StaffMember[]>("/staff");
         return data;

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSoftphone } from "../../contexts";
-import { apiErrorMessage, dataService, type CallLeg } from "../../services";
+import { useAuth } from "../../hooks";
+import { apiErrorMessage, dataService, type CallLeg, type Extension } from "../../services";
 
 const dialPad = [
   { digit: "1", letters: "" },
@@ -18,10 +19,15 @@ const dialPad = [
 ];
 
 export function Phone() {
+  const { user } = useAuth();
   const [number, setNumber] = useState("");
   const [keypadVisible, setKeypadVisible] = useState(false);
   const [recentCalls, setRecentCalls] = useState<CallLeg[]>([]);
   const [recentCallError, setRecentCallError] = useState("");
+  const [extensions, setExtensions] = useState<Extension[]>([]);
+  const [selectedExtensionId, setSelectedExtensionId] = useState("");
+  const [extensionsLoading, setExtensionsLoading] = useState(true);
+  const [extensionsError, setExtensionsError] = useState("");
   const {
     connectionStatus,
     connectionRequested,
@@ -38,6 +44,24 @@ export function Phone() {
 
   useEffect(() => {
     let active = true;
+    dataService.getExtensions()
+      .then((items) => {
+        if (!active) return;
+        const assignedExtensions = items.filter((extension) => extension.userId === user?.id);
+        setExtensions(assignedExtensions);
+        setSelectedExtensionId((current) =>
+          assignedExtensions.some((extension) => extension.id === current)
+            ? current
+            : assignedExtensions[0]?.id ?? "",
+        );
+      })
+      .catch((cause: unknown) => {
+        if (active) setExtensionsError(apiErrorMessage(cause, "Could not load business extensions."));
+      })
+      .finally(() => {
+        if (active) setExtensionsLoading(false);
+      });
+
     dataService.getCalls({ limit: 5 })
       .then((page) => {
         if (active) setRecentCalls(page.items);
@@ -48,7 +72,7 @@ export function Phone() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [user?.id]);
 
   function handleDigit(digit: string) {
     if (isActive) sendDtmf(digit);
@@ -110,13 +134,42 @@ export function Phone() {
             {statusLabels[connectionStatus]}
           </div>
           <button
-            onClick={() => void (connectionRequested ? disconnect() : connect())}
-            disabled={connectionStatus === "connecting" && !connectionRequested}
+            onClick={() => void (connectionRequested ? disconnect() : connect(selectedExtensionId))}
+            disabled={!connectionRequested && (!selectedExtensionId || extensionsLoading || connectionStatus === "connecting")}
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-50"
           >
             {connectionRequested ? "Go offline" : "Connect phone"}
           </button>
         </div>
+      </div>
+      <div className="max-w-md rounded-xl border border-gray-200 bg-white p-5">
+        <label htmlFor="softphone-extension" className="block text-sm font-medium text-gray-700">
+          Phone extension
+        </label>
+        <select
+          id="softphone-extension"
+          data-testid="softphone-extension"
+          value={selectedExtensionId}
+          onChange={(event) => setSelectedExtensionId(event.target.value)}
+          disabled={connectionRequested || extensionsLoading || extensions.length === 0}
+          className="mt-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 disabled:bg-gray-100"
+        >
+          <option value="" disabled>
+            {extensionsLoading ? "Loading extensions…" : "Select an extension"}
+          </option>
+          {extensions.map((extension) => (
+            <option key={extension.id} value={extension.id}>
+              {extension.number} · {extension.name}
+              {extension.userId === user?.id ? " (assigned to you)" : ""}
+            </option>
+          ))}
+        </select>
+        {extensionsError && <p role="alert" className="mt-2 text-sm text-red-700">{extensionsError}</p>}
+        {!extensionsLoading && !extensionsError && extensions.length === 0 && (
+          <p role="status" className="mt-2 text-sm text-gray-500">
+            No extension is assigned to your account. Ask an owner to assign one in Team Management.
+          </p>
+        )}
       </div>
       {(connectionError || callError) && (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">

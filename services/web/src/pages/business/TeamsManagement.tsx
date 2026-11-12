@@ -1,13 +1,20 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useAuth } from "../../hooks";
 import { apiErrorMessage, dataService, type Extension, type StaffMember } from "../../services";
 
 export function TeamsManagement() {
+  const { user } = useAuth();
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [extensions, setExtensions] = useState<Extension[]>([]);
   const [loading, setLoading] = useState(true);
   const [staffEmail, setStaffEmail] = useState("");
   const [staffPassword, setStaffPassword] = useState("");
   const [addingStaff, setAddingStaff] = useState(false);
+  const [extensionNumber, setExtensionNumber] = useState("");
+  const [extensionName, setExtensionName] = useState("");
+  const [extensionUserId, setExtensionUserId] = useState("");
+  const [creatingExtension, setCreatingExtension] = useState(false);
+  const [savingExtensionId, setSavingExtensionId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -30,7 +37,52 @@ export function TeamsManagement() {
     };
   }, []);
 
-  const extensionByUser = new Map(extensions.filter((extension) => extension.userId).map((extension) => [extension.userId, extension]));
+  const extensionsByUser = new Map<string, Extension[]>();
+  for (const extension of extensions) {
+    if (!extension.userId) continue;
+    extensionsByUser.set(extension.userId, [...(extensionsByUser.get(extension.userId) ?? []), extension]);
+  }
+
+  async function handleExtensionAssignment(extension: Extension, userId: string) {
+    setError("");
+    setNotice("");
+    setSavingExtensionId(extension.id);
+    try {
+      const updated = await dataService.updateExtension(extension.id, {
+        ...extension,
+        userId: userId || null,
+      });
+      setExtensions((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setNotice(`${extension.name} assignment updated.`);
+    } catch (cause) {
+      setError(apiErrorMessage(cause, "Could not update the extension assignment."));
+    } finally {
+      setSavingExtensionId(null);
+    }
+  }
+
+  async function handleCreateExtension(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    setCreatingExtension(true);
+    try {
+      const extension = await dataService.createExtension(
+        extensionNumber.trim(),
+        extensionName.trim(),
+        extensionUserId || null,
+      );
+      setExtensions((current) => [...current, extension]);
+      setExtensionNumber("");
+      setExtensionName("");
+      setExtensionUserId("");
+      setNotice(`Extension ${extension.number} created.`);
+    } catch (cause) {
+      setError(apiErrorMessage(cause, "Could not create the extension."));
+    } finally {
+      setCreatingExtension(false);
+    }
+  }
 
   async function handleAddStaff(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -54,7 +106,7 @@ export function TeamsManagement() {
     <div className="mx-auto max-w-6xl space-y-6">
       <header>
         <h1 className="text-3xl font-bold text-gray-900">Team Management</h1>
-        <p className="mt-2 text-gray-500">Staff and extension assignments currently configured in the PBX.</p>
+        <p className="mt-2 text-gray-500">Manage staff accounts and assign business extensions to team members.</p>
       </header>
       {error && <p role="alert" className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{error}</p>}
       {notice && <p role="status" className="rounded-lg bg-green-50 p-4 text-sm text-green-700">{notice}</p>}
@@ -108,12 +160,14 @@ export function TeamsManagement() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {staff.map((member) => {
-                  const extension = extensionByUser.get(member.id);
+                  const assignedExtensions = extensionsByUser.get(member.id) ?? [];
                   return (
                     <tr key={member.id}>
                       <td className="px-5 py-4 font-medium text-gray-900">{member.email}</td>
                       <td className="px-5 py-4 capitalize text-gray-600">{member.role}</td>
-                      <td className="px-5 py-4 text-gray-600">{extension ? `${extension.name} · ${extension.number}` : "Not assigned"}</td>
+                      <td className="px-5 py-4 text-gray-600">
+                        {assignedExtensions.length ? assignedExtensions.map((extension) => `${extension.name} · ${extension.number}`).join(", ") : "Not assigned"}
+                      </td>
                       <td className="px-5 py-4 text-gray-600">{new Date(member.createdAt).toLocaleDateString()}</td>
                     </tr>
                   );
@@ -127,7 +181,53 @@ export function TeamsManagement() {
       <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
         <div className="border-b border-gray-200 p-5">
           <h2 className="font-semibold text-gray-900">Extensions</h2>
+          <p className="mt-1 text-sm text-gray-500">Create phone extensions and assign them to team members.</p>
         </div>
+        <form onSubmit={(event) => void handleCreateExtension(event)} className="grid gap-4 border-b border-gray-200 p-5 sm:grid-cols-[1fr_1fr_1fr_auto]">
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-gray-700">Extension number</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{1,8}"
+              maxLength={8}
+              value={extensionNumber}
+              onChange={(event) => setExtensionNumber(event.target.value)}
+              required
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-gray-700">Name</span>
+            <input
+              type="text"
+              value={extensionName}
+              onChange={(event) => setExtensionName(event.target.value)}
+              required
+              maxLength={120}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-gray-700">Assign to (optional)</span>
+            <select
+              value={extensionUserId}
+              onChange={(event) => setExtensionUserId(event.target.value)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">Unassigned</option>
+              {user && <option value={user.id}>{user.email} (you)</option>}
+              {staff.map((member) => <option key={member.id} value={member.id}>{member.email}</option>)}
+            </select>
+          </label>
+          <button
+            type="submit"
+            disabled={creatingExtension}
+            className="self-end rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {creatingExtension ? "Creating…" : "Create extension"}
+          </button>
+        </form>
         {extensions.length ? (
           <ul className="divide-y divide-gray-100">
             {extensions.map((extension) => (
@@ -136,7 +236,22 @@ export function TeamsManagement() {
                   <p className="font-medium text-gray-900">{extension.name}</p>
                   <p className="mt-1 text-sm text-gray-500">Extension {extension.number} · SIP user {extension.sipUsername}</p>
                 </div>
-                <p className="text-sm text-gray-500">{extension.userId ? staff.find((member) => member.id === extension.userId)?.email ?? "Assigned user" : "Unassigned"}</p>
+                <label className="flex items-center gap-3 text-sm text-gray-600">
+                  <span>Assigned to</span>
+                  <select
+                    aria-label={`Assign extension ${extension.number}`}
+                    value={extension.userId ?? ""}
+                    onChange={(event) => void handleExtensionAssignment(extension, event.target.value)}
+                    disabled={savingExtensionId !== null}
+                    className="min-w-48 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 disabled:bg-gray-100"
+                  >
+                    <option value="">Unassigned</option>
+                    {user && <option value={user.id}>{user.email} (you)</option>}
+                    {staff.map((member) => (
+                      <option key={member.id} value={member.id}>{member.email}</option>
+                    ))}
+                  </select>
+                </label>
               </li>
             ))}
           </ul>
