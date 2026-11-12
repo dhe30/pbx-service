@@ -16,6 +16,7 @@ import { parse } from '../validation.js';
 // Account side, any logged-in user (owner or staff) of the account:
 // POST /tickets {subject, description}       201 ticket          400
 // GET  /tickets?status&limit&cursor          200 { items: [ticket], nextCursor }   newest first
+// GET  /tickets/summary                     200 { open, closed } account-wide counts
 // GET  /tickets/:id                          200 ticket          404
 // POST /tickets/:id/close                    200 ticket          404   (idempotent)
 //
@@ -62,6 +63,13 @@ const TicketSchema = z
   })
   .describe('A support ticket.');
 
+const TicketSummarySchema = z
+  .object({
+    open: z.number().int().describe("Number of the account's open tickets."),
+    closed: z.number().int().describe("Number of the account's closed tickets."),
+  })
+  .describe("The account's ticket counts, independent of list filters and pagination.");
+
 const OperatorTicketSchema = TicketSchema.extend({
   tenantId: z.string().uuid().describe('Account the ticket belongs to.'),
   tenantName: z.string().describe("That account's business name."),
@@ -96,6 +104,13 @@ const docs = {
     description: 'Every ticket of the account (opened by any of its users), newest first. Paged with `cursor` / `nextCursor`.',
     query: ListQuery,
     responses: { 200: { description: 'A page of tickets', schema: pageSchema(TicketSchema, 'support tickets') } },
+  },
+  summary: {
+    tag: 'Support',
+    auth: 'user',
+    summary: "Count the account's support tickets",
+    description: 'Returns account-wide open and closed counts, independent of list status filters and pagination.',
+    responses: { 200: { description: 'Open and closed ticket counts', schema: TicketSummarySchema } },
   },
   get: {
     tag: 'Support',
@@ -216,6 +231,17 @@ export const ticketRoutes: FastifyPluginAsync<{ sql: Sql; operatorToken: string 
   app.get('/tickets', withDoc(anyUser, docs.list), async (req) => {
     const { rows, nextCursor } = await list(parse(ListQuery, req.query), tenantOf(req));
     return { items: rows.map(view), nextCursor };
+  });
+
+  app.get('/tickets/summary', withDoc(anyUser, docs.summary), async (req) => {
+    const [counts] = await withRetry(
+      () => sql<{ open: number; closed: number }[]>`
+        select count(*) filter (where status = 'open')::int as open,
+               count(*) filter (where status = 'closed')::int as closed
+          from support_tickets
+         where tenant_id = ${tenantOf(req)}`,
+    );
+    return counts!;
   });
 
   app.get('/tickets/:id', withDoc(anyUser, docs.get), async (req) => {
