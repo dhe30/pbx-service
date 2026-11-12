@@ -123,6 +123,16 @@ export interface Mailbox {
     ownerUserId: string | null;
 }
 
+export interface GreetingMedia {
+    id: string;
+    kind: "greeting";
+    format: string;
+    durationMs: number | null;
+    callId: null;
+    createdAt: string;
+    audioUrl: string;
+}
+
 export interface BillingState {
     card: { brand: string | null; last4: string | null } | null;
     planPaidThrough: string | null;
@@ -263,6 +273,10 @@ export const dataService = {
         const { data } = await api.get<PhoneNumber[]>("/numbers");
         return data;
     },
+    async updateNumberRoute(id: string, destination: Destination | null) {
+        const { data } = await api.put<PhoneNumber>(`/numbers/${id}/route`, { destination });
+        return data;
+    },
     async getCountries() {
         const { data } = await api.get<Country[]>("/numbers/countries");
         return data;
@@ -291,16 +305,59 @@ export const dataService = {
         const { data } = await api.get<RingGroup[]>("/ring-groups");
         return data;
     },
+    async createRingGroup(group: Omit<RingGroup, "id">) {
+        const { data } = await api.post<RingGroup>("/ring-groups", group);
+        return data;
+    },
+    async updateRingGroup(id: string, group: Omit<RingGroup, "id">) {
+        const { data } = await api.put<RingGroup>(`/ring-groups/${id}`, group);
+        return data;
+    },
+    deleteRingGroup(id: string) {
+        return api.delete<void>(`/ring-groups/${id}`);
+    },
     async getIvrMenus() {
         const { data } = await api.get<IvrMenu[]>("/ivr-menus");
         return data;
+    },
+    async createIvrMenu(menu: Omit<IvrMenu, "id">) {
+        const { data } = await api.post<IvrMenu>("/ivr-menus", menu);
+        return data;
+    },
+    async updateIvrMenu(id: string, menu: Omit<IvrMenu, "id">) {
+        const { data } = await api.put<IvrMenu>(`/ivr-menus/${id}`, menu);
+        return data;
+    },
+    deleteIvrMenu(id: string) {
+        return api.delete<void>(`/ivr-menus/${id}`);
     },
     async getBusinessHours() {
         const { data } = await api.get<BusinessHours[]>("/business-hours");
         return data;
     },
+    async createBusinessHours(hours: Omit<BusinessHours, "id" | "openNow">) {
+        const { data } = await api.post<BusinessHours>("/business-hours", hours);
+        return data;
+    },
+    async updateBusinessHours(id: string, hours: Omit<BusinessHours, "id" | "openNow">) {
+        const { data } = await api.put<BusinessHours>(`/business-hours/${id}`, hours);
+        return data;
+    },
+    deleteBusinessHours(id: string) {
+        return api.delete<void>(`/business-hours/${id}`);
+    },
     async getMailboxes() {
         const { data } = await api.get<Mailbox[]>("/mailboxes");
+        return data;
+    },
+    async getGreetingMedia() {
+        const { data } = await api.get<GreetingMedia[]>("/media", { params: { kind: "greeting" } });
+        return data;
+    },
+    async uploadGreeting(file: File) {
+        const { data } = await api.post<GreetingMedia>("/media", file, {
+            headers: { "Content-Type": file.type || "application/octet-stream" },
+        });
         return data;
     },
 };
