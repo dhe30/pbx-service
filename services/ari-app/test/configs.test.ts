@@ -38,8 +38,10 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).not.toMatch(/modparam\("usrloc", "db_url"/);
       expect(kam).toMatch(/modparam\("dmq_usrloc", "enable", 1\)/);
       expect(kam).toMatch(/modparam\("dmq_usrloc", "sync", 1\)/);
-      expect(kam).toMatch(/modparam\("dmq", "notification_address", "sip:127\.0\.0\.12:5060"\)/);
-      expect(kam2).toMatch(/modparam\("dmq", "notification_address", "sip:127\.0\.0\.11:5060"\)/);
+      // DMQ runs on the internal socket (5070), not the internet-facing 5060.
+      expect(kam).toMatch(/modparam\("dmq", "server_address", "sip:127\.0\.0\.11:5070"\)/);
+      expect(kam).toMatch(/modparam\("dmq", "notification_address", "sip:127\.0\.0\.12:5070"\)/);
+      expect(kam2).toMatch(/modparam\("dmq", "notification_address", "sip:127\.0\.0\.11:5070"\)/);
       expect(block(kam, 'route[DMQ]')).toMatch(/dmq_handle_message\(\)/);
     });
     it('auth and DID lookups use the read-only DB URL', () => {
@@ -139,7 +141,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
           const ep = vendorEndpoint(ctx, vendor, 'h', trunk!, '+1').split('/')[1]!;
           expect(pjsip).toContain(`[${ep}](edge-common)`);
           const section = pjsip.slice(pjsip.indexOf(`[${ep}](edge-common)`)).split('\n\n')[0]!;
-          expect(section).toContain(`outbound_proxy=sip:${ip}:5060\\;lr`);
+          expect(section).toContain(`outbound_proxy=sip:${ip}:5070\\;lr`);
           expect(section).toContain(`outbound_auth=vendor-${vendor}-auth`);
         }
       }
@@ -197,7 +199,56 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(sel).toMatch(/\$var\(alg\) = 7;/);
       expect(sel).toMatch(/ds_select_dst\("1", "\$var\(alg\)"\)/);
       expect(block(kam, 'route[FROM_CARRIER]')).toMatch(/sql_query\("ro", "select tenant_id from public\.kamailio_did_tenant/);
-      expect(read('edge-1', 'dispatcher.list')).toMatch(/1 sip:127\.0\.0\.21:5060 0 0\n1 sip:127\.0\.0\.22:5060 0 0/);
+      expect(read('edge-1', 'dispatcher.list')).toMatch(
+        /1 sip:127\.0\.0\.21:5060 0 0 socket=udp:127\.0\.0\.11:5070\n1 sip:127\.0\.0\.22:5060 0 0 socket=udp:127\.0\.0\.11:5070/,
+      );
+    });
+  });
+
+  // verify-backlog V-P10 / V-T10. SIP carries addresses inside its messages, so each socket must
+  // put the address its audience can reach: the private one for Asterisk / the peer edge / DMQ, the
+  // public one for the carrier, vendors and phones. edge-1: public IP on an interface; edge-2:
+  // behind 1:1 NAT like Clanode (binds its private IP, advertises the public one).
+  describe('sockets: internal vs internet-facing, with and without 1:1 NAT', () => {
+    const listens = (cfg: string) => cfg.split('\n').filter((l) => l.startsWith('listen='));
+    it('internal socket first (the default for DMQ and the peer edge), on its own port', () => {
+      expect(listens(kam)[0]).toBe('listen=udp:127.0.0.11:5070');
+      expect(listens(kam2)[0]).toBe('listen=udp:127.0.0.12:5070');
+    });
+    it('public IP on an interface: bind it, nothing to advertise', () => {
+      expect(listens(kam)).toEqual([
+        'listen=udp:127.0.0.11:5070',
+        'listen=udp:127.0.1.11:5060',
+        'listen=tls:127.0.1.11:5061',
+        'listen=tcp:127.0.0.11:8080',
+      ]);
+    });
+    it('behind 1:1 NAT: public UDP and TLS bind the private IP and advertise the public one', () => {
+      expect(listens(kam2)).toEqual([
+        'listen=udp:127.0.0.12:5070',
+        'listen=udp:127.0.0.12:5060 advertise 127.0.1.12:5060',
+        'listen=tls:127.0.0.12:5061 advertise 127.0.1.12:5061',
+        'listen=tcp:127.0.0.12:8080',
+      ]);
+      // rtpengine: same local address for both sides; the external side advertises the public IP.
+      expect(read('edge-2', 'rtpengine.conf')).toMatch(/^interface = internal\/127\.0\.0\.12;external\/127\.0\.0\.12!127\.0\.1\.12$/m);
+    });
+    it('new requests toward the internet leave from the public socket', () => {
+      // ' {': the route itself, not the mention in the Listeners comment
+      expect(block(kam2, 'route[SEND_PUBLIC] {')).toMatch(/force_send_socket\(udp:127\.0\.0\.12:5060\)/);
+      expect(block(kam, 'route[SEND_PUBLIC] {')).toMatch(/force_send_socket\(udp:127\.0\.1\.11:5060\)/);
+      // vendor legs, a phone on this edge, a phone delivered for the peer edge
+      expect(block(kam, 'route[TO_VENDOR]')).toMatch(/route\(SEND_PUBLIC\);\n\troute\(RELAY\);/);
+      expect(block(kam, 'branch_route[DEV_BRANCH]')).toMatch(/\$du = \$var\(rcv\);\n\t\troute\(SEND_PUBLIC\);/);
+      expect(block(kam, 'route[FROM_PEER]')).toMatch(/route\(SEND_PUBLIC\);\n\troute\(RELAY\);/);
+      // in-dialog requests: double Record-Route picks the socket
+      expect(kam).toMatch(/modparam\("rr", "enable_double_rr", 1\)/);
+    });
+    it('Asterisk and the peer edge reach Kamailio on the internal port', () => {
+      expect(block(kam, 'route[REGISTRAR]')).toContain('Path: <sip:127.0.0.11:5070;lr;received=');
+      const pjsip = read('pbx-1', 'pjsip.conf');
+      expect(pjsip).toMatch(/\[edge-a\]\ntype=aor\n[^\n]*\ncontact=sip:127\.0\.0\.11:5070\n/);
+      expect(pjsip).toMatch(/\[edge-b\]\ntype=aor\n[^\n]*\ncontact=sip:127\.0\.0\.12:5070\n/);
     });
   });
 });

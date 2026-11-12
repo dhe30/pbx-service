@@ -1,6 +1,8 @@
 # Dispatcher set 1 = pbx nodes (Asterisk), rendered from inventory group `pbx`.
-# Format: <setid> <destination> <flags> <priority>
+# Format: <setid> <destination> <flags> <priority> <attrs>
+# attrs socket=: calls and OPTIONS pings to Asterisk leave from Kamailio's INTERNAL socket, so
+# Asterisk sees (and answers to) this edge's private address (kamailio.cfg.j2 "Listeners").
 # Reload after edits without restarting Kamailio:  kamcmd dispatcher.reload
 {% for host in groups['pbx'] %}
-1 sip:{{ hostvars[host].private_ip }}:{{ hostvars[host].asterisk_sip_port | default(5060) }} 0 0
+1 sip:{{ hostvars[host].private_ip }}:{{ hostvars[host].asterisk_sip_port | default(5060) }} 0 0 socket=udp:{{ private_ip }}:{{ kamailio_internal_port }}
 {% endfor %}

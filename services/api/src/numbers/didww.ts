@@ -20,8 +20,10 @@ import {
 //   - available_dids accepts ONLY include=did_group and did_group.stock_keeping_units (city,
 //     region, country, did_group_type -> 400). A DID group carries those as relationship ids, plus
 //     area_name, prefix and is_metered (true = toll-free); names are looked up and cached here.
-//   - available_dids ignores page[size] (returns up to 100), so we can't tell from a probe whether
-//     the region/city/type filters are applied: every one is re-checked on the results.
+//   - The region/city/type filters ARE applied (100/100 offers matched each one), and included DID
+//     groups carry their relationship ids. available_dids ignores page[size] (always up to 100;
+//     page[number] works, meta.total_count is given). The filters are still re-checked on the
+//     results: cheap, and it keeps a wrong offer out if the clone changes.
 //   - SKU attributes: setup_price, monthly_price (the price per 7-day renewal period despite the
 //     name), channels_included_count.
 //   - The incoming toll-free per-minute fee is NOT in the API: the Course Services tab publishes it

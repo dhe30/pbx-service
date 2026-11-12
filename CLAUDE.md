@@ -219,8 +219,11 @@ Constraints: DID unique; purchase is idempotent (Idempotency-Key header -> purch
 ---------------------------------------------------------------------------------------------
 Implemented in telephony/kamailio/kamailio.cfg.j2 (validated with `kamailio -c` 6.0.8 by
 telephony/tests/check-configs.sh). Its header comment is the authoritative description.
-Listeners: UDP 5060 public (carrier, phones) + private (Asterisk, peer edge, DMQ), TLS 5061 public
-(phones via _sips._tcp; SRTP-SDES media), WS private :8080 (from HAProxy).
+Listeners: UDP 5060 public (carrier, phones, vendors), UDP 5070 internal on the private IP (Asterisk,
+peer edge, DMQ; listed first = default socket), TLS 5061 public (phones via _sips._tcp; SRTP-SDES
+media), WS private :8080 (from HAProxy). Clanode delivers public IPs by 1:1 NAT (the VM only has its
+private IP): public sockets bind public_bind_ip (= private IP) and `advertise` the public IP;
+route[SEND_PUBLIC] forces the public socket for new requests to the internet (2026-11-11, V-T10).
 - Registrations: usrloc db_mode=0 + dmq_usrloc (sync on start); unlimited contacts per extension;
   Path header with ;received so the edge holding the connection delivers.
 - DB: read-only URL (kamailio_db_ro_url) for auth_db and the DID -> account lookup (sqlops +
@@ -265,7 +268,8 @@ Listeners: UDP 5060 public (carrier, phones) + private (Asterisk, peer edge, DMQ
 - pjsip.conf:
   - transport-udp bound to private IP :5060 (no public IP, no external_* settings needed).
   - Two trunk endpoints `edge-a`, `edge-b` (one per Kamailio): context=from-edge, disallow=all,
-    allow=ulaw, direct_media=no, dtmf_mode=rfc4733, aors with contact sip:<edge private IP>:5060,
+    allow=ulaw, direct_media=no, dtmf_mode=rfc4733, aors with contact sip:<edge private IP>:5070
+    (Kamailio's internal socket, kamailio_internal_port),
     identify match both edge private IPs, qualify enabled.
   - NO per-phone endpoints and NO webrtc=yes (rtpengine handles WebRTC; Kamailio holds phones).
   - PSTN vendors: endpoint vendor-<us|intl>-<edge trunk> per edge, outbound_proxy = that edge's
@@ -377,7 +381,7 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 Public (edge only): UDP 5060 (carrier, vendors, phones), TCP 5061 (SIP over TLS for phones),
 TCP 443 (HTTPS + WSS via HAProxy), UDP 30000–40000 (rtpengine media), TCP 22 (prefer restricting
 via host firewall).
-Private: Kamailio UDP 5060 (+ DMQ) + WS 8080, rtpengine ng 2223, Asterisk UDP 5060 + RTP 10000–20000,
+Private: Kamailio UDP 5070 (internal socket: Asterisk, peer edge, DMQ) + WS 8080, rtpengine ng 2223, Asterisk UDP 5060 + RTP 10000–20000,
 ARI 8088 (localhost only), API 3000, Postgres 5432, Patroni 8008, etcd 2379/2380, object store,
 node_exporter 9100 and other exporters.
 - Host firewall (nftables, via Ansible `common` role): private-port allowlists by role/IP.

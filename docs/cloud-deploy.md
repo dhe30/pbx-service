@@ -37,7 +37,9 @@ what to check and what to change if a check fails. Background:
 **Inventory:** copy `infra/ansible/inventory/allinone.ini` and fill in `PUBLIC_IP` /
 `PRIVATE_IP`.
 - If the public IP is NATed onto the VM (not on its interface, check `ip -4 addr`), also set
-  `public_bind_ip=<the VM's local address>`.
+  `public_bind_ip=<the VM's local address>`. **On Clanode this is always the case** (1:1 NAT onto
+  the VM's only, private, address): `public_bind_ip` = `private_ip` on every edge
+  (`inventory/production.ini` already does this; verify-backlog V-P10).
 - To test with SIPp from your own machine, add it to the carrier list **with a port**, so the
   same machine can also act as a phone on other ports:
   ```ini

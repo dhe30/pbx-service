@@ -58,7 +58,8 @@ aors={{ trunk.name }}
 
 [{{ trunk.name }}]
 type=aor
-contact=sip:{{ trunk.ip }}:5060
+; Kamailio's INTERNAL socket (5060 on the edge faces the internet; kamailio.cfg.j2 "Listeners").
+contact=sip:{{ trunk.ip }}:{{ kamailio_internal_port }}
 ; OPTIONS ping so Asterisk knows if this edge is reachable.
 qualify_frequency=10
 qualify_timeout=2
@@ -73,7 +74,7 @@ match={{ trunk.ip }}
 ; ---- {{ v.id }} PSTN vendor via {{ trunk.name }} ----
 [vendor-{{ v.id }}-{{ trunk.name }}](edge-common)
 ; Requests go to Kamailio on this edge, which relays to the vendor (and anchors media).
-outbound_proxy=sip:{{ trunk.ip }}:5060\;lr
+outbound_proxy=sip:{{ trunk.ip }}:{{ kamailio_internal_port }}\;lr
 outbound_auth=vendor-{{ v.id }}-auth
 aors=vendor-{{ v.id }}-{{ trunk.name }}
 ; In-dialog requests from the vendor arrive via the same edge (identified as {{ trunk.name }}).
