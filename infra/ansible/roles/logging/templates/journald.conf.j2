@@ -1,0 +1,10 @@
+# Managed by Ansible (roles/logging). Overrides /etc/systemd/journald.conf.
+[Journal]
+# Keep the journal on disk, so the logs from before a crash or reboot are still there afterwards.
+Storage=persistent
+Compress=yes
+SystemMaxUse={{ journald_max_use }}
+SystemKeepFree={{ journald_keep_free }}
+MaxRetentionSec={{ journald_max_retention }}
+RateLimitIntervalSec={{ journald_rate_limit_interval }}
+RateLimitBurst={{ journald_rate_limit_burst }}

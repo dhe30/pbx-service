@@ -1,0 +1,30 @@
+# Managed by Ansible (roles/logging). Asterisk is built from source, so nothing else rotates its logs.
+# "logger reload" makes Asterisk reopen messages.log after it was moved.
+/var/log/asterisk/*.log {
+    su asterisk asterisk
+    daily
+    rotate 7
+    maxsize {{ logrotate_max_size }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        /usr/sbin/asterisk -rx 'logger reload' >/dev/null 2>&1 || true
+    endscript
+}
+
+# CDR files from Asterisk's cdr_csv / cdr_custom modules (autoloaded). The real call records are in
+# Postgres (cdrs table, written by the ARI app); these are only a local copy, kept for a week.
+# The modules open, append and close the file per record, so no reload is needed.
+/var/log/asterisk/cdr-csv/*.csv /var/log/asterisk/cdr-custom/*.csv {
+    su asterisk asterisk
+    daily
+    rotate 7
+    maxsize {{ logrotate_max_size }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+}

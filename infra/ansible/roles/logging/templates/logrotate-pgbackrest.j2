@@ -1,0 +1,13 @@
+# Managed by Ansible (roles/logging). pgBackRest appends to one file per stanza and command
+# (e.g. pbx-archive-push-async.log) and never rotates them itself. Each command opens the file
+# for its own run, so moving the file is safe.
+/var/log/pgbackrest/*.log {
+    su {{ pgbackrest_log_owner }} {{ pgbackrest_log_owner }}
+    daily
+    rotate 7
+    maxsize {{ logrotate_max_size }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+}

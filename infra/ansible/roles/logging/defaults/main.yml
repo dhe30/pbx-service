@@ -1,0 +1,28 @@
+---
+# Logs on every VM (Track 4): keep the logs needed after a crash, and make sure no log can fill a
+# disk and take a node down.
+#
+# Where logs go: almost every service (Kamailio, HAProxy, rtpengine, Patroni, etcd, Garage, the API,
+# the ARI app, Prometheus) logs to the systemd journal. Plain files: Asterisk (/var/log/asterisk),
+# pgBackRest (/var/log/pgbackrest), Postgres (weekday files in its data dir, already bounded),
+# Grafana (rotates itself), and /var/log/syslog etc. if rsyslog is installed.
+
+# ---- journald ----
+# Total journal size on disk. Debian's default is 10% of the filesystem (max 4 GiB); a fixed cap
+# is easier to reason about on small VMs.
+journald_max_use: 1G
+# Never fill the disk beyond this much free space, whatever max_use says.
+journald_keep_free: 2G
+# Drop entries older than this even if there is room.
+journald_max_retention: 14day
+# Per-service rate limit: more than burst lines in interval and journald DROPS the rest (it logs
+# "Suppressed N messages"). The default (10000 / 30 s) can be hit by Kamailio or HAProxy under
+# load, which would lose exactly the logs needed to debug it.
+journald_rate_limit_interval: 30s
+journald_rate_limit_burst: 50000
+
+# ---- logrotate (plain log files) ----
+# Rotate any logrotate-managed file once it passes this size, checked every hour, in addition to
+# its own daily/weekly schedule. Applies to every file in /etc/logrotate.d that doesn't set its own
+# size limit (e.g. /var/log/syslog from rsyslog).
+logrotate_max_size: 200M
