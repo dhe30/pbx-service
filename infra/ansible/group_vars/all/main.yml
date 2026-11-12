@@ -35,6 +35,10 @@ vendor_hosts: ["{{ vendor_us_host }}", "{{ vendor_intl_host }}"]
 vendor_number_format: "e164"
 
 kamailio_ws_port: 8080
+# Kamailio's internal SIP socket (UDP, private IP): Asterisk, the peer edge and DMQ use it; 5060 is
+# the internet-facing socket. Separate ports because behind 1:1 NAT (Clanode, verify-backlog V-P10)
+# both sockets share the VM's only address, and each must advertise a different address.
+kamailio_internal_port: 5070
 # SIP over TLS for phones registered through _sips._tcp (SRTP-SDES media). Certificate for sip_domain.
 kamailio_tls_port: 5061
 kamailio_tls_cert: /etc/kamailio/tls/cert.pem
