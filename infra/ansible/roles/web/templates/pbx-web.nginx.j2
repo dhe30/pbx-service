@@ -1,0 +1,23 @@
+# Managed by Ansible (role web). The website's static build, for the edge HAProxies only
+# (private IP; the host firewall allows the cluster). HAProxy decides what reaches this server:
+# page loads (Accept: text/html), /assets/..., / and favicons. API calls never come here.
+server {
+    listen {{ private_ip }}:{{ web_port }};
+    server_name _;
+    root {{ web_root }};
+    index index.html;
+
+    # Vite puts content-hashed files under /assets/: safe to cache for a long time.
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    # Single-page app: any other path is a client-side route (/numbers, /voicemail, ...): serve
+    # index.html and let React Router render it. index.html itself is never cached, so a deploy
+    # takes effect on the next page load.
+    location / {
+        try_files $uri /index.html;
+        add_header Cache-Control "no-cache";
+    }
+}

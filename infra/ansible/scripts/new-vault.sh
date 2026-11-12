@@ -51,6 +51,9 @@ vault_s3_secret_key: $(hex 32)
 vault_jwt_secret: $(hex 32)
 # API: bearer token for the provider-only routes (/operator/..., support tickets of all accounts).
 vault_operator_token: $(hex 32)
+# Optional: Let's Encrypt contact address (acme_email); empty = no email. Not a secret, but
+# kept out of the public repo.
+vault_acme_email: ""
 
 # Seeded test staff (alice = browser, bob = UDP phone / SIPp). SIP port 5060 is public: keep these
 # random, they can place billed vendor calls.

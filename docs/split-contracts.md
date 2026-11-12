@@ -110,6 +110,7 @@ lets the whole cluster reach every private port.
 | 8088/tcp | Asterisk ARI + `/metrics` | pbx | 127.0.0.1 | local ARI app only |
 | 9101/tcp | ARI app `/health`, `/metrics` | pbx | 127.0.0.1 | local (see open item O1) |
 | 3000/tcp | API | app | private_ip | HAProxy on edges |
+| 8081/tcp | Website (nginx, static Vite build; `web_port`) | app | private_ip | HAProxy on edges |
 | 5432/tcp | Postgres | db | private_ip | local DB proxies (+ replicas) |
 | 8008/tcp | Patroni REST (`/primary`, `/replica`, `/health`) | db | private_ip | local DB proxies, Prometheus |
 | 2379, 2380/tcp | etcd client / peer | db | private_ip | Patroni / other etcd members |
@@ -206,7 +207,16 @@ an inline host var (`host-1 ... name=value`), never `[group:vars]`.
   (`pbx-dbproxy`, separate from the edge's public HAProxy so reloading one never touches the
   other).
 - **O3 (T1/T4):** backup target for WAL archiving (mon-1 volume?) and restore drill.
-- **O4 (T2/T3), health path decided (PR #11, R18):** HAProxy on each edge health-checks
-  `GET /ready` on app-1/app-2 (inter 2 s, fall 2); the API drains 6 s on SIGTERM. Still open: path
-  routing once the web build lands (the web calls `/api/...`; today every path except `/ws` goes
-  to the API unchanged).
+- **O4 (T2/T3), decided:** HAProxy on each edge health-checks `GET /ready` on app-1/app-2
+  (inter 2 s, fall 2; PR #11, R18); the API drains 6 s on SIGTERM. **Path routing (2026-11-12):**
+  one origin for the website, its API calls and the course's tools:
+  - `/api/...` → API with `/api` stripped (the website's `baseURL`); the refresh cookie's
+    `Path=/auth` is rewritten to `/api/auth` on those responses;
+  - `/`, `/assets/...`, favicons, and page loads (`GET`/`HEAD` with `Accept: text/html`) → the
+    website (role `web`: Vite build served by nginx on the app nodes, `web_port` 8081);
+  - `/ws` → Kamailio; everything else → the API at the root. The OpenAPI document has no
+    `servers`, so the course's tools call the root (`/numbers`, `/auth/login`, ...); they don't ask
+    for `text/html`. `/openapi.json`, `/health`, `/ready`, `/metrics` always go to the API.
+
+  Trade-off: an API client that sends `Accept: text/html` on a GET to an API path gets the
+  website instead (verify-backlog V-A6).
