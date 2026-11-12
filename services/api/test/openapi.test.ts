@@ -41,7 +41,13 @@ describe('GET /openapi.json', () => {
     // Spot checks of the path conversion and a couple of known operations.
     expect(doc.paths['/mailboxes/{id}'].get.parameters[0]).toMatchObject({ name: 'id', in: 'path', required: true });
     expect(doc.paths['/auth/signup'].post.requestBody.content['application/json'].schema.required).toEqual(
-      expect.arrayContaining(['businessName', 'timezone', 'email', 'password']),
+      expect.arrayContaining(['email', 'password']),
+    );
+    expect(doc.paths['/auth/signup'].post.requestBody.content['application/json'].schema.required).not.toEqual(
+      expect.arrayContaining(['businessName', 'timezone']),
+    );
+    expect(doc.paths['/businesses'].post.requestBody.content['application/json'].schema.required).toEqual(
+      expect.arrayContaining(['name', 'timezone']),
     );
   });
 

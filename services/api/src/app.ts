@@ -14,6 +14,7 @@ import { billingItemRoutes } from './routes/billing-items.js';
 import { billingRoutes } from './routes/billing.js';
 import { blockedNumberRoutes } from './routes/blocked-numbers.js';
 import { businessHoursRoutes } from './routes/business-hours.js';
+import { businessRoutes } from './routes/businesses.js';
 import { callRoutes } from './routes/calls.js';
 import { extensionRoutes } from './routes/extensions.js';
 import { healthRoutes, type ReadinessCheck } from './routes/health.js';
@@ -124,7 +125,8 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
 
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
   const cardSetup = { stripe: deps.stripe, publishableKey: cfg.STRIPE_PUBLISHABLE_KEY, stripeJsUrl: cfg.STRIPE_JS_URL };
-  await app.register(authRoutes, { sql: deps.sql, ...cardSetup });
+  await app.register(authRoutes, { sql: deps.sql });
+  await app.register(businessRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingItemRoutes, { sql: deps.sql, stripe: deps.stripe });
   await app.register(invoiceRoutes, { sql: deps.sql });

@@ -25,14 +25,14 @@ const REFRESH_PATH = '/auth';
 /** Who is making the request. Set by `authenticate`; every tenant-scoped query uses tenantId. */
 export interface AuthUser {
   userId: string;
-  tenantId: string;
+  tenantId: string | null;
   role: UserRole;
 }
 
 type TokenType = 'access' | 'refresh';
 interface TokenPayload {
   sub: string;
-  tid: string;
+  tid: string | null;
   role: UserRole;
   typ: TokenType;
 }
@@ -121,7 +121,11 @@ function verifyToken(app: FastifyInstance, token: string | undefined, typ: Token
   try {
     const p = app.jwt.verify<TokenPayload>(token);
     // A refresh token must never work as an access token (and vice versa).
-    if (p.typ !== typ || !p.sub || !p.tid || (p.role !== 'owner' && p.role !== 'staff')) return null;
+    const validRoleAndTenant =
+      p.role === 'unassigned'
+        ? p.tid === null
+        : (p.role === 'owner' || p.role === 'staff') && typeof p.tid === 'string' && p.tid.length > 0;
+    if (p.typ !== typ || !p.sub || !validRoleAndTenant) return null;
     return { userId: p.sub, tenantId: p.tid, role: p.role };
   } catch {
     return null; // bad signature, expired, malformed

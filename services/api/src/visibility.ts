@@ -1,5 +1,6 @@
 import { withRetry, type Sql } from '@pbx/shared';
 import type { AuthUser } from './auth.js';
+import { HttpError } from './errors.js';
 
 // What a staff member may see of call history and voicemail (backend step 7). The owner sees
 // everything in the account. A staff member sees:
@@ -11,6 +12,9 @@ import type { AuthUser } from './auth.js';
 
 /** Extension numbers assigned to the user; null = no restriction (owner). */
 export async function visibleExtensions(sql: Sql, auth: AuthUser): Promise<string[] | null> {
+  if (!auth.tenantId || auth.role === 'unassigned') {
+    throw new HttpError(403, 'business_required', 'Create or join a business before using this endpoint');
+  }
   if (auth.role === 'owner') return null;
   const rows = await withRetry(
     () => sql<{ number: string }[]>`
@@ -21,6 +25,9 @@ export async function visibleExtensions(sql: Sql, auth: AuthUser): Promise<strin
 
 /** Mailbox ids the user may read; null = no restriction (owner). */
 export async function visibleMailboxes(sql: Sql, auth: AuthUser): Promise<string[] | null> {
+  if (!auth.tenantId || auth.role === 'unassigned') {
+    throw new HttpError(403, 'business_required', 'Create or join a business before using this endpoint');
+  }
   if (auth.role === 'owner') return null;
   const rows = await withRetry(
     () => sql<{ id: string }[]>`
