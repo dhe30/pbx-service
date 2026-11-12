@@ -106,7 +106,7 @@ Ansible + StackScripts for deployment. No Kubernetes.
 |---------------|-----------|----------------------------------------------------------------------|
 | edge-1, edge-2| yes       | Kamailio, rtpengine, HAProxy (HTTPS + WSS TLS termination), local DB HAProxy |
 | pbx-1, pbx-2  | no        | Asterisk, ARI app (Node), local DB HAProxy                           |
-| app-1, app-2  | no        | API (Node), static web build (served by API or nginx), local DB HAProxy |
+| app-1, app-2  | no        | API (Node), website (static Vite build, nginx :8081, role web), local DB HAProxy |
 | db-1..db-3    | no        | Postgres + Patroni, etcd, object store node (replication factor 3)   |
 | mon-1         | no*       | Prometheus, Grafana, Alertmanager, SIPp synthetic checks, backups, self-hosted CI runner |
 (*mon-1 may get a public IP or be reached via SSH tunnel for Grafana.)

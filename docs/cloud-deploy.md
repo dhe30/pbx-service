@@ -207,7 +207,7 @@ deployment after step 3 here):
    shows 3 nodes). The full run then adds the local proxies, API, pbx and edges in that order.
    Each app/pbx/edge node is updated one at a time (`serial: 1`) and must pass its health check
    (`/ready`, ARI `/health`) before the next one is touched.
-   - Code updates later: `ansible-playbook site.yml --ask-vault-pass --limit app` (API) or
+   - Code updates later: `ansible-playbook site.yml --ask-vault-pass --limit app` (API + website) or
      `--limit pbx` (ARI app). After adding or replacing a VM, run everything: the db nodes'
      `pg_hba` and the edges' HAProxy/dispatcher lists are built from the inventory.
 4. Additionally check:

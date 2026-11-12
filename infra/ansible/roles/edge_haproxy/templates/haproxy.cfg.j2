@@ -1,7 +1,10 @@
 # HAProxy on edge nodes: the only public HTTPS/WSS entry point (CLAUDE.md §4.2).
 #   /ws          -> Kamailio WebSocket (browsers' SIP)
 #   /webrtc-test -> static WebRTC test page (phase 1 only)
-#   everything else -> API on app nodes
+#   /api/...     -> API, "/api" stripped (the website's calls; cookie Path /auth -> /api/auth)
+#   /, /assets/..., favicons, page loads (GET/HEAD with Accept: text/html) -> website (role web)
+#   everything else -> API at the root (the course's tools: /openapi.json has no `servers`, so
+#                      they call https://<domain>/numbers, /auth/login, ...)
 # Port 80: Let's Encrypt HTTP-01 challenges -> local certbot; everything else -> HTTPS.
 global
     log /dev/log local0
@@ -37,7 +40,25 @@ frontend https
     # HTTP/1.1 only: Kamailio doesn't speak WebSocket over HTTP/2.
     bind {{ public_bind_ip }}:443 ssl crt /etc/haproxy/certs/site.pem alpn http/1.1
     http-request return status 200 content-type "text/html; charset=utf-8" file /etc/haproxy/www/webrtc-test.html hdr cache-control no-store if { path /webrtc-test }
+
+    # One origin for the website, its API calls and the course's tools (split-contracts O4).
+    # The website calls /api/... (services/web baseURL), the tools call the API at the root, and
+    # page URLs (/numbers, /calls, ...) are the same paths as API routes: a browser loading a page
+    # asks for text/html, an API client doesn't.
+    acl api_prefix path_beg /api/
+    acl web_static path_beg /assets/
+    acl web_files  path / /index.html /favicon.ico /favicon.svg /vite.svg /robots.txt
+    acl api_only   path /openapi.json /health /ready /metrics
+    acl page_load  method GET HEAD
+    acl wants_html req.hdr(accept) -m sub text/html
+    # Remember the prefix BEFORE stripping it: afterwards /api/ would look like / (a web path).
+    http-request set-var(txn.api_prefix) bool(true) if api_prefix
+    http-request replace-path ^/api(/.*)$ \1 if api_prefix
+
     use_backend kamailio_ws if { path /ws }
+    use_backend api if { var(txn.api_prefix) -m bool }
+    use_backend web if web_static || web_files
+    use_backend web if page_load wants_html !api_only
     default_backend api
 
 backend kamailio_ws
@@ -59,8 +80,23 @@ backend api
     # Retry another app node when a connection fails (node died between checks).
     retries 2
     option redispatch
+    # The website reaches the API under /api, but the refresh cookie is scoped Path=/auth
+    # (services/api/src/auth.ts): rewrite it to /api/auth on those responses, or the browser
+    # never sends it back to /api/auth/refresh. (The access cookie is Path=/: fine as is.)
+    http-response replace-header Set-Cookie ^(.*;\s*[Pp]ath=)/auth(;.*)?$ \1/api/auth\2 if { var(txn.api_prefix) -m bool }
 {% for host in groups['app'] | default([]) %}
     server {{ host }} {{ hostvars[host].private_ip }}:{{ api_port | default(3000) }} check
+{% endfor %}
+
+backend web
+    # Static build of services/web on every app node (nginx, role web).
+    option httpchk GET /
+    http-check expect status 200
+    default-server inter 2s fall 2 rise 2
+    retries 2
+    option redispatch
+{% for host in groups['app'] | default([]) %}
+    server {{ host }}-web {{ hostvars[host].private_ip }}:{{ web_port | default(8081) }} check
 {% endfor %}
 
 # Local stats + Prometheus metrics (private IP only).

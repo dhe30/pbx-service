@@ -1,0 +1,108 @@
+---
+# Website (services/web) on the app nodes: build with Vite on the host, serve with nginx on
+# <private_ip>:{{ web_port }}. Runs after the api role in site.yml (the api role installs Node.js).
+# Edge HAProxy routing (role edge_haproxy, split-contracts O4):
+#   /api/...                       -> API, prefix stripped (the website's API calls)
+#   /assets/..., /, page loads     -> here
+#   everything else                -> API at the root (the course's tools, /openapi.json)
+
+- name: Node.js is installed (by the api role, which runs first on app nodes)
+  ansible.builtin.command: node --version
+  register: web_node
+  changed_when: false
+
+- name: nginx and rsync
+  ansible.builtin.apt:
+    name: [nginx, rsync]
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: No default nginx site (it would listen on every address, port 80)
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: ["{{ web_src_dir }}", "{{ web_root }}"]
+
+# Whole repo minus heavy/irrelevant dirs (npm workspaces need every package.json to be present).
+- name: Sync source
+  ansible.posix.synchronize:
+    src: "{{ repo_root }}/"
+    dest: "{{ web_src_dir }}/"
+    delete: true
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.env"
+      - "--exclude=node_modules"
+      - "--exclude=dist"
+      - "--exclude=infra"
+      - "--exclude=loadtest"
+      - "--exclude=dev"
+      - "--exclude=telephony/tests/.rendered"
+  register: web_src
+
+- name: Check for a previous build
+  ansible.builtin.stat:
+    path: "{{ web_root }}/index.html"
+  register: web_built
+
+# Typecheck + Vite build. Only @pbx/web's dependencies are installed in this tree.
+- name: Install dependencies and build the website
+  ansible.builtin.shell: |
+    set -e
+    npm ci --no-audit --no-fund -w @pbx/web
+    npm run build -w @pbx/web
+    test -f services/web/dist/index.html
+  args:
+    chdir: "{{ web_src_dir }}"
+    executable: /bin/bash
+  when: web_src.changed or not web_built.stat.exists
+  register: web_build
+
+# Swap in the new build only after it succeeded (a failed build leaves the old site up).
+- name: Publish the build
+  ansible.builtin.command: rsync -a --delete {{ web_src_dir }}/services/web/dist/ {{ web_root }}/
+  when: web_build is changed
+  changed_when: true
+
+- name: nginx site
+  ansible.builtin.template:
+    src: pbx-web.nginx.j2
+    dest: /etc/nginx/sites-available/pbx-web
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Enable the site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/pbx-web
+    dest: /etc/nginx/sites-enabled/pbx-web
+    state: link
+  notify: Reload nginx
+
+- name: nginx configuration is valid
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Start nginx
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+- name: Apply pending reloads
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until the website answers (index.html)
+  ansible.builtin.uri:
+    url: "http://{{ private_ip }}:{{ web_port }}/"
+    return_content: true
+  register: web_up
+  retries: 15
+  delay: 2
+  until: web_up.status == 200 and '<div id="root"' in web_up.content

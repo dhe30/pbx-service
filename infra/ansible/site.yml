@@ -44,10 +44,11 @@
   become: true
   roles: [db_local_proxy]
 
+# api first: it installs Node.js, which web builds the website with.
 - hosts: app
   become: true
   serial: 1
-  roles: [api]
+  roles: [api, web]
 
 - hosts: pbx
   become: true
