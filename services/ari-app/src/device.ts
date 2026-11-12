@@ -92,6 +92,6 @@ export async function handleDeviceCall(ctx: Ctx, s: CallSession, sipUsername: st
       reason = 'failure';
     }
   } finally {
-    await ctx.ari.hangupQuietly(s.primary, reason).catch(() => {});
+    await s.hangupPrimary(ctx.ari, reason).catch(() => {});
   }
 }
