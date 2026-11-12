@@ -348,6 +348,46 @@ groups:
           summary: "{{ $labels.instance }}: {{ $labels.job }} certificate expires in {{ $value | humanize }} days"
           description: Browsers, the course's tools and TLS phones will refuse the connection when it expires.
 
+  # ---- Customers and course services (pbx-business-metrics on mon-1) ------------------------------
+  - name: business
+    rules:
+      # Simulated customers open a ticket when something fails for them, well before they leave.
+      - alert: NewSupportTicket
+        expr: pbx_support_tickets_opened_last_15m > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} new support ticket(s) in the last 15 minutes"
+          description: Something is failing for customers. Read them on the provider ticket page (GET /operator/tickets) and check the other alerts.
+
+      - alert: SupportTicketsOpenLong
+        expr: time() - pbx_support_tickets_oldest_open_timestamp_seconds > 6 * 3600
+        labels: { severity: warning }
+        annotations:
+          summary: "A support ticket has been open for {{ $value | humanizeDuration }}"
+
+      # The DID provider charges a weekly fee per number and per-second fees on toll-free calls from
+      # this prepaid balance; at $0 it stops delivering incoming calls. Top up on the Course Services tab.
+      - alert: DidBalanceLow
+        expr: pbx_did_balance_usd < 10
+        labels: { severity: warning }
+        annotations:
+          summary: "DID provider balance is ${{ $value | humanize }}"
+          description: At $0 incoming calls stop. Top up from the bank on the Course Services tab.
+
+      - alert: DidBalanceCritical
+        expr: pbx_did_balance_usd < 3
+        labels: { severity: critical }
+        annotations:
+          summary: "DID provider balance is ${{ $value | humanize }}: incoming calls stop at $0"
+
+      - alert: BusinessCheckFailing
+        expr: pbx_support_tickets_check_success == 0 or pbx_did_balance_check_success == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "mon-1 can't read the support tickets or the DID balance"
+          description: "On mon-1: systemctl status pbx-business-metrics; run /usr/local/bin/pbx-business-metrics by hand."
+
   # ---- Monitoring itself ---------------------------------------------------------------------------
   - name: monitoring
     rules:

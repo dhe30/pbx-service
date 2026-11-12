@@ -158,6 +158,42 @@
     group: grafana
     mode: "0644"
 
+# ---- Business checks (support tickets, DID balance) --------------------------------------------
+- name: node_exporter textfile directory
+  ansible.builtin.file:
+    path: /var/lib/prometheus/node-exporter
+    state: directory
+    mode: "0755"
+
+- name: Secrets for the business checks (operator token, DID API key)
+  ansible.builtin.template:
+    src: business-metrics.env.j2
+    dest: /etc/pbx/business-metrics.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Business checks script
+  ansible.builtin.template:
+    src: pbx-business-metrics.sh.j2
+    dest: /usr/local/bin/pbx-business-metrics
+    mode: "0755"
+
+- name: Business checks systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop: [pbx-business-metrics.service, pbx-business-metrics.timer]
+
+- name: Run the business checks every minute
+  ansible.builtin.systemd:
+    name: pbx-business-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
 # ---- Start and check -----------------------------------------------------------------------------
 - name: Start monitoring services
   ansible.builtin.systemd:

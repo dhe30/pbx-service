@@ -34,6 +34,9 @@ inhibit_rules:
   - source_matchers: [alertname = CertificateExpiringVerySoon]
     target_matchers: [alertname = CertificateExpiringSoon]
     equal: [instance, job]
+  # DID balance under $3 is already reported; skip the under-$10 warning.
+  - source_matchers: [alertname = DidBalanceCritical]
+    target_matchers: [alertname = DidBalanceLow]
   # A disk above 85% is already reported; skip the 70% warning for it.
   - source_matchers: [alertname = DiskSpaceCritical]
     target_matchers: [alertname = DiskSpaceLow]

@@ -27,3 +27,7 @@ grafana_admin_password: "{{ vault_grafana_admin_password }}"
 # Grafana comes from its own apt repo (Debian doesn't package it). Empty = latest; set e.g.
 # "12.2.1" to pin.
 grafana_version: ""
+
+# Support tickets + DID provider balance, checked every minute by a script on mon-1
+# (pbx-business-metrics) through the API's provider-only route and the DID API.
+business_metrics_file: /var/lib/prometheus/node-exporter/pbx_business.prom
