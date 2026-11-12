@@ -4,6 +4,7 @@ From: Aaron (Track 3 backend). Updated 2026-11-12 (billing completed, API deploy
 Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
 
+<<<<<<< Updated upstream
 **What changed on 2026-11-11 (support tickets, course spec §3):**
 - New: `POST /tickets`, `GET /tickets`, `GET /tickets/:id`, `POST /tickets/:id/close` (any
   logged-in user of the account), and the provider view `GET /operator/tickets`,
@@ -13,6 +14,12 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 - New config `OPERATOR_TOKEN` (Vault `vault_operator_token`, at least 32 characters; the `api`
   role refuses to run without it). Locally optional: unset = operator routes refuse everyone.
 - New metrics `pbx_api_support_tickets_opened_total`, `pbx_api_support_tickets_closed_total`.
+=======
+**Account lifecycle (2026-11-15):** signup now creates an unattached login; authenticated users
+create a business separately, and owners can attach existing unassigned users as staff.
+`GET /me` returns `tenant: null` until the user belongs to a business. See
+[backend-step2.md](backend-step2.md).
+>>>>>>> Stashed changes
 
 **What changed on 2026-11-12:**
 - New: `GET /billing/rates`, `GET /billing/rates/lookup` (per-minute price by prefix / number),
@@ -27,9 +34,8 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
   `20261114000000_purchase_incoming_cost.sql` (run `npm run db:migrate`).
 - Deployment: Ansible role `api`, `services/api/Dockerfile`; the edge HAProxy checks `/ready`.
 
-**What changed on 2026-11-09 (read this if you built against an earlier version):**
-- `POST /auth/signup` needs `timezone`, and returns `cardSetup` for the card form.
-- `GET /me` exists (user, business, time zone, `status`).
+**What changed on 2026-11-09 (historical):**
+- `GET /me` was added with business, time zone, and `status`.
 - New: `/business-hours`, `/blocked-numbers`, `/billing`, `/billing/prices`, `/billing/card`,
   `/billing/setup-intent`.
 - `POST /extensions` answers 402 until the plan is paid and 409 `extension_limit` past the plan.
@@ -59,11 +65,11 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 | Step | What | State |
 |---|---|---|
 | 1 | Server skeleton: config, logging, `/health`, `/ready`, `/metrics`, error format, graceful shutdown | Done |
-| 2 | Auth: signup (with time zone), login, refresh, logout (cookies + JWT), `GET /me` | Done |
+| 2 | Auth: account-only signup, login, refresh, logout, `GET /me`; separate business creation | Done |
 | 3 | Tenant isolation: scoped queries, 404 for other tenants' ids, reference checks | Done |
 | 4 | Staff logins + SIP credentials; extensions (each with a Kamailio `subscriber` row) | Done |
 | 5 | IVR menus, ring groups, mailboxes, number routing, business hours, caller blocklist | Done |
-| — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card at signup + first plan charge, extension limit | Done (2026-11-09) |
+| — | Course spec: time zone, `GET /me`, business hours, blocklist, `/openapi.json`, card + first plan charge, extension limit | Done (2026-11-09) |
 | 6 | Greeting upload (ffmpeg → 8 kHz WAV), media list / audio download / delete | Done |
 | 7 | Call history search + recordings, voicemail inbox, settings (read-only) | Done |
 | 8 | Number search, purchase (idempotent, prorated charge), list, release | Done (DIDWW clone details [VERIFY]) |
@@ -153,27 +159,34 @@ stores is checked to belong to the same business. Rules and helpers: `docs/backe
 
 | Request | Success response |
 |---|---|
-| `POST /auth/signup` `{ "businessName", "timezone", "email", "password" }` | `201 { "userId", "tenantId", "role": "owner", "cardSetup" }` + cookies |
+| `POST /auth/signup` `{ "email", "password" }` | `201 { "userId", "tenantId": null, "role": "unassigned" }` + cookies |
+| `POST /businesses` `{ "name", "timezone" }` | `201 { "userId", "tenantId", "role": "owner", "cardSetup" }` + refreshed cookies |
 | `POST /auth/login` `{ "email", "password" }` | `200 { "userId", "tenantId", "role" }` + cookies |
 | `POST /auth/refresh` (no body) | `200 { "userId", "tenantId", "role" }` + new cookies |
 | `POST /auth/logout` (no body) | `204` + cookies cleared |
-| `GET /me` | `200 { "user": { "id", "email", "role", "createdAt" }, "tenant": { "id", "name", "timezone", "status", "createdAt" } }` |
+| `GET /me` | `200 { "user": { "id", "email", "role", "createdAt" }, "tenant": object \| null }` |
 
 Validation rules (show them in the forms):
-- `businessName`: 1-100 characters.
-- `timezone`: IANA name, e.g. `America/New_York` (offer a picker; the browser's own zone is
-  `Intl.DateTimeFormat().resolvedOptions().timeZone`). **Fixed after signup**: it sets billing
-  periods and business hours. Returned in its canonical spelling.
+- `name`: 1-100 characters; `timezone`: an IANA name, e.g. `America/New_York` (offer a picker;
+  default to `Intl.DateTimeFormat().resolvedOptions().timeZone`). Fixed after business creation
+  because it sets billing periods and business hours; returned in canonical spelling.
 - `email`: valid email, case-insensitive (stored lowercased).
-- `password`: 8-128 characters at signup.
+- `password`: 8-128 characters at signup; the web form also confirms it before sending.
+
+An unassigned account has `role: "unassigned"` and `tenantId: null`. `/me` returns a null tenant.
+Business-scoped routes return `403 business_required` until it creates or joins a business.
+`POST /businesses` creates the tenant/settings and assigns the current user as owner; it returns
+the card SetupIntent. The browser then saves the card with Stripe.js and `POST /billing/card`.
 
 Error codes: wrong email and wrong password return the same `401 invalid_credentials` (on
 purpose). A taken email at signup returns `409 email_taken`.
 
-### Card at signup and billing (spec §1, §2)
+### Card and billing (spec §1, §2)
 
-The signup form must also save a card. Card fields go to Stripe.js only, **never** to our API.
-1. `POST /auth/signup`. The response's `cardSetup` = `{ setupIntentId, clientSecret, publishableKey,
+The account signup is separate from business creation; card fields go to Stripe.js only, **never**
+to our API.
+1. `POST /auth/signup` creates a user with no business; `POST /businesses` creates the business.
+   The business response's `cardSetup` = `{ setupIntentId, clientSecret, publishableKey,
    stripeJsUrl }` (`null` if the gateway failed: call `POST /billing/setup-intent`).
 2. Load Stripe.js from `stripeJsUrl`, `Stripe(publishableKey)`, card element,
    `stripe.confirmCardSetup(clientSecret, { payment_method: { card } })` (handles 3-D Secure).
@@ -215,13 +228,14 @@ price of calling one number, e.g. next to the dial pad or the forwarding field),
 
 | Request | Who | Success response |
 |---|---|---|
-| `POST /staff` `{ "email", "password" }` | owner | `201 { "id", "email", "role": "staff", "createdAt" }` |
+| `POST /staff` `{ "email", "password"? }` | owner | `201 { "id", "email", "role": "staff", "createdAt" }` |
 | `GET /staff` | owner | `200 [ { same fields }, ... ]`, oldest first |
 | `DELETE /staff/:id` | owner | `204` (an extension assigned to them stays, unassigned) |
 | `GET /me/sip-credentials[?extensionId=]` | any user | `200 { "wsUri", "sipUri", "username", "password", "extensionId", "extensionNumber" }` |
 
-- The owner sets the staff member's first dashboard password (same rules as signup) and gives it
-  to them; the staff member then logs in normally with `/auth/login`.
+- To attach an existing unassigned account, send only its email. To create a new staff account,
+  include its first dashboard password (same rules as signup); the staff member logs in normally
+  with `/auth/login`.
 - Errors: `409 email_taken` on create; `404` if already deleted.
 - **Softphone** (spec §4: "a logged-in user calls and answers as one of the account's
   extensions", `data-testid="softphone-extension"`):

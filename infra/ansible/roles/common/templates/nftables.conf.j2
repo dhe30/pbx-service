@@ -29,6 +29,8 @@ table inet filter {
 		# Edge: public SIP (UDP + TLS for _sips._tcp phones), HTTPS/WSS, and rtpengine media.
 		udp dport 5060 accept
 		tcp dport {{ kamailio_tls_port | default(5061) }} accept
+		# HTTP: Let's Encrypt HTTP-01 challenges; everything else is redirected to HTTPS.
+		tcp dport 80 accept
 		tcp dport 443 accept
 		udp dport 30000-40000 accept
 {% endif %}

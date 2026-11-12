@@ -34,6 +34,7 @@ describe.skipIf(!db)('staff (Postgres)', () => {
   const sql = db as Sql;
   let app: FastifyInstance;
   const tenants: string[] = [];
+  const userIds: string[] = [];
 
   async function makeTenant() {
     const [t] = await sql<{ id: string }[]>`insert into tenants (name) values ('Staff test') returning id`;
@@ -48,6 +49,15 @@ describe.skipIf(!db)('staff (Postgres)', () => {
 
   const createStaff = (cookies: Record<string, string>, email = `staff-${randomUUID()}@example.test`) =>
     app.inject({ method: 'POST', url: '/staff', cookies, payload: { email, password: 'correct horse' } });
+  const createAccount = async (email = `account-${randomUUID()}@example.test`) => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: { email, password: 'correct horse' },
+    });
+    userIds.push(res.json().userId);
+    return res;
+  };
 
   beforeAll(async () => {
     app = await build({ sql });
@@ -56,6 +66,7 @@ describe.skipIf(!db)('staff (Postgres)', () => {
   afterAll(async () => {
     await sql`delete from kamailio.subscriber where tenant_id = any(${tenants})`;
     await sql`delete from tenants where id = any(${tenants}::uuid[])`;
+    if (userIds.length) await sql`delete from users where id = any(${userIds}::uuid[])`;
     await sql.end({ timeout: 2 });
   });
 
@@ -71,6 +82,24 @@ describe.skipIf(!db)('staff (Postgres)', () => {
     const login = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'correct horse' } });
     expect(login.statusCode).toBe(200);
     expect(login.json()).toMatchObject({ userId: staff.id, tenantId: a.tenantId, role: 'staff' });
+  });
+
+  it('POST /staff attaches an existing account by email without changing its password', async () => {
+    const a = await makeTenant();
+    const email = `existing-${randomUUID()}@example.test`;
+    const account = await createAccount(email);
+    const staff = await app.inject({
+      method: 'POST',
+      url: '/staff',
+      cookies: a.cookies,
+      payload: { email },
+    });
+    expect(staff.statusCode).toBe(201);
+    expect(staff.json()).toMatchObject({ id: account.json().userId, email, role: 'staff' });
+
+    const login = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'correct horse' } });
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({ userId: account.json().userId, tenantId: a.tenantId, role: 'staff' });
   });
 
   it('POST /staff: 400 on bad input, 409 on a taken email', async () => {

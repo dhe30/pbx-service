@@ -8,7 +8,7 @@
 
   Registration lasts 300 s: re-run it (or loop it) while testing.
 
-  [VERIFY] (verify-backlog V-T11): the SIPp on Debian 13 did NOT expand [field0]/[field1] inside
+  [VERIFY] (verify-backlog V-T12): the SIPp on Debian 13 did NOT expand [field0]/[field1] inside
   [authentication ...] in uac_vendor_probe.xml (it sent a broken header containing the password).
   Before relying on this scenario, run it once with -trace_msg and check the Authorization header.
   Fallback for a single user: [authentication] + -au <user> -ap <password>.

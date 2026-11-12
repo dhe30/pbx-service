@@ -251,4 +251,28 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(pjsip).toMatch(/\[edge-b\]\ntype=aor\n[^\n]*\ncontact=sip:127\.0\.0\.12:5070\n/);
     });
   });
+  // CLAUDE.md §14 / cloud-deploy §2: one Let's Encrypt certificate, issued with HTTP-01 through
+  // HAProxy :80 (certbot standalone on 127.0.0.1), installed for HTTPS/WSS and Kamailio TLS.
+  describe('§14 TLS certificate: HTTP-01 on :80, installed for HAProxy and Kamailio', () => {
+    const hasHap = rendered && existsSync(join(R, 'edge-2', 'haproxy.cfg'));
+    const hap = hasHap ? read('edge-2', 'haproxy.cfg') : '';
+    const install = hasHap ? read('edge-2', 'pbx-install-cert.sh') : '';
+    it.skipIf(!hasHap)(':80 sends ACME challenges to certbot and redirects everything else', () => {
+      const i = hap.indexOf('frontend http\n');
+      const http = hap.slice(i, hap.indexOf('\n\n', i));
+      expect(http).toContain('bind 127.0.0.12:80'); // behind 1:1 NAT: the private IP
+      expect(http).toContain('acl acme_challenge path_beg /.well-known/acme-challenge/');
+      expect(http).toContain('http-request redirect scheme https code 301 unless acme_challenge');
+      expect(http).toContain('use_backend acme if acme_challenge');
+      expect(hap).toMatch(/backend acme\n\s+server certbot 127\.0\.0\.1:8888\n/);
+      expect(hap).toContain('bind 127.0.0.12:443 ssl crt /etc/haproxy/certs/site.pem');
+    });
+    it.skipIf(!hasHap)('the install script feeds both HAProxy and Kamailio TLS', () => {
+      expect(install).toContain('site=/etc/haproxy/certs/site.pem');
+      expect(install).toContain('kam_cert=/etc/kamailio/tls/cert.pem');
+      expect(install).toContain('kam_key=/etc/kamailio/tls/key.pem');
+      expect(install).toContain('kamcmd tls.reload');
+      expect(read('edge-2', 'tls.cfg')).toMatch(/^certificate = \/etc\/kamailio\/tls\/cert\.pem$/m);
+    });
+  });
 });

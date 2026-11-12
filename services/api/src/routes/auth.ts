@@ -2,56 +2,35 @@ import { withRetry, type Sql, type UserRole } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, clearAuthCookies, readRefreshToken, setAuthCookies, type AuthUser } from '../auth.js';
-import { startCardSetup, type CardSetup } from '../billing/account.js';
-import { PLAN } from '../billing/catalog.js';
-import type { StripeClient } from '../billing/stripe.js';
 import { HttpError, isUniqueViolation } from '../errors.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
 import { hashPassword, verifyPassword } from '../passwords.js';
-import { email, parse, password, timeZone } from '../validation.js';
+import { email, parse, password } from '../validation.js';
 
-// POST /auth/signup   create a business (tenant) + its owner, log them in      201
+// POST /auth/signup   create an unattached user and log them in                 201
 // POST /auth/login    email + password -> auth cookies                         200
 // POST /auth/refresh  refresh cookie -> new access + refresh cookies           200
 // POST /auth/logout   clear auth cookies                                       204
-// GET  /me            the logged-in user and their business                    200, 401
+// GET  /me            the logged-in user and optional business                 200, 401
 // Auth responses carry only { userId, tenantId, role }; profile data comes from GET /me.
-//
-// timezone (course spec §1): IANA name, fixed after signup. It governs billing periods and
-// business hours (tenants.timezone, read by the ARI app). There is deliberately no route that
-// changes it.
 
 const SignupBody = z.object({
-  businessName: z.string().trim().min(1).max(100).describe('Business name, 1-100 characters.'),
-  timezone: timeZone,
   email,
   password,
-});
+}).strict();
 
 const LoginBody = z.object({
   email,
   password: z.string().min(1).max(128).describe('Dashboard password.'),
 });
 
-const role = z.enum(['owner', 'staff']).describe('owner: manages the account. staff: dashboard + softphone only.');
+const role = z.enum(['owner', 'staff', 'unassigned']).describe('owner: manages the business; staff: dashboard + softphone; unassigned: no business yet.');
 const AuthUserSchema = z.object({
   userId: z.string().uuid().describe('Logged-in user.'),
-  tenantId: z.string().uuid().describe('The business (account) the user belongs to.'),
+  tenantId: z.string().uuid().nullable().describe('Business id, or null until the user joins or creates a business.'),
   role,
 });
-const SignupSchema = AuthUserSchema.extend({
-  cardSetup: z
-    .object({
-      setupIntentId: z.string().describe('Stripe SetupIntent id; send it to POST /billing/card after confirming.'),
-      clientSecret: z
-        .string()
-        .describe('The SetupIntent client_secret: pass it to Stripe.js stripe.confirmCardSetup() to save the card.'),
-      publishableKey: z.string().describe('Stripe publishable key for Stripe(publishableKey).'),
-      stripeJsUrl: z.string().describe('Load Stripe.js from this URL (the course payment gateway).'),
-    })
-    .nullable()
-    .describe('Card setup for the new account. null if the payment gateway failed: call POST /billing/setup-intent.'),
-});
+const SignupSchema = AuthUserSchema;
 
 const MeSchema = z.object({
   user: z
@@ -72,6 +51,7 @@ const MeSchema = z.object({
         .describe('past_due: an invoice is unpaid; outgoing calls are blocked until a new card pays it.'),
       createdAt: z.date().describe('Signup time.'),
     })
+    .nullable()
     .describe("The user's business."),
 });
 
@@ -80,15 +60,11 @@ const docs = {
   signup: {
     tag: 'Auth',
     auth: 'public',
-    summary: 'Sign up a business',
-    description:
-      'Creates the business and its owner, and logs the owner in. Then save the card: in the browser, load Stripe.js ' +
-      'from cardSetup.stripeJsUrl, call stripe.confirmCardSetup(cardSetup.clientSecret, { payment_method: { card } }) ' +
-      'and send the SetupIntent id to POST /billing/card, which charges the plan prorated to the end of the first ' +
-      'period. Card numbers never go to this API. See GET /billing/prices for the plan price.',
+    summary: 'Create an account',
+    description: 'Creates an account without a business and logs the user in. Create or join a business separately.',
     body: SignupBody,
     responses: { 201: { description: 'Created and logged in', schema: SignupSchema, headers: cookiesSet } },
-    errors: { 409: 'An account with this email already exists (`email_taken`).' },
+    errors: { 409: 'A user with this email already exists (`email_taken`).' },
   },
   login: {
     tag: 'Auth',
@@ -116,7 +92,7 @@ const docs = {
   me: {
     tag: 'Auth',
     auth: 'user',
-    summary: 'Current user and business',
+    summary: 'Current user and optional business',
     responses: { 200: { description: 'The user and their business', schema: MeSchema } },
   },
 } satisfies Record<string, OperationDoc>;
@@ -126,68 +102,48 @@ interface MeRow {
   email: string;
   role: UserRole;
   createdAt: Date;
-  tenantId: string;
-  tenantName: string;
-  timezone: string;
-  status: 'active' | 'past_due';
-  tenantCreatedAt: Date;
+  tenantId: string | null;
+  tenantName: string | null;
+  timezone: string | null;
+  status: 'active' | 'past_due' | null;
+  tenantCreatedAt: Date | null;
 }
 
 export interface AuthRouteOptions {
   sql: Sql;
-  stripe: StripeClient;
-  publishableKey: string;
-  stripeJsUrl: string;
 }
 
-export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sql, stripe, publishableKey, stripeJsUrl }) => {
+export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sql }) => {
   app.post('/auth/signup', withDoc({}, docs.signup), async (req, reply) => {
     const body = parse(SignupBody, req.body);
     const passwordHash = await hashPassword(body.password);
 
-    let user: AuthUser;
+    let userId: string;
     try {
-      // One transaction: never leave a tenant without an owner or settings. Safe to retry on a
-      // failover error because a failed transaction is rolled back entirely.
-      user = await withRetry(() =>
-        sql.begin(async (tx) => {
-          const [tenant] = await tx<{ id: string }[]>`
-            insert into tenants (name, timezone) values (${body.businessName}, ${body.timezone}) returning id`;
-          await tx`
-            insert into tenant_settings (tenant_id, included_extensions, included_us_minutes)
-            values (${tenant!.id}, ${PLAN.includedExtensions}, ${PLAN.includedUsMinutes})`;
-          const [owner] = await tx<{ id: string }[]>`
-            insert into users (tenant_id, email, password_hash, role)
-            values (${tenant!.id}, ${body.email}, ${passwordHash}, 'owner')
-            returning id`;
-          return { userId: owner!.id, tenantId: tenant!.id, role: 'owner' as const };
-        }),
+      const [row] = await withRetry(
+        () => sql<{ id: string }[]>`
+          insert into users (tenant_id, email, password_hash, role)
+          values (null, ${body.email}, ${passwordHash}, 'unassigned')
+          returning id`,
       );
+      userId = row!.id;
     } catch (err) {
       if (isUniqueViolation(err, 'users_email_key')) {
-        throw new HttpError(409, 'email_taken', 'An account with this email already exists');
+        throw new HttpError(409, 'email_taken', 'A user with this email already exists');
       }
       throw err;
     }
 
-    req.log.info({ userId: user.userId, tenantId: user.tenantId }, 'tenant signed up');
-    // Card setup happens after the account exists (the Stripe customer carries its id). If the
-    // gateway fails, signup still succeeds; the client then calls POST /billing/setup-intent.
-    let cardSetup: (CardSetup & { publishableKey: string; stripeJsUrl: string }) | null = null;
-    try {
-      cardSetup = { ...(await startCardSetup(sql, stripe, user.tenantId)), publishableKey, stripeJsUrl };
-    } catch (err) {
-      req.log.warn({ err, tenantId: user.tenantId }, 'card setup failed at signup');
-    }
-
+    const user: AuthUser = { userId, tenantId: null, role: 'unassigned' };
+    req.log.info({ userId }, 'user signed up');
     setAuthCookies(reply, user);
-    return reply.status(201).send({ ...user, cardSetup });
+    return reply.status(201).send(user);
   });
 
   app.post('/auth/login', withDoc({}, docs.login), async (req, reply) => {
     const body = parse(LoginBody, req.body);
     const [row] = await withRetry(
-      () => sql<{ id: string; tenantId: string; role: UserRole; passwordHash: string }[]>`
+      () => sql<{ id: string; tenantId: string | null; role: UserRole; passwordHash: string }[]>`
         select id, tenant_id, role, password_hash from users where email = ${body.email}`,
     );
 
@@ -212,7 +168,7 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sq
 
     // Re-read the user: picks up role changes and rejects deleted users.
     const [row] = await withRetry(
-      () => sql<{ id: string; tenantId: string; role: UserRole }[]>`
+      () => sql<{ id: string; tenantId: string | null; role: UserRole }[]>`
         select id, tenant_id, role from users where id = ${token.userId}`,
     );
     if (!row) {
@@ -225,27 +181,33 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sq
     return reply.send(user);
   });
 
-  app.get('/me', withDoc({ preHandler: [authenticate] }, docs.me), async (req) => {
-    const { userId, tenantId } = req.auth!;
+  app.get('/me', withDoc({ preHandler: [authenticate] }, docs.me), async (req, reply) => {
+    const { userId } = req.auth!;
     const [row] = await withRetry(
       () => sql<MeRow[]>`
         select u.id, u.email, u.role, u.created_at,
                t.id as tenant_id, t.name as tenant_name, t.timezone, t.status, t.created_at as tenant_created_at
           from users u
-          join tenants t on t.id = u.tenant_id
-         where u.id = ${userId} and u.tenant_id = ${tenantId}`,
+          left join tenants t on t.id = u.tenant_id
+         where u.id = ${userId}`,
     );
     // Deleted since the token was issued: same answer as an expired session.
     if (!row) throw new HttpError(401, 'unauthorized', 'Not logged in or session expired');
+    const currentAuth: AuthUser = { userId: row.id, tenantId: row.tenantId, role: row.role };
+    if (req.auth!.tenantId !== currentAuth.tenantId || req.auth!.role !== currentAuth.role) {
+      setAuthCookies(reply, currentAuth);
+    }
     return {
       user: { id: row.id, email: row.email, role: row.role, createdAt: row.createdAt },
-      tenant: {
-        id: row.tenantId,
-        name: row.tenantName,
-        timezone: row.timezone,
-        status: row.status,
-        createdAt: row.tenantCreatedAt,
-      },
+      tenant: row.tenantId
+        ? {
+            id: row.tenantId,
+            name: row.tenantName!,
+            timezone: row.timezone!,
+            status: row.status!,
+            createdAt: row.tenantCreatedAt!,
+          }
+        : null,
     };
   });
 

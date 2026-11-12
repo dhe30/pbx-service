@@ -18,8 +18,8 @@ async function buildWithProtectedRoutes(deps: Parameters<typeof build>[0] = {}):
   return app;
 }
 
-function sign(app: FastifyInstance, typ: 'access' | 'refresh', role: 'owner' | 'staff' = 'owner') {
-  return app.jwt.sign({ sub: randomUUID(), tid: randomUUID(), role, typ }, { expiresIn: 900 });
+function sign(app: FastifyInstance, typ: 'access' | 'refresh', role: 'owner' | 'staff' | 'unassigned' = 'owner') {
+  return app.jwt.sign({ sub: randomUUID(), tid: role === 'unassigned' ? null : randomUUID(), role, typ }, { expiresIn: 900 });
 }
 
 describe('authenticate / requireRole (no DB)', () => {
@@ -113,6 +113,7 @@ const db = await connectTestDb();
 describe.skipIf(!db)('auth routes (Postgres)', () => {
   const sql = db as Sql;
   const tenantIds: string[] = [];
+  const userIds: string[] = [];
   let app: FastifyInstance;
 
   const uniqueEmail = () => `test-${randomUUID()}@example.test`;
@@ -120,10 +121,20 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: "Tony's Pizza (test)", timezone: 'america/chicago', email, password },
+      payload: { email, password },
     });
-    if (res.statusCode === 201) tenantIds.push(res.json().tenantId);
+    if (res.statusCode === 201) userIds.push(res.json().userId);
     return res;
+  };
+  const createBusiness = async (res: LightMyRequestResponse) => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/businesses',
+      cookies: { [ACCESS_COOKIE]: cookie(res, ACCESS_COOKIE)!.value },
+      payload: { name: "Tony's Pizza (test)", timezone: 'america/chicago' },
+    });
+    if (created.statusCode === 201) tenantIds.push(created.json().tenantId);
+    return created;
   };
 
   beforeAll(async () => {
@@ -131,18 +142,52 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
   });
 
   afterAll(async () => {
-    // ON DELETE CASCADE removes users + tenant_settings too.
+    // ON DELETE CASCADE removes attached users + tenant_settings too.
     if (tenantIds.length) await sql`delete from tenants where id = any(${tenantIds}::uuid[])`;
+    if (userIds.length) await sql`delete from users where id = any(${userIds}::uuid[])`;
     await sql.end({ timeout: 2 });
   });
 
-  it('signup creates tenant, settings and owner, and sets secure cookies', async () => {
+  it('signup creates an unattached account and sets secure cookies', async () => {
     const email = uniqueEmail();
     const res = await signup(email.toUpperCase());
     expect(res.statusCode).toBe(201);
     const body = res.json();
     expect(body).toEqual({
       userId: expect.any(String),
+      tenantId: null,
+      role: 'unassigned',
+    });
+
+    const access = cookie(res, ACCESS_COOKIE);
+    const refresh = cookie(res, REFRESH_COOKIE);
+    expect(access).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 900 });
+    expect(refresh).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Lax', path: '/auth' });
+
+    const [user] = await sql`select email, role, password_hash from users where id = ${body.userId}`;
+    expect(user).toMatchObject({ email, role: 'unassigned' }); // stored lowercased
+    expect(user!.passwordHash).toMatch(/^\$argon2id\$/);
+    const [membership] = await sql`select tenant_id from users where id = ${body.userId}`;
+    expect(membership!.tenantId).toBeNull();
+  });
+
+  it('signup accepts only email and password', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: { businessName: 'No business here', email: uniqueEmail(), password: 'correct horse battery' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toMatch(/Unrecognized key/);
+  });
+
+  it('POST /businesses assigns an unassigned user as owner and starts card setup', async () => {
+    const signed = await signup();
+    const created = await createBusiness(signed);
+    expect(created.statusCode).toBe(201);
+    const body = created.json();
+    expect(body).toMatchObject({
+      userId: signed.json().userId,
       tenantId: expect.any(String),
       role: 'owner',
       cardSetup: {
@@ -153,48 +198,36 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
       },
     });
 
-    const access = cookie(res, ACCESS_COOKIE);
-    const refresh = cookie(res, REFRESH_COOKIE);
-    expect(access).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 900 });
-    expect(refresh).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Lax', path: '/auth' });
-
-    const [user] = await sql`select email, role, password_hash from users where id = ${body.userId}`;
-    expect(user).toMatchObject({ email, role: 'owner' }); // stored lowercased
-    expect(user!.passwordHash).toMatch(/^\$argon2id\$/);
+    const [user] = await sql`select tenant_id, role from users where id = ${body.userId}`;
+    expect(user).toEqual({ tenantId: body.tenantId, role: 'owner' });
     const [settings] = await sql`
       select record_calls, included_extensions, included_us_minutes from tenant_settings where tenant_id = ${body.tenantId}`;
-    expect(settings).toEqual({ recordCalls: false, includedExtensions: 2, includedUsMinutes: 100 }); // the plan
+    expect(settings).toEqual({ recordCalls: false, includedExtensions: 2, includedUsMinutes: 100 });
     const [tenant] = await sql`select timezone, status from tenants where id = ${body.tenantId}`;
-    expect(tenant).toEqual({ timezone: 'America/Chicago', status: 'active' }); // canonical spelling
-  });
+    expect(tenant).toEqual({ timezone: 'America/Chicago', status: 'active' });
 
-  it('signup requires a time zone', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/auth/signup',
-      payload: { businessName: 'No TZ', email: uniqueEmail(), password: 'correct horse battery' },
+    const me = await app.inject({
+      method: 'GET',
+      url: '/me',
+      cookies: { [ACCESS_COOKIE]: cookie(created, ACCESS_COOKIE)!.value },
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toMatch(/^timezone: Required/);
+    expect(me.json()).toMatchObject({
+      user: { id: body.userId, role: 'owner' },
+      tenant: { id: body.tenantId, name: "Tony's Pizza (test)", timezone: 'America/Chicago' },
+    });
   });
 
-  it('GET /me returns the user and the business; 401 without a session or once deleted', async () => {
+  it('GET /me returns a user without a business; 401 without a session or once deleted', async () => {
     const email = uniqueEmail();
     const signed = await signup(email);
-    const { userId, tenantId } = signed.json();
+    const { userId } = signed.json();
     const access = cookie(signed, ACCESS_COOKIE)!.value;
 
     const me = await app.inject({ method: 'GET', url: '/me', cookies: { [ACCESS_COOKIE]: access } });
     expect(me.statusCode).toBe(200);
     expect(me.json()).toEqual({
-      user: { id: userId, email, role: 'owner', createdAt: expect.any(String) },
-      tenant: {
-        id: tenantId,
-        name: "Tony's Pizza (test)",
-        timezone: 'America/Chicago',
-        status: 'active',
-        createdAt: expect.any(String),
-      },
+      user: { id: userId, email, role: 'unassigned', createdAt: expect.any(String) },
+      tenant: null,
     });
 
     expect((await app.inject({ method: 'GET', url: '/me' })).statusCode).toBe(401);
@@ -203,33 +236,27 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     expect(gone.statusCode).toBe(401);
   });
 
-  it('signup with an existing email (any case) is 409 and creates nothing', async () => {
+  it('signup with an existing email (any case) is 409 and creates no second user', async () => {
     const email = uniqueEmail();
     expect((await signup(email)).statusCode).toBe(201);
-    // Only this file's tenants: other test files create tenants in parallel.
-    const countOurs = async () =>
-      ((await sql`select count(*)::int as count from tenants where name = ${"Tony's Pizza (test)"}`) as unknown as [
-        { count: number },
-      ])[0].count;
+    const countOurs = async () => (await sql`select count(*)::int as count from users where email = ${email}`)[0]!.count;
     const before = await countOurs();
     const dup = await signup(email.toUpperCase());
     expect(dup.statusCode).toBe(409);
     expect(dup.json()).toMatchObject({ error: 'email_taken' });
     const after = await countOurs();
-    expect(after).toBe(before); // transaction rolled back the tenant insert
+    expect(after).toBe(before);
   });
 
   it('signup validates the body', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: '', timezone: 'Mars/Olympus_Mons', email: 'not-an-email', password: 'short' },
+      payload: { email: 'not-an-email', password: 'short' },
     });
     expect(res.statusCode).toBe(400);
     const { error, message } = res.json();
     expect(error).toBe('invalid_request');
-    expect(message).toMatch(/businessName/);
-    expect(message).toMatch(/timezone: must be an IANA time zone/);
     expect(message).toMatch(/email/);
     expect(message).toMatch(/password/);
   });
@@ -240,7 +267,7 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
 
     const ok = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'right password 1' } });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toMatchObject({ userId, role: 'owner' });
+    expect(ok.json()).toMatchObject({ userId, tenantId: null, role: 'unassigned' });
     expect(cookie(ok, ACCESS_COOKIE)?.value).toBeTruthy();
 
     const wrong = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'wrong password' } });
@@ -255,17 +282,18 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
   });
 
   it("users with an unusable hash (seed data's '!') can't log in", async () => {
-    const { tenantId } = (await signup()).json();
     const email = uniqueEmail();
-    await sql`insert into users (tenant_id, email, password_hash, role) values (${tenantId}, ${email}, '!', 'staff')`;
+    await sql`insert into users (tenant_id, email, password_hash, role) values (null, ${email}, '!', 'unassigned')`;
     const res = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: '!' } });
     expect(res.statusCode).toBe(401);
+    const [user] = await sql`select id from users where email = ${email}`;
+    if (user) userIds.push(user.id);
   });
 
   it('the access cookie from login works on a protected route', async () => {
     const protectedApp = await buildWithProtectedRoutes({ sql });
     const email = uniqueEmail();
-    const { userId, tenantId } = (await signup(email, 'right password 1')).json();
+    const { userId } = (await signup(email, 'right password 1')).json();
     const login = await protectedApp.inject({
       method: 'POST',
       url: '/auth/login',
@@ -276,7 +304,7 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
       url: '/test/whoami',
       cookies: { [ACCESS_COOKIE]: cookie(login, ACCESS_COOKIE)!.value },
     });
-    expect(res.json()).toEqual({ userId, tenantId, role: 'owner' });
+    expect(res.json()).toEqual({ userId, tenantId: null, role: 'unassigned' });
   });
 
   it('refresh: refresh cookie -> new cookies; access cookie is not accepted', async () => {

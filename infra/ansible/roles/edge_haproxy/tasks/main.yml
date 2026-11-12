@@ -16,14 +16,15 @@
     - /etc/haproxy/certs
     - /etc/haproxy/www
 
-# PHASE 1: self-signed cert for the public IP. Open https://<public_ip>/webrtc-test once and
+# Self-signed fallback, so HAProxy can start before the first Let's Encrypt issuance (and on VMs
+# without a public DNS name: acme_enabled=false). Open https://<public_ip>/webrtc-test once and
 # accept the warning; the same exception then covers wss://<public_ip>/ws.
-# TODO(phase 7): Let's Encrypt for the app domain + renewal + expiry alert.
+# The real certificate: tasks/acme.yml (replaces site.pem; these files are only the fallback).
 - name: Self-signed certificate
   ansible.builtin.command: >-
     openssl req -x509 -newkey rsa:2048 -nodes -days 825
     -subj "/CN={{ public_ip }}"
-    -addext "subjectAltName=IP:{{ public_ip }}"
+    -addext "subjectAltName=IP:{{ public_ip }},DNS:{{ web_domain }}"
     -keyout /etc/haproxy/certs/site.key -out /etc/haproxy/certs/site.crt
   args:
     creates: /etc/haproxy/certs/site.crt
@@ -56,3 +57,11 @@
     name: haproxy
     enabled: true
     state: started
+
+# certbot's HTTP-01 challenge needs the :80 frontend live now, not at the end of the play.
+- name: Apply the HAProxy config before requesting a certificate
+  ansible.builtin.meta: flush_handlers
+
+- name: Let's Encrypt certificate
+  ansible.builtin.include_tasks: acme.yml
+  when: acme_enabled | bool
