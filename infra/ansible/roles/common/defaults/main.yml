@@ -1,1 +1,7 @@
 ---
+
+# Team SSH keys (tasks/main.yml, "Team SSH keys for root"). false = only add the keys in
+# files/team_keys/; true = also remove keys not listed there (revoke = delete the .pub + rerun with
+# --tags ssh_keys). Make sure your own working key is in the folder before running, or you lock
+# yourself out.
+team_keys_exclusive: true

@@ -1,0 +1,4 @@
+# Muhammad's PUBLIC key (his ~/.ssh/id_ed25519.pub, made with: ssh-keygen -t ed25519).
+# Paste the single "ssh-ed25519 AAAA... comment" line below. Never paste a private key.
+# Lines starting with # are ignored by roles/common (task "Team SSH keys for root").
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMwjiaTg6QvHBzf1WeGwlXGVsX/22RXaeb18ENHSdoEf mohdf@Fahad-Laptop
