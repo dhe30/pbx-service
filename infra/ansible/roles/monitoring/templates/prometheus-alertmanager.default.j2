@@ -1,0 +1,4 @@
+# Alertmanager options (managed by Ansible, roles/monitoring). Read by Debian's systemd unit.
+# Private IP only. --cluster.listen-address= (empty) turns off clustering: there is one
+# Alertmanager, and otherwise it would open port 9094 on every interface.
+ARGS="--web.listen-address={{ private_ip }}:{{ alertmanager_port }} --cluster.listen-address="

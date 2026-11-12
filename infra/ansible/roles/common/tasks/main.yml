@@ -65,3 +65,24 @@
     path: /etc/pbx
     state: directory
     mode: "0755"
+
+# ---- node_exporter (Track 4) ---------------------------------------------------------------------
+# Reports this VM's CPU, memory, disk, network, boot time and systemd unit states to Prometheus on
+# mon-1 (roles/monitoring). Debian's package; no recommends (they pull extra textfile collectors).
+- name: Install node_exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    install_recommends: false
+
+- name: node_exporter settings (private IP only, systemd collector)
+  ansible.builtin.template:
+    src: prometheus-node-exporter.default.j2
+    dest: /etc/default/prometheus-node-exporter
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Start node_exporter
+  ansible.builtin.service:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started

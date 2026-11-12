@@ -1,0 +1,184 @@
+# Alert rules (roles/monitoring, copied to /etc/prometheus/rules/ on mon-1).
+# Each rule: `expr` is a PromQL query; when it returns something for longer than `for`, the alert
+# fires and Alertmanager sends it to the team. severity: critical = act now, warning = look soon.
+# {{ $labels.x }} / {{ $value }} are filled in by Prometheus (this file is NOT a Jinja template).
+#
+# [VERIFY] on the first real deployment: the Patroni, etcd and HAProxy metric names below
+# (check them at http://<host>:<port>/metrics).
+groups:
+  # ---- Every VM (node_exporter) --------------------------------------------------------------
+  - name: nodes
+    rules:
+      - alert: NodeDown
+        expr: up{job="node"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }} is not responding"
+          description: >-
+            mon-1 can't reach {{ $labels.instance }} for 1 minute: the VM is down, rebooting, or
+            off the network. Its services are out of their pools until it returns.
+
+      - alert: NodeGone
+        expr: up{job="node"} == 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }} has been down for 15 minutes"
+          description: >-
+            Probably dead for good. Rebuild it (CLAUDE.md §15: recreate the VM, update the
+            inventory, run the playbook for it and the groups that depend on it).
+
+      # Boot time younger than 10 minutes = the VM (re)started. Also fires once for new VMs.
+      - alert: NodeRestarted
+        expr: time() - node_boot_time_seconds < 600
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} restarted"
+          description: "{{ $labels.instance }} booted less than 10 minutes ago. Check that its services came back."
+
+      - alert: DiskSpaceLow
+        expr: >-
+          1 - node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"} > 0.70
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.mountpoint }} is {{ $value | humanizePercentage }} full"
+          description: Over 70%. Find what grows (logs, WAL, recordings spool, metrics) before it fills.
+
+      - alert: DiskSpaceCritical
+        expr: >-
+          1 - node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"} > 0.85
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.mountpoint }} is {{ $value | humanizePercentage }} full"
+          description: Over 85%. A full disk stops Postgres/etcd/recordings; free space now.
+
+      # Trend over the last hour says the disk is full within 6 hours (catches fast growth early).
+      # Only for disks already over half full, so a short burst on a mostly empty disk stays quiet.
+      - alert: DiskWillFillSoon
+        expr: >-
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"}[1h], 6 * 3600) < 0
+          and node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|devtmpfs"} < 0.50
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.mountpoint }} will be full within 6 hours at the current rate"
+
+      - alert: MemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: only {{ $value | humanizePercentage }} memory available"
+
+      # Sustained high CPU: on edge/media nodes this is usually rtpengine transcoding (capacity limit).
+      - alert: CpuSaturated
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.90
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: CPU {{ $value | humanizePercentage }} busy for 10 minutes"
+
+      # A systemd service crashed and stopped restarting (kamailio, asterisk, patroni, pbx-api, ...).
+      - alert: ServiceFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.name }} has failed"
+          description: "See `systemctl status {{ $labels.name }}` and `journalctl -u {{ $labels.name }}` on {{ $labels.instance }}."
+
+  # ---- Any scraped service -----------------------------------------------------------------------
+  - name: services
+    rules:
+      - alert: TargetDown
+        expr: up{job!="node"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.instance }} is not answering"
+          description: Prometheus can't read its metrics for 2 minutes; the service is probably down.
+
+  # ---- Data tier (Track 1) -----------------------------------------------------------------------
+  - name: database
+    rules:
+      # `or vector(0)`: also fires when no Patroni answers at all (every db node down).
+      # `and on () count(...) > 0`: but only if this deployment has db nodes to watch.
+      - alert: PatroniNoPrimary
+        expr: (sum(patroni_primary) or vector(0)) < 1 and on () count(up{job="patroni"}) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: No Postgres primary
+          description: >-
+            Writes fail everywhere (API, CDRs). Patroni normally promotes a replica within ~30 s;
+            if this lasts, check `patronictl list` and etcd on db-1..3.
+
+      - alert: PatroniMultiplePrimaries
+        expr: sum(patroni_primary) > 1
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} Postgres primaries (split brain)"
+
+      # Fewer streaming replicas than db nodes - 1: a copy of the data is missing.
+      - alert: PatroniReplicaMissing
+        expr: >-
+          (sum(patroni_replica * on (instance) patroni_postgres_streaming) or vector(0))
+            < count(up{job="patroni"}) - 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Only {{ $value }} Postgres replica(s) streaming"
+
+      - alert: PatroniReplicationLag
+        expr: >-
+          scalar(max(patroni_xlog_location))
+            - (patroni_xlog_replayed_location and on (instance) patroni_replica == 1)
+            > 64 * 1024 * 1024
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} replica is {{ $value | humanize1024 }}B behind the primary"
+
+      - alert: EtcdNoLeader
+        expr: etcd_server_has_leader == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "etcd on {{ $labels.instance }} has no leader"
+          description: Without an etcd leader Patroni can't renew its lock and the primary steps down.
+
+      - alert: EtcdQuorumLost
+        expr: (count(up{job="etcd"} == 1) or vector(0)) <= count(up{job="etcd"}) / 2
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: etcd has lost quorum (half or more members down)
+
+  # ---- Edge ----------------------------------------------------------------------------------------
+  - name: edge
+    rules:
+      # e.g. every API node down: the website and API return 503.
+      - alert: HAProxyBackendDown
+        expr: haproxy_backend_active_servers == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: HAProxy backend {{ $labels.proxy }} has no healthy servers"
+
+  # ---- Monitoring itself ---------------------------------------------------------------------------
+  - name: monitoring
+    rules:
+      # Alerts can't reach Discord (bad/removed webhook). Visible in Alertmanager's UI.
+      - alert: AlertDeliveryFailing
+        expr: rate(alertmanager_notifications_failed_total[10m]) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Alertmanager can't deliver alerts via {{ $labels.integration }}"

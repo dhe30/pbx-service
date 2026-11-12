@@ -1,0 +1,24 @@
+# Grafana data sources (managed by Ansible, roles/monitoring). Fixed uids let dashboard files
+# refer to them.
+apiVersion: 1
+datasources:
+  # Metrics for the dashboards.
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://{{ private_ip }}:{{ prometheus_port }}
+    isDefault: true
+    editable: false
+
+  # Firing alerts + silences, shown under Grafana's Alerting menu (Debian's Alertmanager package
+  # has no web UI of its own).
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://{{ private_ip }}:{{ alertmanager_port }}
+    editable: false
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false

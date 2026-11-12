@@ -1,0 +1,13 @@
+# Grafana dashboard provider (managed by Ansible, roles/monitoring): loads every JSON file in
+# /var/lib/grafana/dashboards (copied from roles/monitoring/files/dashboards/). Edit the JSON in
+# the repo, not in the UI: UI edits are overwritten on the next deploy.
+apiVersion: 1
+providers:
+  - name: pbx
+    folder: PBX
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

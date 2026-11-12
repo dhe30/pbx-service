@@ -1,0 +1,37 @@
+# Render the monitoring configs (roles/monitoring) for an inventory WITHOUT touching any host, so
+# they can be checked offline with Prometheus' own tools (infra/ansible/tests/check-monitoring.sh).
+#
+#   ansible-playbook -i inventory/staging.ini render-monitoring.yml -e @tests/render-vars.yml \
+#     -e render_dir=/tmp/pbx-mon-render
+- name: Render monitoring configs
+  hosts: mon
+  gather_facts: false
+  connection: local
+  vars_files:
+    - roles/monitoring/defaults/main.yml
+  tasks:
+    - name: Output directory
+      ansible.builtin.file:
+        path: "{{ render_dir }}/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Templates
+      ansible.builtin.template:
+        src: "roles/monitoring/templates/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - prometheus.yml
+        - prometheus.default
+        - alertmanager.yml
+        - prometheus-alertmanager.default
+        - grafana.env
+        - grafana-datasource.yml
+        - grafana-dashboards.yml
+
+    - name: Static files (alert rules, dashboards)
+      ansible.builtin.copy:
+        src: roles/monitoring/files/
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/"
+        mode: "0644"

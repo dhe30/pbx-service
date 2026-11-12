@@ -37,3 +37,9 @@ vault_did_api_key: CHANGE_ME
 # secret (browsers get it) but comes from the same place.
 vault_stripe_secret_key: CHANGE_ME
 vault_stripe_publishable_key: CHANGE_ME
+
+# Monitoring (mon-1). Grafana "admin" password (at least 12 chars):  openssl rand -hex 16
+vault_grafana_admin_password: CHANGE_ME
+# Discord webhook for alerts (channel settings -> Integrations -> Webhooks). Empty = no Discord
+# messages; alerts are still shown in Alertmanager's web page.
+vault_discord_webhook_url: ""

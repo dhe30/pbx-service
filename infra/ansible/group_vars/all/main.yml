@@ -98,6 +98,10 @@ did_provider_url: ""
 did_trunk_group_id: ""
 did_trunk_id: ""
 
+# ---- Monitoring (Track 4) ----------------------------------------------------------------------
+# node_exporter on every host (roles/common), scraped by Prometheus on mon-1 (roles/monitoring).
+node_exporter_port: 9100
+
 # ---- Test data (phase 1) -----------------------------------------------------------------------
 load_test_seed: true
 test_did: "+15555550100"

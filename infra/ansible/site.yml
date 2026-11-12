@@ -1,5 +1,5 @@
 ---
-# Full multi-VM deployment (phase 4+; api/monitoring/backups are still stubs).
+# Full multi-VM deployment (phase 4+; backups is still a stub).
 # For phase 1 use phase1-allinone.yml.
 # See CLAUDE.md §15 for ordering and cross-group dependencies.
 - hosts: all

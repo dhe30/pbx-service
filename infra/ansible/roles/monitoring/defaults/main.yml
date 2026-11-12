@@ -1,1 +1,26 @@
 ---
+# Monitoring on mon-1 (Track 4): Prometheus collects metrics from every node, Alertmanager sends
+# alerts to the team, Grafana draws dashboards. Everything listens on mon-1's PRIVATE IP only;
+# the host firewall (roles/common) lets only cluster nodes in. To open Grafana from a laptop:
+#   ssh -L 3000:<mon-1 private IP>:3000 root@<edge-1 public IP>   then browse http://localhost:3000
+
+prometheus_port: 9090
+alertmanager_port: 9093
+grafana_port: 3000
+
+# How long Prometheus keeps metrics: whichever limit is hit first. Size must fit mon-1's disk
+# (the DiskSpaceLow alert covers mon-1 too).
+prometheus_retention_time: 15d
+prometheus_retention_size: 10GB
+prometheus_scrape_interval: 15s
+
+# Discord webhook for alerts (channel settings -> Integrations -> Webhooks -> Copy Webhook URL).
+# Secret: lives in the vault. Empty = alerts are only visible in Alertmanager's web page.
+alert_discord_webhook_url: "{{ vault_discord_webhook_url | default('') }}"
+
+# Grafana "admin" password. Only applied when Grafana creates its database (first start);
+# change it later in the Grafana UI.
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
+# Grafana comes from its own apt repo (Debian doesn't package it). Empty = latest; set e.g.
+# "12.2.1" to pin.
+grafana_version: ""
