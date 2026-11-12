@@ -128,7 +128,9 @@ function DestinationField({
           aria-label={`${label} external phone number`}
           type="tel"
           inputMode="tel"
-          pattern="\\+[1-9][0-9]{6,14}"
+          // E.164. One backslash: JSX attribute strings don't process escapes, so "\\+" would
+          // reach the browser as a regex that requires a literal backslash.
+          pattern="\+[1-9][0-9]{6,14}"
           placeholder="+12015550123"
           value={value.number}
           onChange={(event) => onChange({ type: "external", number: event.target.value })}
@@ -192,18 +194,27 @@ function RingGroupForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [strategy, setStrategy] = useState<RingGroup["strategy"]>(initial?.strategy ?? "all");
   const [ringTimeoutSec, setRingTimeoutSec] = useState(initial?.ringTimeoutSec ?? 20);
+  // Empty = no overall timeout (null). Sent on every save: PUT is a full replace.
+  const [totalTimeoutSec, setTotalTimeoutSec] = useState(initial?.totalTimeoutSec?.toString() ?? "");
   const [noAnswerDestination, setNoAnswerDestination] = useState<Destination | null>(initial?.noAnswerDestination ?? null);
   const [memberIds, setMemberIds] = useState<string[]>(initial?.memberIds ?? []);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    onSave({ name: name.trim(), strategy, ringTimeoutSec, noAnswerDestination, memberIds });
+    onSave({
+      name: name.trim(),
+      strategy,
+      ringTimeoutSec,
+      totalTimeoutSec: totalTimeoutSec.trim() ? Number(totalTimeoutSec) : null,
+      noAnswerDestination,
+      memberIds,
+    });
   }
 
   return (
     <form onSubmit={submit} className="space-y-4 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
       <h3 className="font-medium text-gray-900">{initial ? "Edit ring group" : "Create ring group"}</h3>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <label className="grid gap-1 text-sm text-gray-700">
           Name
           <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} className="rounded-lg border border-gray-300 px-3 py-2" />
@@ -216,8 +227,23 @@ function RingGroupForm({
           </select>
         </label>
         <label className="grid gap-1 text-sm text-gray-700">
-          Ring timeout (5–120 sec)
+          {strategy === "sequential" ? "Ring each member for (5–120 sec)" : "Ring the group for (5–120 sec)"}
           <input type="number" min={5} max={120} value={ringTimeoutSec} onChange={(event) => setRingTimeoutSec(Number(event.target.value))} required className="rounded-lg border border-gray-300 px-3 py-2" />
+        </label>
+        <label className="grid gap-1 text-sm text-gray-700">
+          Overall timeout (optional, 5–600 sec)
+          <input
+            type="number"
+            min={5}
+            max={600}
+            value={totalTimeoutSec}
+            onChange={(event) => setTotalTimeoutSec(event.target.value)}
+            placeholder="No overall limit"
+            className="rounded-lg border border-gray-300 px-3 py-2"
+          />
+          <span className="text-xs text-gray-500">
+            When it runs out, ringing stops and the call goes to the no-answer destination.
+          </span>
         </label>
       </div>
       <fieldset className="space-y-2">
@@ -646,7 +672,8 @@ export function CallRouting() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="font-medium text-gray-900">{group.name}</p>
-                  <p className="mt-1 text-sm capitalize text-gray-500">{group.strategy} · {group.ringTimeoutSec}s timeout</p>
+                  <p className="mt-1 text-sm capitalize text-gray-500">{group.strategy} · {group.ringTimeoutSec}s {group.strategy === "sequential" ? "each" : "ring"}
+                    {group.totalTimeoutSec !== null ? ` · ${group.totalTimeoutSec}s overall` : ""}</p>
                   <p className="mt-1 text-sm text-gray-500">Members: {group.memberIds.map((id) => {
                     const extension = data.extensions.find((item) => item.id === id);
                     return extension ? `${extension.name} (${extension.number})` : "Unavailable extension";
