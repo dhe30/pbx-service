@@ -157,6 +157,25 @@ lets the whole cluster reach every private port.
   migration `20261109000000_course_spec_telephony.sql` replaced `calls` with `cdrs` and moved
   SIP accounts from users to `extensions`; see [spec-transition.md](spec-transition.md).
 
+- **Backups (T4, `roles/backups` + `roles/postgres_patroni`):** pgBackRest, stanza `pbx`,
+  repository on **mon-1** (`backup_repo_path`, never on a db node). Enabled automatically when the
+  inventory has a `[mon]` host (`backup_enabled`).
+  - **WAL:** the primary pushes it continuously (`archive_mode`, `archive_timeout` 300 s, so at
+    most ~5 min of committed data is missing). Async with a 4 GiB local queue: if mon-1 is down
+    the db disk can't fill; beyond that WAL is dropped and `WalArchivingFailing` has fired.
+  - **Full backup:** nightly at 03:00 UTC from a replica, 7 kept (`pbx-backup.timer`; by hand:
+    `systemctl start pbx-backup` on mon-1).
+  - **Restore test:** weekly (`pbx-restore-test.timer`; by hand: `systemctl start
+    pbx-restore-test`). It restores the newest backup into a scratch directory on mon-1, starts a
+    throwaway Postgres on a unix socket, checks the app tables and deletes it. Its duration is the
+    recovery-time estimate.
+  - **SSH:** `pgbackrest@mon-1` <-> `postgres@db-N`, keys made and exchanged by Ansible, each only
+    accepted from the other side's private IP. No vault keys.
+  - **One-time step:** turning `archive_mode` on needs a Postgres restart, never done by Ansible.
+    Restart each replica (`patronictl restart pbx <replica> --force`), then `patronictl switchover
+    --force` (~5 s of write outage), then rerun the mon play so the first backup is taken.
+  - **Alerts:** BackupFailed, BackupTooOld (> 26 h), RestoreTestFailed, WalArchivingFailing.
+
 ## 6. Object store contract
 
 - **Endpoint:** `s3_endpoint` (S3 API, path-style, region `garage`), bucket `pbx-media`, one
@@ -210,7 +229,8 @@ an inline host var (`host-1 ... name=value`), never `[group:vars]`.
 - **O2 (T1), decided:** the local S3 proxy runs in the same HAProxy instance as the DB proxy
   (`pbx-dbproxy`, separate from the edge's public HAProxy so reloading one never touches the
   other).
-- **O3 (T1/T4):** backup target for WAL archiving (mon-1 volume?) and restore drill.
+- **O3 (T1/T4), decided:** pgBackRest with the repository on mon-1 and a weekly automatic
+  restore test (§5, Backups).
 - **O4 (T2/T3), decided:** HAProxy on each edge health-checks `GET /ready` on app-1/app-2
   (inter 2 s, fall 2; PR #11, R18); the API drains 6 s on SIGTERM. **Path routing (2026-11-12):**
   one origin for the website, its API calls and the course's tools:
