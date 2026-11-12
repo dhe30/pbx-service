@@ -46,6 +46,26 @@
   ansible.builtin.hostname:
     name: "{{ inventory_hostname }}"
 
+# ---- Team SSH access -----------------------------------------------------------------------------
+# One file per person in roles/common/files/team_keys/<name>.pub holding their PUBLIC key (safe to
+# commit). Only lines that look like keys are used, so placeholder/comment lines are skipped.
+# Run just this part:  ansible-playbook site.yml --tags ssh_keys
+# team_keys_exclusive (defaults/main.yml): false = only ADD keys; true = also REMOVE every key on
+# the VM that is not in the folder (revoking access = delete the file + rerun). Only switch it on
+# once your own working key is in the folder, or you lock yourself out.
+- name: Team SSH keys for root
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ team_ssh_keys | join('\n') }}"
+    exclusive: "{{ team_keys_exclusive }}"
+  vars:
+    team_key_files: "{{ query('ansible.builtin.fileglob', role_path ~ '/files/team_keys/*.pub') }}"
+    # Keep this double-quoted: inside a YAML >- block, '\n' does not split on newlines.
+    team_ssh_keys: "{{ (query('ansible.builtin.file', *team_key_files) if team_key_files else [])
+      | map('split', '\n') | flatten | map('trim') | select('match', '^(ssh-|ecdsa-|sk-)') | list }}"
+  when: team_ssh_keys | length > 0
+  tags: [ssh_keys]
+
 - name: Host firewall rules
   ansible.builtin.template:
     src: nftables.conf.j2

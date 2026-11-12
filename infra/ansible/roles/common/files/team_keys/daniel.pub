@@ -1,0 +1,5 @@
+# Daniel's PUBLIC key: the one the VMs already accept (WSL ~/.ssh/id_ed25519_clanode).
+# Get it with:  ssh-keygen -y -f ~/.ssh/id_ed25519_clanode
+# then paste the single "ssh-ed25519 AAAA... comment" line below. Never paste a private key.
+# Lines starting with # are ignored by roles/common (task "Team SSH keys for root").
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFhsj6XW09Z1iDofyO65wQAGh/tdLjxctx2JFXasFnuk your_email@example.com
