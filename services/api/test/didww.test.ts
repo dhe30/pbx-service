@@ -104,16 +104,29 @@ describe('HttpDidwwProvider', () => {
           });
         }
         if (url.pathname.startsWith('/v3/available_dids')) {
-          // Like the clone: unknown includes are a 400.
-          const bad = (url.searchParams.get('include') ?? '').split(',').filter((i) => i && !OK_INCLUDES.has(i));
+          // Like the clone: unknown includes are a 400. The LIST accepts did_group and
+          // did_group.stock_keeping_units; a single offer (GET /available_dids/:id) rejects the
+          // SKUs (seen 2026-11-11: it broke every purchase).
+          const single = url.pathname !== '/v3/available_dids';
+          const ok = single ? new Set(['did_group']) : OK_INCLUDES;
+          const bad = (url.searchParams.get('include') ?? '').split(',').filter((i) => i && !ok.has(i));
           if (bad.length) return send(400, { errors: [{ title: 'Invalid field', detail: `${bad[0]} is not a valid includable relationship of this resource.` }] });
         }
         // Like the clone: page[size] is ignored and the filters aren't applied here, so the
         // provider has to re-check them itself.
         if (url.pathname === '/v3/available_dids') return send(200, { data: OFFERS, included: INCLUDED });
-        if (url.pathname === '/v3/available_dids/av-1') return send(200, { data: offer('av-1', '12015550101'), included: INCLUDED });
-        if (url.pathname === '/v3/available_dids/av-tf') return send(200, { data: offer('av-tf', '18005550100', 'grp-800'), included: INCLUDED });
+        if (url.pathname === '/v3/available_dids/av-1') return send(200, { data: offer('av-1', '12015550101') });
+        if (url.pathname === '/v3/available_dids/av-tf') return send(200, { data: offer('av-tf', '18005550100', 'grp-800') });
         if (url.pathname === '/v3/available_dids/gone') return send(404, { errors: [{ title: 'Not found' }] });
+        // A DID group with its SKUs (what getAvailable reads for a single offer).
+        const grp = url.pathname.match(/^\/v3\/did_groups\/([^/]+)$/);
+        if (grp) {
+          const g = INCLUDED.find((r) => r.type === 'did_groups' && r.id === grp[1]);
+          if (!g) return send(404, { errors: [{ title: 'Not found' }] });
+          const skuIds = new Set((g as { relationships: { stock_keeping_units: { data: { id: string }[] } } }).relationships.stock_keeping_units.data.map((s) => s.id));
+          const withSkus = url.searchParams.get('include') === 'stock_keeping_units';
+          return send(200, { data: g, ...(withSkus && { included: INCLUDED.filter((r) => r.type === 'stock_keeping_units' && skuIds.has(r.id)) }) });
+        }
         if (url.pathname === '/v3/orders' && req.method === 'POST') {
           const item = (JSON.parse(raw) as { data: { attributes: { items: { attributes: { available_did_id: string } }[] } } }).data.attributes
             .items[0]!.attributes;
@@ -189,6 +202,9 @@ describe('HttpDidwwProvider', () => {
 
   it('gets one offer (country from the group), or null if it is gone', async () => {
     expect(await didww.getAvailable('av-1')).toMatchObject({ number: '+12015550101', country: 'US', city: 'Newark', skuId: 'sku-small' });
+    // The single-offer GET carries no SKU include (the clone rejects it); the SKUs come from the group.
+    expect(new URL(last('/v3/available_dids/av-1').url, 'http://x').searchParams.get('include')).toBeNull();
+    expect(new URL(last('/v3/did_groups/grp-201').url, 'http://x').searchParams.get('include')).toBe('stock_keeping_units');
     expect(await didww.getAvailable('av-tf')).toMatchObject({ kind: 'toll_free', country: 'US', incomingCostPerMin: 0.025 });
     expect(await didww.getAvailable('gone')).toBeNull();
   });

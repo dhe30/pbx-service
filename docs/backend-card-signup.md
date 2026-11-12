@@ -64,7 +64,8 @@ Stripe itself. It never takes the browser's word for it.
 
 1. **Plan and prices** (§8.6, §8.7), in `catalog.ts`:
    - plan "Business": $19.00 per 7 days, 2 extensions, 100 US minutes;
-   - extra extension $9.00; local number $2.75; toll-free $3.00;
+   - extra extension $9.00; local number $2.75; toll-free $3.50 (raised from $3.00 on 2026-11-11:
+     the provider charges 2.00 setup + 3.00 per period, verify-backlog V-D15);
    - international calling $3.90; recording $3.90.
 
    All are under the ceilings (a test checks). The number prices still need checking against

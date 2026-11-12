@@ -101,17 +101,28 @@ ansible-playbook -i inventory/<your copy>.ini phase1-allinone.yml --ask-vault-pa
    Without decks, calls still work, but `cost` is 0 and international calls are charged the
    minimum price.
 
-### 3.2 A real number (DIDWW API v3)
-Base URL and `Api-Key` are on the Course Services tab. Until the API team's purchase flow
-exists, do it by hand with `curl` (JSON:API, `Content-Type: application/vnd.api+json`):
-1. Find a number: `GET /available_dids` (filter by country / DID group).
-2. Order it: `POST /orders`.
-3. Create an **inbound trunk** (`POST /voice_in_trunks`, SIP configuration) with host = the
-   edge's public IP (or the group domain), port 5060, UDP.
-   - [VERIFY] how the Request-URI user is set (we expect the DID, with or without `+`);
-   - [VERIFY] whether you can pin the codec to PCMU (saves transcoding on every incoming call).
-4. Assign the DID to the trunk: `PATCH /dids/<id>` with the `voice_in_trunk` relationship.
-5. Re-run the playbook with `-e test_did=<the number>`, or update `phone_numbers.did` in SQL.
+### 3.2 Inbound trunks and a real number (DIDWW API v3)
+Base URL and `Api-Key` are on the Course Services tab (JSON:API: `Accept`/`Content-Type:
+application/vnd.api+json`; with curl use `-g`, or the `[...]` in filters is eaten by curl's
+globbing).
+
+**Trunks (once per deployment, and again whenever an edge's public IP changes):** one
+`voice_in_trunks` per edge (name `edge-1`/`edge-2`, priority 1, weight 50), both in one
+`voice_in_trunk_groups`; its id is `did_trunk_group_id` in `group_vars/all/main.yml`. SIP
+configuration (`configuration.type = sip_configurations`; send the whole set on every PATCH):
+
+| Attribute | Value | Why |
+|---|---|---|
+| `host` / `port` / `transport_protocol_id` | edge public IP / 5060 / 1 (UDP) | |
+| `username` | `{DID}` | puts the number in the Request-URI user (arrives as `16316756654`, no `+`; verify-backlog V-D9) |
+| `sip_timer_b` | **2000** (default 8000) | how long the provider waits for ANY reply before trying the other trunk: with an edge down, each incoming call otherwise waits ~8 s (post-dial delay is graded; V-D11). A live edge answers `100 Trying` within milliseconds |
+| `codec_ids` | leave `[8, 9, 10, 7, 6]` | G.729, PCMU, PCMA, G.723, DTMF. Pinning to PCMU is possible but deferred (V-D5) |
+
+**A test number:** `npx tsx scripts/verify-course-services.ts didww-buy --yes` in
+`services/api` buys a local number through our own provider code and assigns it to the trunk
+group (V-D6/V-D7). Ours: **+16316756654**. Deploy with `-e test_did=+16316756654`. To make it ring
+before the course traffic is on, call it through the US vendor:
+`loadtest/sipp/vendor-probe.sh us 6316756654 +16316756654` (V-V8).
 
 ## 4. Checks, in order
 
