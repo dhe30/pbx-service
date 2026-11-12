@@ -23,7 +23,7 @@ clone itself** (see [VERIFY] below).
 - offer = `{ id, number, kind, country, region, city, areaCode, priceCents, dueNowCents }`.
   `country` defaults to `US`. `kind` is `local | toll_free`.
 - `priceCents` is per 7-day period (`PRICES` in `src/billing/catalog.ts`: local $2.75,
-  toll-free $3.00). `dueNowCents` is what buying it now would charge: the price prorated to the
+  toll-free $3.50, the ceiling, since 2026-11-11: verify-backlog V-D15). `dueNowCents` is what buying it now would charge: the price prorated to the
   end of the account's current billing period, or 0 below Stripe's $0.50 minimum.
 
 Code: `src/routes/numbers.ts`, `src/numbers/purchase.ts` (the flow), `src/numbers/provider.ts`

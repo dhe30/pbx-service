@@ -17,7 +17,9 @@ import {
 //   - filters accepted: available_dids filter[country.id] / [region.id] / [city.id] /
 //     [did_group_type.id] / [number_contains]; dids filter[number] / [order.id]; regions / cities
 //     filter[country.id] (+ [region.id]). The did_group.-prefixed spellings are rejected (400).
-//   - available_dids accepts ONLY include=did_group and did_group.stock_keeping_units (city,
+//   - the available_dids LIST accepts ONLY include=did_group and did_group.stock_keeping_units;
+//     the single-offer GET /available_dids/:id rejects did_group.stock_keeping_units, so
+//     getAvailable() reads the group + SKUs from /did_groups/:id?include=stock_keeping_units (city,
 //     region, country, did_group_type -> 400). A DID group carries those as relationship ids, plus
 //     area_name, prefix and is_metered (true = toll-free); names are looked up and cached here.
 //   - The region/city/type filters ARE applied (100/100 offers matched each one), and included DID
@@ -242,17 +244,34 @@ export class HttpDidwwProvider implements DidProvider {
     return out;
   }
 
+  /**
+   * One offer by id (the purchase flow re-reads it before ordering). The clone's single-resource
+   * GET rejects include=did_group.stock_keeping_units (400, seen 2026-11-11, verify-backlog V-D16),
+   * although the list accepts it. So: the offer without includes (its did_group relationship id
+   * comes with it), then the group with its SKUs, which /did_groups/:id does include.
+   */
   async getAvailable(id: string): Promise<AvailableNumber | null> {
     let doc: Document;
     try {
-      doc = await this.request('GET', `/available_dids/${encodeURIComponent(id)}?${HttpDidwwProvider.INCLUDE}`);
+      doc = await this.request('GET', `/available_dids/${encodeURIComponent(id)}`);
     } catch (err) {
       if (err instanceof DidProviderError && err.status === 404) return null;
       throw err;
     }
     const r = Array.isArray(doc.data) ? doc.data[0] : doc.data;
     if (!r) return null;
-    return this.toAvailable(r, doc.included ?? [], null);
+    const groupRel = relOf(r, 'did_group');
+    if (!groupRel) return null; // no group -> no SKU -> can't be ordered
+    let group: Document;
+    try {
+      group = await this.request('GET', `/did_groups/${encodeURIComponent(groupRel.id)}?include=stock_keeping_units`);
+    } catch (err) {
+      if (err instanceof DidProviderError && err.status === 404) return null;
+      throw err;
+    }
+    const g = Array.isArray(group.data) ? group.data[0] : group.data;
+    if (!g) return null;
+    return this.toAvailable(r, [g, ...(group.included ?? []), ...(doc.included ?? [])], null);
   }
 
   /**

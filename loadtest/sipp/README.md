@@ -88,3 +88,23 @@ Expected: one `cdrs` row per call within a second of hangup (direction internal 
 Run the same scenarios with `-r <calls/s> -l <max concurrent> -m <total>`. Run the codec matrix
 under load and record the capacity per pbx node and per rtpengine. Transcoding CPU is the
 expected first limit (docs/spec-transition.md N1).
+
+## Pre-deploy vendor probe (no Kamailio/Asterisk needed)
+
+`vendor-probe.sh` places ONE call straight from edge-1 to a PSTN vendor with SIPp
+(`uac_vendor_probe.xml`), before anything is deployed, to answer verify-backlog V-V3/V4/V5/V7/V8:
+which number format the vendor accepts (it tries `+E.164` and digits only), how it challenges
+(401/407, realm), whether our caller ID is accepted, which codec it picks from our offer
+(PCMU, PCMA, G.729, G.723, opus), and, with `--capture`, whether a call to one of our own DIDs
+comes back in from the carrier (130.245.136.142) on either edge.
+
+```bash
+# from WSL, with ssh-agent holding the Clanode key; fund the vendor with ~$1 first
+loadtest/sipp/vendor-probe.sh us 2125550199 +1XXXXXXXXXX
+loadtest/sipp/vendor-probe.sh us <our DID> +1XXXXXXXXXX --capture
+```
+
+The edges are behind 1:1 NAT, so the scenario binds edge-1's private IP and writes the public
+IP (`-key pubip`) into Via/Contact/SDP. It needs UDP 5060 free on edge-1, i.e. run it before
+Kamailio is deployed there. Credentials are prompted for and passed in a root-only file on the
+edge (deleted afterwards), never on a command line.
