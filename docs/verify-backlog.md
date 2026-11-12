@@ -97,7 +97,7 @@ Step-by-step order: `docs/cloud-deploy.md` §4. Background: `docs/spec-transitio
 
 | ID | Status | Assumption to check | How to check | Needs | Where | Result |
 |---|---|---|---|---|---|---|
-| V-T1 | open | `rtpengine --codecs` shows encode+decode for PCMU, PCMA, G723, G729, opus | On an edge | deploy | CLAUDE.md §1, §8 | |
+| V-T1 | done 2026-11-12 | `rtpengine --codecs` shows encode+decode for PCMU, PCMA, G723, G729, opus | On an edge | deploy | CLAUDE.md §1, §8 | Yes. On edge-1 after the first full deploy, `rtpengine --codecs` reports `fully supported` (encode + decode) for PCMA, PCMU, G723, G729, G729a and opus. edge-2 runs the same package from the same role but wasn't checked separately. Whether calls through each codec actually carry audio is still V-T8. |
 | V-T2 | open | rtpengine kernel forwarding loads (else userspace, more CPU) | `lsmod \| grep -i rtpengine` | deploy | CLAUDE.md §8 | |
 | V-T3 | open | Transfers: `ChannelTransfer` event fields, `transfer_progress`, `PJSIP_TRANSFER_HANDLING()` settable via ARI (Asterisk 22.11) | Blind + attended transfer from a desk phone and the softphone | deploy, call | `ari/types.ts`, `conversation.ts`, spec-transition N9 | |
 | V-T4 | open | Forking: `via-branch=extra` gives each branch its own leg; the answering one has audio | Two devices on one extension; answer on the second | deploy, call | `kamailio.cfg.j2` | |

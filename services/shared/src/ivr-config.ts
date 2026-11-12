@@ -6,7 +6,7 @@ import { z } from 'zod';
 // A Destination is where a call goes next. It is stored as jsonb in:
 //   phone_numbers.destination, ivr_menus.config (options / timeout / invalid),
 //   ring_groups.no_answer_destination, business_hours.open_destination / closed_destination,
-//   extensions.forward_always / forward_busy / forward_no_answer (extension | external only).
+//   extensions.forward_always / forward_busy / forward_no_answer (extension | voicemail | external).
 
 const uuid = z.string().uuid();
 /** Single DTMF key. */
@@ -26,9 +26,14 @@ export const DestinationSchema = z.discriminatedUnion('type', [
 ]);
 export type Destination = z.infer<typeof DestinationSchema>;
 
-/** Forwarding targets of an extension: another extension or an external number. */
+/**
+ * Forwarding targets of an extension: another extension, a voicemail box (any of the account's, e.g.
+ * to send busy callers straight to voicemail) or an external number.
+ */
 export const ForwardDestinationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('extension'), id: uuid }),
+  /** id = mailbox id */
+  z.object({ type: z.literal('voicemail'), id: uuid }),
   z.object({ type: z.literal('external'), number: e164 }),
 ]);
 export type ForwardDestination = z.infer<typeof ForwardDestinationSchema>;

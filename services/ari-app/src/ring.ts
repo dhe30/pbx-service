@@ -189,11 +189,26 @@ export async function ringTargets(
   }
 }
 
-/** Ring targets one group at a time (sequential ring groups), each group for `timeoutSec`. */
-export async function ringSequential(ctx: Ctx, s: CallSession, groups: RingTarget[][], timeoutSec: number): Promise<RingResult> {
+/**
+ * Ring targets one group at a time (sequential ring groups), each group for `timeoutSec`, all of
+ * them together for at most `totalSec` (null = no cap): the member ringing when it runs out is cut
+ * short and the rest are skipped.
+ */
+export async function ringSequential(
+  ctx: Ctx,
+  s: CallSession,
+  groups: RingTarget[][],
+  timeoutSec: number,
+  totalSec: number | null = null,
+): Promise<RingResult> {
   const outcomes: CdrOutcome[] = [];
+  const end = totalSec === null ? Infinity : Date.now() + ms(ctx, totalSec);
   for (const g of groups) {
-    const r = await ringTargets(ctx, s, g, timeoutSec);
+    // Seconds left of the overall timeout (unscaled, like timeoutSec). Under a second: stop here
+    // rather than ring a member for a moment.
+    const leftSec = (end - Date.now()) / (1000 * ctx.cfg.TIME_SCALE);
+    if (leftSec < 1) break;
+    const r = await ringTargets(ctx, s, g, Math.min(timeoutSec, leftSec));
     if (r.winner) return r;
     outcomes.push(r.outcome);
   }

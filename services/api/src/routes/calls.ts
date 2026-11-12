@@ -63,8 +63,14 @@ const LegSchema = z
     fromNumber: z.string().nullable().describe('Calling number (E.164 for the PSTN, extension number for internal calls).'),
     toNumber: z.string().nullable().describe('Called number, normalized.'),
     did: z.string().nullable().describe('The account number involved: the dialed number for incoming calls, the caller ID used for outgoing.'),
-    fromExtension: z.string().nullable().describe('Extension that placed the call, if any.'),
-    toExtension: z.string().nullable().describe('Extension that answered (or was rung), if any.'),
+    fromExtension: z
+      .string()
+      .nullable()
+      .describe('Extension NUMBER (e.g. "101", not the extension id) that placed the call; null if none.'),
+    toExtension: z
+      .string()
+      .nullable()
+      .describe('Extension NUMBER (e.g. "102", not the extension id) that answered or was rung; null if none.'),
     startedAt: z.string().datetime().describe('When the leg started (ISO 8601).'),
     answeredAt: z.string().datetime().nullable().describe('When it was answered; null if never.'),
     endedAt: z.string().datetime().describe('When it ended.'),
@@ -72,9 +78,19 @@ const LegSchema = z
     outcome: z.enum(OUTCOMES).describe('Whether a person answered: answered, busy, no_answer, failed or blocked.'),
     voicemail: z.boolean().describe('The caller reached voicemail (outcome is then no_answer).'),
     vendor: z.enum(['us', 'intl']).nullable().describe('PSTN carrier used for an outgoing leg.'),
+    cost: money(
+      'What we pay for this leg, in USD: the PSTN vendor (outgoing legs, its rate deck) or the DID provider ' +
+        '(incoming toll-free); 0 for internal and other incoming legs.',
+    ),
     charge: money('What this leg costs the customer, in USD (0 for free legs and legs covered by included minutes).'),
     includedSec: z.number().int().describe('Included plan US seconds this leg used.'),
-    recordingUrl: z.string().nullable().describe('Relative URL of the call recording (GET /calls/{callId}/recording); null if not recorded.'),
+    recordingUrl: z
+      .string()
+      .nullable()
+      .describe(
+        'Relative URL of the call recording (GET /calls/{callId}/recording). null if the call was not recorded, or ' +
+          'its recording is not stored yet: it appears (and is playable) only once uploaded, normally seconds after the call ends.',
+      ),
   })
   .describe('One leg of a call (call detail record).');
 
@@ -89,7 +105,10 @@ const CallSchema = z
   .object({
     callId: z.string().uuid().describe('Call id.'),
     legs: z.array(LegSchema).describe('The main leg first, then extra legs by start time.'),
-    recordingUrl: z.string().nullable().describe('Relative URL of the recording; null if not recorded.'),
+    recordingUrl: z
+      .string()
+      .nullable()
+      .describe('Relative URL of the recording; null if not recorded or not stored yet (appears seconds after the call ends).'),
   })
   .describe('One call with all its legs.');
 
@@ -110,7 +129,8 @@ interface LegRow {
   outcome: (typeof OUTCOMES)[number];
   voicemail: boolean;
   vendor: 'us' | 'intl' | null;
-  charge: string; // numeric(12,6) comes back as text
+  cost: string; // numeric(12,6) comes back as text
+  charge: string;
   includedSec: number;
   hasRecording: boolean;
   cursorTs: string;
@@ -135,6 +155,7 @@ const view = (r: LegRow) => ({
   outcome: r.outcome,
   voicemail: r.voicemail,
   vendor: r.vendor,
+  cost: Number(r.cost),
   charge: Number(r.charge),
   includedSec: r.includedSec,
   recordingUrl: r.hasRecording ? recordingUrl(r.callId) : null,
@@ -148,7 +169,7 @@ export const callRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore }> = a
   // Columns of a leg + whether the call has a recording + the keyset cursor timestamp.
   const legColumns = sql`
     id, call_id, parent_id, direction, from_number, to_number, did, from_extension, to_extension,
-    started_at, answered_at, ended_at, billable_sec, outcome, voicemail, vendor, charge, included_sec,
+    started_at, answered_at, ended_at, billable_sec, outcome, voicemail, vendor, cost, charge, included_sec,
     exists (select 1 from media m
              where m.tenant_id = cdrs.tenant_id and m.call_id = cdrs.call_id and m.kind = 'recording') as has_recording,
     to_char(started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_ts`;

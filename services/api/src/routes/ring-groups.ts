@@ -17,17 +17,26 @@ import { IN_USE, crudDocs, withDoc } from '../openapi/document.js';
 // PUT    /ring-groups/:id    200 ringGroup       400, 404   (full replace, including members)
 // DELETE /ring-groups/:id    204                 404, 409 in_use (anything routing to it)
 //
-// ringGroup = { id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }
+// ringGroup = { id, name, strategy, ringTimeoutSec, totalTimeoutSec, noAnswerDestination, memberIds }
 // memberIds: EXTENSION ids, in ring order. Each member rings all of its devices and its external
 // numbers. strategy 'all' rings every member at once (first answer wins; ringTimeoutSec is the
-// total ring time); 'sequential' rings them in memberIds order, ringTimeoutSec each.
+// total ring time); 'sequential' rings them in memberIds order, ringTimeoutSec each. totalTimeoutSec
+// (optional) caps the whole group: the spec's "each for a set time; timeout".
 // No answer -> noAnswerDestination (a Destination, docs/telephony-contract.md §3; null = hang up).
+
+const RING_TIMEOUT = 'Seconds each member rings (sequential), or the whole group rings (all). 5-120, default 20.';
+const TOTAL_TIMEOUT =
+  'Overall timeout of the group in seconds (5-600): once it runs out, ringing stops (a sequential group cuts the ' +
+  'current member short and skips the rest) and the call goes to noAnswerDestination. null = no overall timeout: a ' +
+  'sequential group rings every member for ringTimeoutSec. For strategy all the group rings min(ringTimeoutSec, totalTimeoutSec).';
 
 const RingGroupBody = z.object({
   name,
   strategy: z.enum(['all', 'sequential']).default('all').describe('all: ring every member at once (first answer wins); sequential: in memberIds order.'),
   // Same bounds as the CHECK constraint on ring_groups.ring_timeout_sec.
-  ringTimeoutSec: z.number().int().min(5).max(120).default(20).describe('all: total ring time; sequential: ring time per member (seconds).'),
+  ringTimeoutSec: z.number().int().min(5).max(120).default(20).describe(RING_TIMEOUT),
+  // Same bounds as the CHECK constraint on ring_groups.total_timeout_sec.
+  totalTimeoutSec: z.number().int().min(5).max(600).nullable().default(null).describe(TOTAL_TIMEOUT),
   noAnswerDestination: DestinationSchema.nullable().default(null).describe('Where the call goes when nobody answers. null = hang up.'),
   memberIds: z
     .array(z.string().uuid().describe('Extension id.'))
@@ -43,6 +52,7 @@ interface RingGroup {
   name: string;
   strategy: 'all' | 'sequential';
   ringTimeoutSec: number;
+  totalTimeoutSec: number | null;
   noAnswerDestination: Destination | null;
   memberIds: string[];
 }
@@ -52,7 +62,7 @@ const notFound = () => new HttpError(404, 'not_found', 'No such ring group');
 /** Ring groups with their members in ring order. `id` null = all of the tenant's groups. */
 function selectGroups(db: Db, tenantId: string, id: string | null) {
   return db<RingGroup[]>`
-    select rg.id, rg.name, rg.strategy, rg.ring_timeout_sec, rg.no_answer_destination,
+    select rg.id, rg.name, rg.strategy, rg.ring_timeout_sec, rg.total_timeout_sec, rg.no_answer_destination,
            coalesce(array_agg(m.extension_id order by m.position, m.extension_id)
                       filter (where m.extension_id is not null), '{}') as member_ids
       from ring_groups rg
@@ -83,7 +93,8 @@ const RingGroupSchema = z
     id: z.string().uuid().describe('Ring group id.'),
     name: z.string().describe('Display name.'),
     strategy: z.enum(['all', 'sequential']).describe('all: ring every member at once; sequential: one after another.'),
-    ringTimeoutSec: z.number().int().describe('all: total ring time; sequential: ring time per member.'),
+    ringTimeoutSec: z.number().int().describe(RING_TIMEOUT),
+    totalTimeoutSec: z.number().int().nullable().describe(TOTAL_TIMEOUT),
     noAnswerDestination: DestinationSchema.nullable().describe('Where the call goes when nobody answers; null = hang up.'),
     memberIds: z.array(z.string().uuid().describe('Extension id.')).describe('Member extensions in ring order.'),
   })
@@ -121,8 +132,8 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
       sql.begin(async (tx) => {
         await checkRefs(tx, tenantId, body);
         const [created] = await tx<{ id: string }[]>`
-          insert into ring_groups (tenant_id, name, strategy, ring_timeout_sec, no_answer_destination)
-          values (${tenantId}, ${body.name}, ${body.strategy}, ${body.ringTimeoutSec},
+          insert into ring_groups (tenant_id, name, strategy, ring_timeout_sec, total_timeout_sec, no_answer_destination)
+          values (${tenantId}, ${body.name}, ${body.strategy}, ${body.ringTimeoutSec}, ${body.totalTimeoutSec},
                   ${destJson(tx, body.noAnswerDestination)})
           returning id`;
         await replaceMembers(tx, created!.id, body.memberIds);
@@ -143,6 +154,7 @@ export const ringGroupRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { s
         const [updated] = await tx`
           update ring_groups
              set name = ${body.name}, strategy = ${body.strategy}, ring_timeout_sec = ${body.ringTimeoutSec},
+                 total_timeout_sec = ${body.totalTimeoutSec},
                  no_answer_destination = ${destJson(tx, body.noAnswerDestination)}, fallback_mailbox_id = null
            where id = ${id} and tenant_id = ${tenantId}
           returning id`;

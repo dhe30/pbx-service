@@ -48,8 +48,9 @@ insert into kamailio.subscriber (username, domain, password, tenant_id, extensio
   stored in plaintext because the spec says the API returns it (`auth_db calculate_ha1=yes`).
 - `tenant_id` / `extension_id` on the subscriber row are what keep an account's calls on one pbx
   node. Leave them out and calls still work, but attended transfer can break.
-- `forward_*`: `null`, `{"type":"extension","id":"<uuid>"}` or
-  `{"type":"external","number":"+12015550123"}` (`ForwardDestinationSchema`).
+- `forward_*`: `null`, `{"type":"extension","id":"<uuid>"}`, `{"type":"voicemail","id":"<mailbox uuid>"}` or
+  `{"type":"external","number":"+12015550123"}` (`ForwardDestinationSchema`). `forward_busy` /
+  `forward_no_answer` = `null` means the extension's own mailbox (`mailbox_id`), else hang up.
 - `external_numbers`: E.164 array, rung together with the extension's devices; each is a charged
   outgoing leg.
 - `caller_id_number`: one of the account's numbers, used for outgoing calls (otherwise the
@@ -79,7 +80,10 @@ Every "where does the call go" value is this JSON (`DestinationSchema` in
 | Business hours | `business_hours.open_destination` / `.closed_destination` |
 
 A deleted target makes the call hang up (logged); it doesn't crash the call. Chains are followed up
-to 10 hops (loop guard).
+to 10 hops (loop guard). Deleting an extension through the API never leaves one behind: every
+destination pointing at it is rewritten to its mailbox (`{"type":"voicemail","id":<mailbox_id>}`,
+or `hangup` without one), other extensions' forwarding to it is cleared, and it leaves its ring
+groups (`references.ts` `rerouteDestination`). Other deletes still refuse with 409 `in_use`.
 
 **IVR** (`ivr_menus.timeout_sec`, `.max_retries`, `.greeting_media_id`, `.config`):
 ```json
@@ -91,8 +95,11 @@ to 10 hops (loop guard).
 The phase-1 format (`{"action":..,"target":..}` and `on_timeout`) is still accepted.
 
 **Ring groups**: `strategy` `all` (`ring_timeout_sec` = total ring time) or `sequential` (each
-member rings `ring_timeout_sec`). Members (`ring_group_members.extension_id`, `position`) ring
-their devices **and** their external numbers.
+member rings `ring_timeout_sec`). `total_timeout_sec` (nullable) caps the whole group: a sequential
+group cuts the ringing member short and skips the rest; an `all` group rings
+`min(ring_timeout_sec, total_timeout_sec)`. Members (`ring_group_members.extension_id`, `position`)
+ring their devices **and** their external numbers. A group with no members goes straight to its
+no-answer destination.
 
 **Business hours**: `schedule` = `{"intervals":[{"day":1,"start":"09:00","end":"17:00"}, ...]}`.
 `day` 0 = Sunday, times are in the account's time zone, `end <= start` runs past midnight, and
