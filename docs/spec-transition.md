@@ -222,7 +222,7 @@ V-D*); update it there, not here:
 2. Media: rtpengine `via-branch=extra` with forking (each branch gets its own leg; the answering
    one has audio).
 3. Media: rtpengine flags `RTP/SAVP DTLS=off` produce SDES crypto toward TLS phones.
-4. Media: `rtpengine --codecs` shows encode+decode for G723, G729, opus.
+4. Media: `rtpengine --codecs` shows encode+decode for G723, G729, opus. Done 2026-11-12 (verify-backlog V-T1).
 5. Registrations: DMQ replication between two edges (REGISTER on edge-1, call routed via edge-2).
 6. Vendors: what they expect in the Request-URI (+E.164?) and caller ID; their source IPs for
    in-dialog requests.

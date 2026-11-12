@@ -185,7 +185,8 @@ on a VM yet.** Watch these on the first deploy:
 
 - [ ] rtpengine flags for WebRTC (`RTP/SAVPF ICE=force DTLS=passive ... generate-mid`) with
       current Chrome/Firefox. Symptom if wrong: browser answers but no audio.
-- [ ] `rtpengine --codecs` on the VM lists PCMU, PCMA, G723, G729, opus (A4 transcoding).
+- [x] `rtpengine --codecs` on the VM lists PCMU, PCMA, G723, G729, opus (A4 transcoding).
+      Done 2026-11-12 on the cloud edge (verify-backlog V-T1).
 - [ ] ARI `sound:/var/lib/asterisk/sounds/cache/<id>` absolute-path playback (tenant greetings;
       only matters once the API uploads greetings).
 - [ ] `RecordingFinished` arrives when the caller hangs up during voicemail (otherwise the sweep

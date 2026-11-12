@@ -40,7 +40,7 @@ Ground truth (2026-11-08): the course grading site, Project + Course Services ta
 - Codecs: a phone may support ONLY ONE of PCMU, PCMA, G.729, G.723.1 (6.3k) or Opus, and calls
   between any two must work => transcoding on phone/staff legs too, not just the carrier leg.
   Design: rtpengine normalizes every leg toward Asterisk to PCMU (§4.3 #3).
-  [VERIFY] on the VM: `rtpengine --codecs` shows encode+decode for G723, G729, opus.
+  Verified 2026-11-12 (V-T1): `rtpengine --codecs` on edge-1 = fully supported for all five.
 - CDRs per leg (direction, numbers, DID/extensions, start/answer/end, billable duration, outcome
   answered|busy|no answer|failed|blocked, vendor, cost, charge); rating by longest prefix; billing
   in 30/6 increments; past-due accounts get outgoing calls blocked (unblock within 1 min of payment).
@@ -249,8 +249,8 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
 - interface = internal/<edge private IP>;external/<edge public IP>
 - listen-ng = <edge private IP>:2223 (bind private only; host firewall allows only edge peers)
 - port-min/port-max = 30000/40000 (open UDP range on public IP in cloud firewall)
-- Built with transcoding (ffmpeg) + bcg729 for G.729; verify `rtpengine --codecs` lists PCMU,
-  PCMA, G723, G729, opus with encode+decode support. [VERIFY]
+- Built with transcoding (ffmpeg) + bcg729 for G.729; `rtpengine --codecs` lists PCMU, PCMA,
+  G723, G729 (+G729a), opus as fully supported (encode+decode), checked 2026-11-12 (V-T1).
 - Transcoded calls run in userspace => CPU is the capacity limit; measure with the SIPp codec
   matrix (single-codec phones: most legs transcode, see docs/spec-transition.md N1).
 - Kernel forwarding ON since 2026-11-09 (`table = 0` + rtpengine-kernel-dkms, falls back to
