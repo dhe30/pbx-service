@@ -9,7 +9,15 @@ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ db_kamailio_user }}') THEN
     CREATE ROLE {{ db_kamailio_user }} LOGIN;
   END IF;
+  -- Metrics exporter (roles/postgres_exporter). It runs as the Linux user "prometheus" and logs in
+  -- over the local socket with peer auth (pg_hba "local all all peer"), so it has no password.
+  -- pg_monitor = read-only access to the statistics views, no access to table data.
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'prometheus') THEN
+    CREATE ROLE prometheus LOGIN;
+  END IF;
 END $$;
+
+GRANT pg_monitor TO prometheus;
 
 ALTER ROLE {{ db_app_user }} PASSWORD '{{ vault_db_app_password }}';
 ALTER ROLE {{ db_kamailio_user }} PASSWORD '{{ vault_db_kamailio_password }}';
@@ -20,6 +28,10 @@ SELECT 'CREATE DATABASE {{ db_name }} OWNER {{ db_app_user }}'
  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ db_name }}')\gexec
 
 \connect {{ db_name }}
+
+-- Per-query statistics (time, calls, rows per statement). The library is preloaded by Patroni
+-- (shared_preload_libraries); the view only exists once the extension is created.
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 CREATE SCHEMA IF NOT EXISTS kamailio AUTHORIZATION {{ db_kamailio_user }};
 

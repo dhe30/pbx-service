@@ -11,7 +11,7 @@
 - name: Data tier
   hosts: db
   become: true
-  roles: [etcd, postgres_patroni, objectstore]
+  roles: [etcd, postgres_patroni, objectstore, postgres_exporter]
 
 # Schema changes must run on whichever node is primary NOW (it may not be db-1 after a failover).
 - name: Find the current Patroni primary

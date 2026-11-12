@@ -114,6 +114,7 @@ lets the whole cluster reach every private port.
 | 5432/tcp | Postgres | db | private_ip | local DB proxies (+ replicas) |
 | 8008/tcp | Patroni REST (`/primary`, `/replica`, `/health`) | db | private_ip | local DB proxies, Prometheus |
 | 2379, 2380/tcp | etcd client / peer | db | private_ip | Patroni / other etcd members |
+| 9187/tcp | postgres_exporter (local Postgres via socket, role `prometheus` with `pg_monitor`) | db | private_ip | Prometheus |
 | 3900/tcp | Garage S3 API | db | private_ip | local S3 proxies |
 | 3901/tcp | Garage RPC | db | private_ip | other Garage nodes |
 | 3903/tcp | Garage admin API (`/metrics`, `/health`; no admin token = admin endpoints off) | db | private_ip | Prometheus |
@@ -185,6 +186,7 @@ lets the whole cluster reach every private port.
 | Garage | `garage status`, `GET private_ip:3903/health` | `private_ip:3903/metrics` |
 | Local DB/S3 proxy | `127.0.0.1:8405/stats` (backends UP/DOWN) | `127.0.0.1:8405/metrics`; Prometheus: `private_ip:9200/metrics/proxy` |
 | etcd | `etcdctl endpoint health` | `:2379/metrics` |
+| Postgres | `pg_isready` | `private_ip:9187/metrics` (postgres_exporter, incl. pg_stat_statements) |
 | Asterisk | `pjsip show endpoints` | `127.0.0.1:8088/metrics` (res_prometheus); Prometheus: `private_ip:9200/metrics/asterisk` |
 
 ## 8. While a dependency hasn't landed

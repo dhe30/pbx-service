@@ -161,6 +161,38 @@ groups:
         annotations:
           summary: etcd has lost quorum (half or more members down)
 
+      # postgres_exporter can't query its local Postgres (down, or still starting after a deploy).
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: Postgres is not answering"
+          description: "On the primary this is a failover in progress (see PatroniNoPrimary); on a replica, `patronictl list` on any db node."
+
+      # New connections are refused at max_connections (API, ARI app, Kamailio all reconnect then).
+      - alert: PostgresConnectionsHigh
+        expr: sum by (instance) (pg_stat_activity_count) / on (instance) max by (instance) (pg_settings_max_connections) > 0.80
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanizePercentage }} of Postgres connections in use"
+
+      - alert: PostgresDeadlocks
+        expr: increase(pg_stat_database_deadlocks{datname!~"template.*|postgres"}[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanize }} deadlock(s) in {{ $labels.datname }} in 10 min"
+
+      # A transaction open for minutes holds locks and blocks vacuum (tables bloat, queries slow down).
+      - alert: PostgresLongTransaction
+        expr: pg_stat_activity_max_tx_duration{datname!~"template.*|postgres"} > 300
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: a transaction in {{ $labels.datname }} has been open for {{ $value | humanizeDuration }}"
+          description: "Find it: SELECT pid, state, xact_start, query FROM pg_stat_activity ORDER BY xact_start;"
+
   # ---- Calls (ARI app on the pbx nodes, read through the metrics gateway) ---------------------
   - name: calls
     rules:

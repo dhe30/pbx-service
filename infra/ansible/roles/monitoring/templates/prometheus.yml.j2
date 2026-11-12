@@ -54,6 +54,11 @@ scrape_configs:
 
   - job_name: etcd
 {{ scrape(db_hosts, etcd_client_port | default(2379)) }}
+
+  # Postgres internals (roles/postgres_exporter) on every db node: connections, transactions,
+  # cache hits, locks, long transactions, and the most expensive queries (pg_stat_statements).
+  - job_name: postgres
+{{ scrape(db_hosts, postgres_exporter_port | default(9187)) }}
 {% endif %}
 {% if rtpengine_hosts %}
 
@@ -101,4 +106,4 @@ scrape_configs:
 {{ scrape(gateway_pbx_hosts, gateway_port) }}
 {% endif %}
 
-# Not scraped yet: Kamailio (no metrics endpoint), Postgres internals (no postgres_exporter).
+# Not scraped yet: Kamailio (no metrics endpoint).

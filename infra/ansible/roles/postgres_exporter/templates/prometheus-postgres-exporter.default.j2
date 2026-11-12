@@ -1,0 +1,8 @@
+# postgres_exporter options (managed by Ansible, roles/postgres_exporter). Read by Debian's
+# systemd unit, which runs the exporter as the Linux user "prometheus".
+# Login: local socket + peer auth as the database role "prometheus" (pg_monitor, created by
+# roles/db_schema), so there is no password anywhere.
+DATA_SOURCE_NAME="host=/var/run/postgresql user=prometheus dbname={{ db_name }} sslmode=disable"
+# Private IP only. stat_statements: per-query time/calls (the scaling analysis' "which queries
+# cost the most"); off by default in the exporter.
+ARGS="--web.listen-address={{ private_ip }}:{{ postgres_exporter_port }} --collector.stat_statements --collector.stat_statements.limit={{ postgres_exporter_statements_limit }}"
