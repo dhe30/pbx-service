@@ -21,6 +21,9 @@ import type { CallSession } from './session.js';
 //    resolves Replaces to our channel of the consult call. We move the consult call's other party
 //    into THIS bridge and drop both of the transferring phone's legs. Needs both calls on the same
 //    Asterisk: Kamailio keeps all calls of an account on one pbx node (tenant hash, B5).
+//    Neither call has to be one the phone placed: with call waiting both of the phone's legs are
+//    legs we originated, and the party we take over is the OTHER call's primary (its caller).
+//    That call's flow then ends without hanging it up (CallSession.primaryHandedOver).
 
 export type ConversationEnd =
   | { reason: 'hangup'; by: string | null }
@@ -145,7 +148,17 @@ export class Conversation {
   }
 
   private async release(channelId: string): Promise<void> {
+    const { ctx, s } = this;
     this.released.add(channelId);
+    if (channelId === s.primary) {
+      // The party handed over is the channel our call flow routes (e.g. the caller of the second
+      // call a phone answered, call waiting). Our flow must not hang it up when it ends, and our
+      // main leg lasts until that channel really ends (incoming toll-free is billed per minute).
+      s.primaryHandedOver = true;
+      if (s.main && !s.main.endedAt && !ctx.legs.isTracked(channelId) && !ctx.legs.tracksDraft(s.main)) {
+        ctx.legs.track(channelId, s.main, s);
+      }
+    }
     await this.ctx.ari.stopMoh(channelId).catch(() => {});
     await this.ctx.ari.removeFromBridge(this.bridgeId, [channelId]).catch(() => {});
     if (this.ctx.conversations.get(channelId) === this) this.ctx.conversations.delete(channelId);

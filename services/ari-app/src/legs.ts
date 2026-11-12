@@ -26,6 +26,12 @@ export class LegTracker {
     return this.legs.has(channelId);
   }
 
+  /** Some live channel already updates this draft (e.g. an outgoing call's vendor leg). */
+  tracksDraft(draft: LegDraft): boolean {
+    for (const t of this.legs.values()) if (t.draft === draft) return true;
+    return false;
+  }
+
   onEvent(ev: AriEvent): void {
     if (!('channel' in ev)) return;
     const t = this.legs.get(ev.channel.id);

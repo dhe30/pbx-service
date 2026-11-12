@@ -149,6 +149,80 @@ describe('§3 Attended transfer', () => {
     expect(h.ctx.bus.size).toBe(0); // no leaked subscriptions
   });
 
+  // Found on the deployed system (2026-11-12, softphone): the phone answers call 1, answers call 2
+  // (call waiting, which holds call 1) and transfers call 1 to call 2. Both of the phone's legs are
+  // channels WE originated, and each conversation's session routes the CALLER (B / C), so the
+  // consult conversation's released party is its session's primary. It used to be hung up by that
+  // call flow's cleanup, which ended the joined call too.
+  it('call waiting: two inbound calls answered on one phone, transfer one to the other -> callers bridged', async () => {
+    const { h, a, did, caller: b, agent: a1 } = await connectedCall();
+    const c = h.ari.carrierCall(did, '+16315551111');
+    const a2 = await until(() => h.ari.peerOf(c), 3000, 'call 2 connected');
+    expect(a2).not.toBe(a1);
+    h.ari.hold(a1); // answering call 2 holds call 1
+    await until(() => h.ari.channels.get(b)!.moh);
+    h.ari.referAttended(a1, a2);
+    await until(() => h.ari.peerOf(b) === c, 2000, 'B joined with C');
+    expect(h.ari.channels.get(b)!.moh).toBe(false);
+    await until(() => !h.ari.channels.has(a1) && !h.ari.channels.has(a2), 2000, 'phone legs dropped');
+    expect(h.ari.transferProgressLog).toContainEqual({ channelId: a1, state: 'channel_answered' });
+    // Stays up: nobody hangs up B or C on their own.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.ari.channels.has(b) && h.ari.channels.has(c)).toBe(true);
+    expect(h.ari.peerOf(b)).toBe(c);
+    // C hangs up -> B is hung up, everything ends.
+    h.ari.remoteHangup(c);
+    await until(() => !h.ari.channels.has(b));
+    await h.settle();
+    const rows = (await a.cdrs()).filter((r) => r.direction === 'incoming');
+    expect(rows).toHaveLength(2);
+    const call1 = rows.find((r) => r.fromNumber === '+16315550000')!;
+    const call2 = rows.find((r) => r.fromNumber === '+16315551111')!;
+    expect(call1).toMatchObject({ outcome: 'answered', toExtension: '101' });
+    expect(call2).toMatchObject({ outcome: 'answered', toExtension: '101' });
+    // Call 2's leg lasts until C really hung up, not until the transfer.
+    expect(call2.endedAt.getTime()).toBeGreaterThanOrEqual(call2.answeredAt!.getTime() + 45);
+    expect(h.ctx.conversations.size).toBe(0);
+    expect(h.ctx.bus.size).toBe(0);
+  });
+
+  it('call waiting, other direction: transfer call 2 to call 1 -> callers bridged', async () => {
+    const { h, did, caller: b, agent: a1 } = await connectedCall();
+    h.ari.hold(a1);
+    const c = h.ari.carrierCall(did, '+16315551111');
+    const a2 = await until(() => h.ari.peerOf(c), 3000, 'call 2 connected');
+    h.ari.referAttended(a2, a1);
+    await until(() => h.ari.peerOf(c) === b, 2000, 'C joined with B');
+    expect(h.ari.channels.get(b)!.moh).toBe(false);
+    await until(() => !h.ari.channels.has(a1) && !h.ari.channels.has(a2), 2000, 'phone legs dropped');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.ari.peerOf(c)).toBe(b);
+    h.ari.remoteHangup(b);
+    await until(() => !h.ari.channels.has(c));
+    await h.settle();
+    expect(h.ctx.conversations.size).toBe(0);
+    expect(h.ctx.bus.size).toBe(0);
+  });
+
+  it('phone with an outgoing call to 102 takes an inbound call and transfers 102 to the caller', async () => {
+    // Call 1: B -> 101 (session primary B). Call 2: 101 dials 102 (session primary = 101's own leg).
+    // REFER on call 2 with Replaces = call 1: B (call 1's primary) moves into call 2's bridge.
+    const { h, a, caller: b } = await connectedCall();
+    const out = h.ari.deviceCall(a.ext['101']!.sip, '102');
+    const leg102 = await until(() => h.ari.peerOf(out), 2000, '102 connected');
+    const a1 = await until(() => h.ari.peerOf(b));
+    h.ari.referAttended(out, a1); // REFER on the outgoing call, Replaces = the inbound call's leg
+    await until(() => h.ari.peerOf(leg102) === b, 2000, '102 joined with B');
+    await until(() => !h.ari.channels.has(a1) && !h.ari.channels.has(out), 2000, 'phone legs dropped');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.ari.peerOf(b)).toBe(leg102);
+    h.ari.remoteHangup(leg102);
+    await until(() => !h.ari.channels.has(b));
+    await h.settle();
+    expect(h.ctx.conversations.size).toBe(0);
+    expect(h.ctx.bus.size).toBe(0);
+  });
+
   it('attended transfer to an external number: the consult leg is still billed until it really ends', async () => {
     const { h, a, caller, agent } = await connectedCall();
     await a.number(nextDid(), null);

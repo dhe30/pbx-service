@@ -57,6 +57,6 @@ export async function handleCarrierCall(ctx: Ctx, s: CallSession): Promise<void>
       failedBeforeAnswer = !s.answered;
     }
   } finally {
-    await ctx.ari.hangupQuietly(s.primary, failedBeforeAnswer ? 'congestion' : 'normal').catch(() => {});
+    await s.hangupPrimary(ctx.ari, failedBeforeAnswer ? 'congestion' : 'normal').catch(() => {});
   }
 }

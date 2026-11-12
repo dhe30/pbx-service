@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { billingPeriod, type CdrDirection, type CdrOutcome, type ChargeClass, type PstnVendor } from '@pbx/shared';
 import type { Ari } from './ari/client.js';
+import type { HangupReason } from './ari/types.js';
 import type { Logger } from './log.js';
 import type { PendingCdr } from './repo.js';
 import type { TenantConfig } from './tenant.js';
@@ -82,6 +83,12 @@ export class CallSession {
   ringCallerId: string;
   /** Destinations followed so far (loop guard, MAX_ROUTE_HOPS). */
   hops = 0;
+  /**
+   * The primary channel was moved into ANOTHER call's conversation by an attended transfer (this
+   * call was the consult call, e.g. the second of two calls a phone answered). That call drives
+   * it now: our flow must not hang it up when it ends.
+   */
+  primaryHandedOver = false;
 
   constructor(
     public primary: string,
@@ -117,6 +124,12 @@ export class CallSession {
     const from = this.primary;
     this.primary = channelId;
     this.onRebind(from, channelId, this);
+  }
+
+  /** Hang up the primary at the end of the flow, unless another call took it over. */
+  async hangupPrimary(ari: Ari, reason?: HangupReason): Promise<void> {
+    if (this.primaryHandedOver) return;
+    await ari.hangupQuietly(this.primary, reason);
   }
 
   /** Answer the primary channel once (before playing media or bridging). */
