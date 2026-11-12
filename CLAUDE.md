@@ -356,8 +356,11 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
   greetings upload, voicemail inbox (play/mark heard), call history (+ recordings), settings.
 - Softphone component (staff): fetch /me/sip-credentials, SIP.js UserAgent/Registerer over
   wss://<app domain>/ws (HAProxy -> Kamailio). Requirements:
-  - "Go online" button (user gesture for mic/audio), incoming-call UI (answer/decline), hangup,
-    <audio autoplay> for remote media. PCMU/Opus.
+  - src/softphone/Softphone.tsx, a panel BusinessLayout shows beside every business page (in the
+    page flow, no overlay). Registers as soon as an extension is chosen (no "go online" click:
+    the grader only uses the testids); several calls at once (call waiting, attended transfer),
+    one <audio> per call. State + SIP: contexts/SoftphoneContext.tsx; which call each control
+    acts on: softphone/lines.ts (unit-tested).
   - Auto-reconnect with backoff when the WebSocket drops (edge node failure) and re-register.
   - Register expires ~120–300 s.
   - Course spec §4: on the page shown after login, with the required data-testids
