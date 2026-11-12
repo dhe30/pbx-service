@@ -39,4 +39,23 @@ for edge in "$OUT"/edge-*; do
     status=1
   fi
 done
+# HAProxy (optional: haproxy on PATH, or HAPROXY=/path/to/haproxy), with the test cert and the
+# repo's test page in place of the edge paths.
+HAP=${HAPROXY:-$(command -v haproxy || true)}
+if [ -n "$HAP" ]; then
+  cat "$OUT/cert.pem" "$OUT/key.pem" >"$OUT/site.pem"
+  for edge in "$OUT"/edge-*; do
+    name=$(basename "$edge")
+    sed -e "s#/etc/haproxy/certs/site.pem#$OUT/site.pem#" \
+      -e "s#/etc/haproxy/www/webrtc-test.html#$ROOT/telephony/webrtc-test/index.html#" \
+      "$edge/haproxy.cfg" >"$edge/haproxy.test.cfg"
+    if LD_LIBRARY_PATH="${HAPROXY_LIBS:-}" "$HAP" -c -f "$edge/haproxy.test.cfg" >"$edge/haproxy-check.log" 2>&1; then
+      echo "PASS haproxy -c $name" | tee -a "$OUT/results.txt"
+    else
+      echo "FAIL haproxy -c $name" | tee -a "$OUT/results.txt"
+      head -20 "$edge/haproxy-check.log"
+      status=1
+    fi
+  done
+fi
 exit $status

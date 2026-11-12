@@ -11,6 +11,9 @@ Three layers. The first two run anywhere with `npm test`; the third needs VMs.
 Layer 2 without root: extract Kamailio's .debs (`apt-get download` + `dpkg-deb -x`) and point
 `KAMAILIO`, `KAMAILIO_MODULES` and `KAMAILIO_LIBS` at them (see the header of
 `telephony/tests/check-configs.sh`).
+The same script also runs `haproxy -c` on each edge's rendered `haproxy.cfg` when HAProxy is
+available (on PATH, or `HAPROXY` + `HAPROXY_LIBS` pointing at an extracted `haproxy` + `liblua5.4-0`
+.deb); without it that step is skipped.
 
 ## Spec coverage (course spec section → tests)
 

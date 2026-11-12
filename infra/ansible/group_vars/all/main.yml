@@ -91,6 +91,28 @@ s3_endpoint: "http://{{ private_ip if inventory_hostname in groups['db'] else '1
 # Public name of the dashboard/API and the softphone's WebSocket (wss://<web_domain>/ws), served by
 # the edge HAProxies. Same name as the SIP domain unless the team gets a separate one.
 web_domain: "{{ sip_domain }}"
+
+# ---- TLS certificate (Let's Encrypt, role edge_haproxy) ----------------------------------------
+# One publicly trusted certificate for web_domain (+ sip_domain if different) serves HTTPS/WSS
+# (HAProxy) and SIP over TLS (Kamailio 5061) on every edge. Issued with HTTP-01 on ONE edge (the
+# one the A record points to; DNS-01 is impossible, no DNS API) and copied to the others by Ansible.
+# Needs inbound TCP 80 on that edge (nftables does it; the Clanode cloud firewall rule is manual).
+# Runbook: docs/cloud-deploy.md §2. false = keep the self-signed certificates.
+acme_enabled: true
+# The edge that requests and renews the certificate: must be the one the Group tab's A record
+# points to. If DNS moves to another edge, change this and rerun the edge play (cloud-deploy §2).
+acme_edge: "{{ groups['edge'][0] }}"
+# Names on the certificate.
+acme_domains: "{{ [web_domain, sip_domain] | unique }}"
+# Contact for Let's Encrypt expiry/problem mails; empty = register without an email.
+# A team address, not a personal one: the repo is public.
+acme_email: ""
+# true = Let's Encrypt STAGING (untrusted certificates, generous rate limits): use it to test the
+# flow, then set false and rerun (the role replaces a staging certificate automatically).
+acme_staging: false
+# Local port certbot's standalone HTTP-01 server listens on (127.0.0.1); HAProxy :80 forwards
+# /.well-known/acme-challenge/ to it.
+acme_http_port: 8888
 # Course payment gateway (Stripe clone). Both URLs as on the Course Services tab (checked
 # 2026-11-11, docs/verify-backlog.md V-S1).
 stripe_api_url: "https://stripe.cse356.compas.cs.stonybrook.edu"

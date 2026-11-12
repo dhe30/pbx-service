@@ -2,6 +2,7 @@
 #   /ws          -> Kamailio WebSocket (browsers' SIP)
 #   /webrtc-test -> static WebRTC test page (phase 1 only)
 #   everything else -> API on app nodes
+# Port 80: Let's Encrypt HTTP-01 challenges -> local certbot; everything else -> HTTPS.
 global
     log /dev/log local0
     maxconn 20000
@@ -20,6 +21,17 @@ defaults
     timeout server 60s
     # WebSocket connections are long-lived; Kamailio pings every 30 s.
     timeout tunnel 1h
+
+frontend http
+    bind {{ public_bind_ip }}:80
+    # certbot (standalone) answers HTTP-01 challenges on 127.0.0.1 while it issues or renews
+    # (acme_edge only; elsewhere nothing listens there and these requests get a 503).
+    acl acme_challenge path_beg /.well-known/acme-challenge/
+    http-request redirect scheme https code 301 unless acme_challenge
+    use_backend acme if acme_challenge
+
+backend acme
+    server certbot 127.0.0.1:{{ acme_http_port | default(8888) }}
 
 frontend https
     # HTTP/1.1 only: Kamailio doesn't speak WebSocket over HTTP/2.
