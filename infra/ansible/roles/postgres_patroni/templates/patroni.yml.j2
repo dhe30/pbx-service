@@ -87,6 +87,15 @@ postgresql:
     # Slow queries (e.g. call-history search) show up in the log.
     log_min_duration_statement: 500
     log_lock_waits: "on"
+{% if backup_enabled | bool %}
+    # WAL archiving to the pgBackRest repository on mon-1 (roles/backups). Only the primary
+    # archives. archive_timeout forces a WAL switch at least every 5 min while there is activity,
+    # so at most ~5 min of committed data is missing from the backups.
+    # Turning archive_mode on needs a Postgres restart: see "pending restart" in roles/postgres_patroni.
+    archive_mode: "on"
+    archive_command: "pgbackrest --stanza={{ pgbackrest_stanza }} archive-push %p"
+    archive_timeout: 300
+{% endif %}
 
   # Who may connect. Clients reach Postgres through their local HAProxy, so the source address is
   # the client node's private IP. Every node in the inventory is allowed (password required).

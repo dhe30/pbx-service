@@ -1,0 +1,26 @@
+# pgBackRest repository on {{ inventory_hostname }} (managed by Ansible, roles/backups).
+# Runs as the user "pgbackrest". Backups are taken over SSH as postgres@<db node>; pgBackRest asks
+# every listed node which one is the primary, so a Patroni failover needs no change here.
+[global]
+repo1-path={{ backup_repo_path }}
+repo1-retention-full={{ backup_retention_full }}
+log-path=/var/log/pgbackrest
+log-level-console=info
+log-level-file=info
+compress-type=zst
+process-max=2
+# Checkpoint immediately when a backup starts instead of waiting for the next scheduled one.
+start-fast=y
+{% if groups['db'] | length > 1 %}
+# Copy the data files from a replica (keeps the backup's disk/network load off the primary);
+# pgBackRest still talks to the primary to start/stop the backup.
+backup-standby=y
+{% endif %}
+
+[{{ pgbackrest_stanza }}]
+{% for host in groups['db'] %}
+pg{{ loop.index }}-host={{ hostvars[host].private_ip }}
+pg{{ loop.index }}-host-user=postgres
+pg{{ loop.index }}-path={{ backup_pg_path }}
+pg{{ loop.index }}-socket-path=/var/run/postgresql
+{% endfor %}

@@ -260,6 +260,41 @@ groups:
         annotations:
           summary: "{{ $labels.instance }}: object store degraded (a Garage node is down)"
 
+  # ---- Backups (pgBackRest on mon-1, results written by pbx-backup / pbx-restore-test) --------
+  - name: backups
+    rules:
+      - alert: BackupFailed
+        expr: pbx_backup_run_success == 0
+        labels: { severity: warning }
+        annotations:
+          summary: The last Postgres backup run failed
+          description: "On mon-1: journalctl -u pbx-backup, /var/log/pgbackrest/. Retry with `systemctl start pbx-backup`."
+
+      # Nightly backups: older than 26 h means at least one night was missed.
+      - alert: BackupTooOld
+        expr: time() - pbx_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Newest Postgres backup is {{ $value | humanizeDuration }} old"
+
+      - alert: RestoreTestFailed
+        expr: pbx_restore_test_success == 0
+        labels: { severity: warning }
+        annotations:
+          summary: The weekly restore test could not bring the backup up
+          description: "On mon-1: journalctl -u pbx-restore-test. Until fixed, assume the backups can't be restored."
+
+      # The primary can't hand WAL to pgBackRest (mon-1 down, SSH key, full repository). Unshipped
+      # WAL waits on the db node; beyond 4 GiB pgBackRest drops it and the backups get a gap.
+      - alert: WalArchivingFailing
+        expr: increase(pg_stat_archiver_failed_count[15m]) > 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: Postgres WAL archiving to the backup repository is failing"
+          description: "On the db node: /var/log/pgbackrest/, `sudo -u postgres pgbackrest --stanza=pbx check`."
+
   # ---- Edge ----------------------------------------------------------------------------------------
   - name: edge
     rules:

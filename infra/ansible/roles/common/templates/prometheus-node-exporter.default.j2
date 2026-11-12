@@ -2,4 +2,5 @@
 # - Listens on the private IP only; the host firewall lets only cluster nodes (mon-1) reach it.
 # - systemd collector: exports every .service unit's state, so Prometheus can alert when one has
 #   failed (kamailio, asterisk, patroni, ...): node_systemd_unit_state{state="failed"} == 1.
-ARGS="--web.listen-address={{ private_ip }}:{{ node_exporter_port | default(9100) }} --collector.systemd --collector.systemd.unit-include=.+\\.service"
+# - textfile collector: *.prom files that scripts write there (backup results on mon-1).
+ARGS="--web.listen-address={{ private_ip }}:{{ node_exporter_port | default(9100) }} --collector.systemd --collector.systemd.unit-include=.+\\.service --collector.textfile.directory=/var/lib/prometheus/node-exporter"

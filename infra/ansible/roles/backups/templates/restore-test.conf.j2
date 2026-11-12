@@ -1,0 +1,10 @@
+# pgBackRest config for the restore test only (managed by Ansible, roles/backups): the same
+# repository, but restored into a local scratch directory on {{ inventory_hostname }}.
+[global]
+repo1-path={{ backup_repo_path }}
+log-path=/var/log/pgbackrest
+log-level-console=info
+log-level-file=info
+
+[{{ pgbackrest_stanza }}]
+pg1-path={{ backup_restore_test_dir }}/data

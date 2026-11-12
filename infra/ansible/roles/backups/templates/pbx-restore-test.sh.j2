@@ -1,0 +1,88 @@
+#!/bin/sh
+# Restore test (managed by Ansible, roles/backups). Run weekly by pbx-restore-test.timer, or by
+# hand: `pbx-restore-test`. Proves the backups can actually be restored:
+#   1. restore the newest backup from the repository into {{ backup_restore_test_dir }}
+#   2. start a throwaway Postgres on it (unix socket only, port {{ backup_restore_test_port }}); it replays the
+#      archived WAL up to the newest segment, then opens read/write
+#   3. check the app database is there and count a few tables
+#   4. stop it and delete the copy
+# Never touches the db nodes: the copy lives only on this host and never archives anything
+# (archive_mode=off), so the real repository is left alone.
+# Result for Prometheus: pbx_restore_test_success, ..._timestamp_seconds, ..._duration_seconds
+# (alert RestoreTestFailed in roles/monitoring).
+set -u
+STANZA={{ pgbackrest_stanza }}
+DIR={{ backup_restore_test_dir }}
+PORT={{ backup_restore_test_port }}
+BIN=/usr/lib/postgresql/{{ postgres_version }}/bin
+DB={{ db_name }}
+PROM=/var/lib/prometheus/node-exporter/pbx_restore_test.prom
+CONF=/etc/pgbackrest/restore-test.conf
+
+as_repo() { runuser -u pgbackrest -- "$@"; }
+log() { echo "pbx-restore-test: $*"; }
+
+stop_and_clean() {
+  [ -f "$DIR/data/postmaster.pid" ] && as_repo "$BIN/pg_ctl" -D "$DIR/data" -m fast -w stop >/dev/null 2>&1
+  rm -rf "$DIR"
+}
+
+start=$(date +%s)
+ok=0
+tables=0
+tenants=-1
+cdrs=-1
+
+stop_and_clean
+mkdir -p "$DIR/run" "$DIR/data" && chown -R pgbackrest:pgbackrest "$DIR" && chmod 0700 "$DIR" "$DIR/data"
+
+log "restoring the newest backup into $DIR/data"
+if as_repo pgbackrest --config="$CONF" --stanza="$STANZA" restore; then
+  # Our own access rules: trust on the private socket only (the restored pg_hba.conf allows peer
+  # logins, and there is no "pgbackrest" role in the database).
+  echo "local all all trust" >"$DIR/hba.conf" && chown pgbackrest:pgbackrest "$DIR/hba.conf"
+  log "starting a throwaway Postgres (replays WAL, can take a while)"
+  # Command-line settings beat the restored postgresql.conf (written by Patroni for a db node):
+  # no network, no archiving, no streaming from the real primary, small memory.
+  if as_repo "$BIN/pg_ctl" -D "$DIR/data" -l "$DIR/postgres.log" -w -t 1800 start -o "\
+      -p $PORT -c listen_addresses='' -c unix_socket_directories=$DIR/run \
+      -c hba_file=$DIR/hba.conf -c archive_mode=off -c hot_standby=off \
+      -c primary_conninfo='' -c primary_slot_name='' -c cluster_name=restore-test \
+      -c shared_buffers=128MB -c effective_cache_size=256MB -c logging_collector=off"; then
+    q() { as_repo "$BIN/psql" -X -A -t -h "$DIR/run" -p "$PORT" -U postgres -d "$DB" -c "$1"; }
+    tables=$(q "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'") || tables=0
+    tenants=$(q "SELECT CASE WHEN to_regclass('public.tenants') IS NULL THEN -1 ELSE (SELECT count(*) FROM public.tenants) END") || tenants=-1
+    cdrs=$(q "SELECT CASE WHEN to_regclass('public.cdrs') IS NULL THEN -1 ELSE (SELECT count(*) FROM public.cdrs) END") || cdrs=-1
+    log "database $DB: $tables tables in public, tenants=$tenants, cdrs=$cdrs"
+    [ "${tables:-0}" -gt 0 ] && ok=1
+  else
+    log "the restored Postgres did not start; last lines of its log:"
+    tail -n 30 "$DIR/postgres.log"
+  fi
+else
+  log "pgbackrest restore failed"
+fi
+end=$(date +%s)
+stop_and_clean
+
+tmp=$(mktemp "$PROM.XXXXXX")
+{
+  echo "# HELP pbx_restore_test_success 1 if the last restore test brought up the database with its tables."
+  echo "# TYPE pbx_restore_test_success gauge"
+  echo "pbx_restore_test_success $ok"
+  echo "# HELP pbx_restore_test_timestamp_seconds When the last restore test finished."
+  echo "# TYPE pbx_restore_test_timestamp_seconds gauge"
+  echo "pbx_restore_test_timestamp_seconds $end"
+  echo "# HELP pbx_restore_test_duration_seconds Restore + WAL replay + checks: an estimate of the recovery time."
+  echo "# TYPE pbx_restore_test_duration_seconds gauge"
+  echo "pbx_restore_test_duration_seconds $((end - start))"
+  echo "# HELP pbx_restore_test_rows Rows found in key tables of the restored copy (-1 = table missing)."
+  echo "# TYPE pbx_restore_test_rows gauge"
+  echo "pbx_restore_test_rows{table=\"tenants\"} ${tenants:--1}"
+  echo "pbx_restore_test_rows{table=\"cdrs\"} ${cdrs:--1}"
+} >"$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$PROM"
+
+log "$( [ $ok = 1 ] && echo PASSED || echo FAILED ) in $((end - start)) s"
+[ "$ok" = 1 ]

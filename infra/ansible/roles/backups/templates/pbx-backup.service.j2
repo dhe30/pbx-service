@@ -1,0 +1,12 @@
+# Managed by Ansible (roles/backups). Started by pbx-backup.timer; `systemctl start pbx-backup`
+# takes a backup now. Logs: journalctl -u pbx-backup, /var/log/pgbackrest/.
+[Unit]
+Description=Postgres backup (pgBackRest)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pbx-backup full
+Nice=10
+IOSchedulingClass=idle

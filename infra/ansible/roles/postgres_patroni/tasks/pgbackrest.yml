@@ -1,0 +1,68 @@
+---
+# pgBackRest on the db nodes (only when the inventory has a mon host, backup_enabled): the
+# archive_command in patroni.yml pushes WAL to the repository on mon-1 over SSH as
+# postgres@db -> pgbackrest@mon-1. mon-1 (roles/backups) authorizes this node's key and, in the
+# other direction, logs in as postgres@db to take backups.
+
+- name: Install pgBackRest
+  ansible.builtin.apt:
+    name: pgbackrest
+    install_recommends: false
+
+- name: pgBackRest directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+  loop: [/etc/pgbackrest, /var/log/pgbackrest, /var/spool/pgbackrest]
+
+- name: pgBackRest config (db side)
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/pgbackrest/pgbackrest.conf
+    owner: postgres
+    group: postgres
+    mode: "0640"
+
+# Key for postgres@db -> pgbackrest@mon-1 (WAL push). roles/backups reads the public key.
+- name: SSH key for the postgres user
+  ansible.builtin.user:
+    name: postgres
+    generate_ssh_key: true
+    ssh_key_type: ed25519
+    ssh_key_comment: "postgres@{{ inventory_hostname }} (pgBackRest WAL push)"
+
+- name: SSH client settings for the postgres user (accept mon-1's host key on first use)
+  ansible.builtin.copy:
+    dest: /var/lib/postgresql/.ssh/config
+    content: |
+      # Managed by Ansible (roles/postgres_patroni): pgBackRest repository host.
+      Host {{ backup_repo_ip }}
+        StrictHostKeyChecking accept-new
+        BatchMode yes
+        ConnectTimeout 10
+    owner: postgres
+    group: postgres
+    mode: "0600"
+
+# archive_mode needs a Postgres restart. Never done automatically (a restart on the primary is a
+# short write outage); this only tells the operator.
+- name: Check for settings waiting for a Postgres restart
+  ansible.builtin.uri:
+    url: "http://{{ private_ip }}:{{ patroni_restapi_port }}/patroni"
+    return_content: true
+  register: patroni_node_state
+  retries: 10
+  delay: 3
+  until: patroni_node_state.status == 200
+
+- name: Postgres restart needed to start WAL archiving
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} has settings waiting for a restart (archive_mode). Apply them once,
+      on any db node: restart each REPLICA with `patronictl restart {{ patroni_scope }} <replica> --force`,
+      then `patronictl switchover --force` (the old primary restarts as a replica; ~5 s of write
+      outage). Check `patronictl list` shows no "Pending restart".
+  when: patroni_node_state.json.pending_restart | default(false) | bool
