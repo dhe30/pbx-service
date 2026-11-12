@@ -57,6 +57,18 @@
   when: inventory_hostname in groups.get('pbx', [])
 
 # pgBackRest runs as postgres on the db nodes and as pgbackrest on mon-1 (roles/backups).
+# This role runs before roles/backups, so on a new mon-1 the user must exist before logrotate
+# accepts the `su pgbackrest pgbackrest` line. Same settings as roles/backups (which adds the
+# shell and SSH key).
+- name: pgbackrest user on mon-1 (needed by the rotation rule below)
+  ansible.builtin.user:
+    name: pgbackrest
+    system: true
+    home: "{{ backup_repo_path | default('/var/lib/pgbackrest') }}"
+  when:
+    - backup_enabled | bool
+    - inventory_hostname in groups.get('mon', [])
+
 - name: pgBackRest log rotation (db nodes and mon-1)
   ansible.builtin.template:
     src: logrotate-pgbackrest.j2
