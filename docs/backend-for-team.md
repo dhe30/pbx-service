@@ -4,7 +4,15 @@ From: Aaron (Track 3 backend). Updated 2026-11-12 (billing completed, API deploy
 Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-signup.md`. Code:
 `services/api/`. **Machine-readable reference: `GET /openapi.json`** (see "For everyone").
 
-<<<<<<< Updated upstream
+**What changed on 2026-11-12 (course adapter feedback, PR #24):**
+- `DELETE /extensions/:id` never answers `409` any more: whatever routed to the extension is
+  rerouted to its voicemail box (see "Extension endpoints"). Other deletes still `409 in_use`.
+- Forwarding (`forwardAlways`/`forwardBusy`/`forwardNoAnswer`) also accepts
+  `{ "type": "voicemail", "id": <mailboxId> }`.
+- Ring groups have `totalTimeoutSec` (overall timeout, `null` = none). Migration
+  `20261117000000_ring_group_total_timeout.sql`.
+- Call legs (`GET /calls`, `GET /calls/:callId`) include `cost` (what we pay), next to `charge`.
+
 **What changed on 2026-11-11 (support tickets, course spec §3):**
 - New: `POST /tickets`, `GET /tickets`, `GET /tickets/:id`, `POST /tickets/:id/close` (any
   logged-in user of the account), and the provider view `GET /operator/tickets`,
@@ -14,12 +22,11 @@ Details: `docs/backend-step1.md` to `docs/backend-step8.md`, `docs/backend-card-
 - New config `OPERATOR_TOKEN` (Vault `vault_operator_token`, at least 32 characters; the `api`
   role refuses to run without it). Locally optional: unset = operator routes refuse everyone.
 - New metrics `pbx_api_support_tickets_opened_total`, `pbx_api_support_tickets_closed_total`.
-=======
+
 **Account lifecycle (2026-11-15):** signup now creates an unattached login; authenticated users
 create a business separately, and owners can attach existing unassigned users as staff.
 `GET /me` returns `tenant: null` until the user belongs to a business. See
 [backend-step2.md](backend-step2.md).
->>>>>>> Stashed changes
 
 **What changed on 2026-11-12:**
 - New: `GET /billing/rates`, `GET /billing/rates/lookup` (per-minute price by prefix / number),
@@ -29,7 +36,8 @@ create a business separately, and owners can attach existing unassigned users as
   when a card is added (`POST /billing/card` with a replacement card now charges unpaid invoices;
   `402 payment_failed` if that fails). Config: `BILLING_SCHEDULER`, `BILLING_TICK_SEC`.
 - A released number can be re-routed until `paidUntil`, and stops blocking deletes after it.
-- `DELETE /extensions/:id` is `409 in_use` for a ring group's only member.
+- `DELETE /extensions/:id` is `409 in_use` for a ring group's only member (superseded the same
+  day: extension deletes no longer refuse, see the PR #24 notes above).
 - Migrations `20261112000000_account_items.sql`, `20261113000000_invoices.sql`,
   `20261114000000_purchase_incoming_cost.sql` (run `npm run db:migrate`).
 - Deployment: Ansible role `api`, `services/api/Dockerfile`; the edge HAProxy checks `/ready`.
@@ -254,15 +262,23 @@ price of calling one number, e.g. next to the dial pad or the forwarding field),
 | `GET /extensions`, `GET /extensions/:id` | any user | extension(s), by number; `sipPassword` only for owners |
 | `POST /extensions` | owner | `201 extension` (creates its SIP account and, unless `mailboxId` is given or `null`, a mailbox) |
 | `PUT /extensions/:id` | owner | `200 extension` (full replace; omitted `mailboxId` = keep) |
-| `DELETE /extensions/:id` | owner | `204`; `409 in_use` while something routes to it or it is a ring group's only member |
+| `DELETE /extensions/:id` | owner | `204`, never refused for being in use (references are rerouted, below) |
 
 extension = `{ id, number, name, sipUsername, sipPassword, mailboxId, ringTimeoutSec, forwardAlways,
 forwardBusy, forwardNoAnswer, externalNumbers, callerIdNumber, userId }`.
 - `number`: 1–8 digits, unique in the account (`409 number_taken`).
-- `forward*`: `null`, `{ "type": "extension", "id" }` or `{ "type": "external", "number": "+E.164" }`.
+- `forward*`: `null`, `{ "type": "extension", "id" }`, `{ "type": "voicemail", "id": <mailboxId> }` or
+  `{ "type": "external", "number": "+E.164" }`. `forwardBusy` / `forwardNoAnswer` = `null`: the
+  extension's own mailbox (`mailboxId`), or hang up if it has none.
 - `externalNumbers`: E.164 list, rung together with the extension's phones.
 - `callerIdNumber`: must be one of the account's numbers.
 - **Desk phones** register with `sipUsername` / `sipPassword` at the group domain (SRV records).
+- **Delete reroutes, in the same transaction:** numbers, IVR keys/timeout/invalid, business hours
+  and ring group no-answer destinations that pointed at the extension now point at its mailbox
+  (`{ "type": "voicemail", "id": <mailboxId> }`, the mailbox outlives the extension), or
+  `{ "type": "hangup" }` if it had none; other extensions' forwarding to it becomes `null`; it
+  leaves every ring group (a group without members goes straight to its no-answer destination).
+  Refusing failed the course adapter and simulated customers, who delete without unlinking first.
 
 ### Call configuration endpoints (available now, step 5)
 
@@ -271,7 +287,7 @@ Owner-only. Full field rules, defaults and an example: `docs/backend-step5.md`.
 | Resource | Routes | Object |
 |---|---|---|
 | Mailboxes | `GET/POST /mailboxes`, `GET/PUT/DELETE /mailboxes/:id` | `{ id, name, greetingMediaId, ownerUserId }` |
-| Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, noAnswerDestination, memberIds }` |
+| Ring groups | `GET/POST /ring-groups`, `GET/PUT/DELETE /ring-groups/:id` | `{ id, name, strategy, ringTimeoutSec, totalTimeoutSec, noAnswerDestination, memberIds }` (`ringTimeoutSec`: per member when sequential, whole group when `all`; `totalTimeoutSec`: overall cap, `null` = none) |
 | IVR menus | `GET/POST /ivr-menus`, `GET/PUT/DELETE /ivr-menus/:id` | `{ id, name, greetingMediaId, timeoutSec, maxRetries, config }` |
 | Number routing | `PUT /numbers/:id/route` `{ destination }` | `{ id, did, status, kind, destination, paidUntil, purchasedAt }` |
 | Business hours | `GET/POST /business-hours`, `GET/PUT/DELETE /business-hours/:id` | `{ id, name, schedule, openDestination, closedDestination, openNow }` |
@@ -326,8 +342,11 @@ extensions' mailboxes**. Details: `docs/backend-step7.md`.
 - **One row per leg**, not per call: an incoming call that also rang an external number has a
   second leg with the same `callId` and `parentId` set. Group by `callId` if the page shows calls.
 - leg = `{ id, callId, parentId, direction, fromNumber, toNumber, did, fromExtension, toExtension,
-  startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, charge, includedSec,
-  recordingUrl }`. `charge` is USD. Our cost isn't exposed.
+  startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, cost, charge, includedSec,
+  recordingUrl }`. `cost` (what we pay the vendor / DID provider) and `charge` (what the customer
+  pays) are USD; course spec §5 requires both. `fromExtension` / `toExtension` are extension
+  NUMBERS ("101"), not ids. `recordingUrl` appears once the recording is stored (seconds after the
+  call ends).
 - `number` matches digits anywhere in the from/to/our number; formatting is ignored, so
   `(201) 555` works. `from` is inclusive, `to` exclusive (ISO 8601).
 - **Paging:** pass `nextCursor` back as `cursor`; `null` means the last page. Don't build cursors
@@ -494,9 +513,12 @@ the page, keep it in `sessionStorage`).
   changed. Rebuild shared (`npm run build -w @pbx/shared`) and please recheck the on_timeout path
   on the phase-1 VM. Details: `docs/backend-step5.md`.
 - **The API refuses to delete what call routing still depends on** (409 `in_use`): a mailbox, ring
-  group, IVR menu, business hours schedule or extension that a Destination points at (IVR digits,
-  number routing, ring group no-answer, forwarding, extension mailboxes), and an extension that
-  is the only member of a ring group. Numbers released and past their paid period don't count.
+  group, IVR menu or business hours schedule that a Destination points at (IVR digits, number
+  routing, ring group no-answer, forwarding, extension mailboxes). Numbers released and past their
+  paid period don't count. **Extensions are the exception** (2026-11-12, PR #24): deleting one
+  rewrites what pointed at it to its mailbox (or `hangup`), clears forwarding to it and drops its
+  ring group memberships (`references.ts` `rerouteDestination`), so call routing never holds a
+  dangling extension id.
 - **Voicemails deleted with `*98` key 3:** the ARI app keeps deleting only the `voicemails` row
   (S13); the API's background ticker deletes the leftover `media` row and its object after an
   hour (`src/maintenance.ts`). Seeds or scripts that
@@ -630,7 +652,7 @@ before merging.
 | R19 | The API runs under systemd (role `api`, user `pbx-api`), built on the host like the ARI app; the Dockerfile is an alternative, not what Ansible deploys. Migrations stay in `db_schema` (dbmate on the current primary, before app nodes update) | Same deployment pattern as the other Node service | role `api`, `services/api/Dockerfile` |
 | R20 | **Revised 2026-11-11:** the toll-free incoming cost comes from the rates the Course Services tab publishes (US $0.025/min, UK $0.05/min), not from the API. Other countries: `null` = `call_pricing` default | Probed the clone: no DID group, SKU or offer has a per-minute field, and the tab says only setup and weekly prices are in the API. Update the table if the tab changes | `numbers/didww.ts` `TOLL_FREE_IN_COST_PER_MIN` |
 | R21 | Voicemail audio whose message was deleted by phone (`*98`) is deleted by the scheduler after a 1 h grace | S13 left it behind; the ARI app writes media + voicemail together, the grace is extra safety | `maintenance.ts` |
-| R22 | Deleting an extension that is a ring group's **only** member is `409 in_use`; memberships in groups with other members still cascade | A group with no members rings nobody | `routes/extensions.ts` |
+| R22 | ~~Deleting an extension that is a ring group's **only** member is `409 in_use`~~ **Superseded 2026-11-12 (PR #24):** extension deletes never refuse; references are rerouted to its mailbox and a group left without members goes straight to its no-answer destination | The course adapter's test deleted an extension an IVR still used and failed on the 409; simulated customers do the same | `routes/extensions.ts`, `references.ts`, ARI `router.ts` |
 | R23 | **Review:** dashboard passwords use argon2id with OWASP's minimum parameters (19 MiB, t=2, p=1) instead of the library default (64 MiB, t=3, p=4) | Measured ~160 vs ~28 hashes/s per process, p95 0.2 s vs 1.1 s at 32 concurrent (16-vCPU dev box). A weaker hash for latency under graded load; old hashes still verify | `passwords.ts`, `loadtest/api/argon2-bench.mjs` |
 
 ---
@@ -651,7 +673,8 @@ Everything backend-related that is still missing or undecided. Remove items as t
 - **Muhammad:** Postgres `max_connections` sizing for API + ARI apps + Kamailio pools. Needed
   before the Patroni setup.
 - **Team:** the plan contents and prices chosen in `services/api/src/billing/catalog.ts`
-  ($19 / 7 days, 2 extensions, 100 US minutes; see [backend-card-signup.md](backend-card-signup.md)).
+  ($8.50 / 7 days, 1 extension, 500 US minutes since the 2026-11-13 repricing, PR #35; see
+  [backend-card-signup.md](backend-card-signup.md)).
   Number prices must be checked against DIDWW's fees.
 - **Course staff:** the payment gateway's API base URL (assumed
   `https://stripe.cse356.compas.cs.stonybrook.edu`); and whether grader tools keep cookies (the API
