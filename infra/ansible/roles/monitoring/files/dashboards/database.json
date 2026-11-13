@@ -622,16 +622,43 @@
         "h": 9
       },
       "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "displayName",
+                "value": "seconds / s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queryid"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "string"
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "showHeader": true,
         "sortBy": [
           {
-            "displayName": "Value",
+            "displayName": "seconds / s",
             "desc": true
           }
         ]
@@ -646,6 +673,16 @@
           "expr": "topk(10, sum by (instance, queryid) (rate(pg_stat_statements_seconds_total[5m])))",
           "format": "table",
           "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
         }
       ]
     },

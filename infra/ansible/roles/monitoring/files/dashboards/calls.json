@@ -124,7 +124,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(pbx_calls_total{outcome=\"answered\"}[5m])) * 60",
+          "expr": "sum(rate(pbx_calls_total{outcome=\"answered\"}[5m])) * 60 or vector(0)",
           "legendFormat": ""
         }
       ]
@@ -185,7 +185,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(pbx_calls_total{outcome=\"failed\"}[5m])) * 60",
+          "expr": "sum(rate(pbx_calls_total{outcome=\"failed\"}[5m])) * 60 or vector(0)",
           "legendFormat": ""
         }
       ]
