@@ -9,21 +9,28 @@
 // its ceiling to cover that; the spec leaves toll-free pricing to us (within the ceilings).
 // Per-minute prices are not here: they live in the call_pricing table (what the call path
 // charges), and GET /billing/prices reads them from there.
+//
+// REPRICED (2026-11-13): the course market compares providers' public price lists before signing
+// up, and with the old prices ($19 plan with 2 extensions + 100 min, $0.05/min US) no simulated
+// customer signed up. The new prices undercut a live competitor (plan $9 / 1 ext / 500 min,
+// $0.03/min US) on every item except toll-free numbers, where cost leaves no room. Margins, with
+// gateway fees of 2.9% + $0.30 per charge: plan $8.50 nets ~$7.95; its 500 US minutes cost
+// $3.00 at the US vendor's $0.006/min (up to $7.50 if every minute went to Alaska at $0.015).
 
 export const PLAN = {
   name: 'Business',
   /** Plan price per period. Ceiling: $11.50 per included extension. */
-  priceCents: 1900,
-  includedExtensions: 2,
+  priceCents: 850,
+  includedExtensions: 1,
   /** US outgoing minutes included per period, shared by the account. */
-  includedUsMinutes: 100,
+  includedUsMinutes: 500,
 } as const;
 
 export const PRICES = {
   /** Each additional extension, per period. Ceiling $11.50. */
-  extensionCents: 900,
-  /** Ceiling $3.25. */
-  localNumberCents: 275,
+  extensionCents: 850,
+  /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
+  localNumberCents: 250,
   /**
    * Ceiling $3.50, and we charge it: the DID provider takes 2.00 setup + 3.00 per 7-day period for
    * a toll-free number (verify-backlog V-D15, 2026-11-11), so 3.00 lost the setup fee and earned
@@ -31,9 +38,9 @@ export const PRICES = {
    */
   tollFreeNumberCents: 350,
   /** International calling add-on. Ceiling $4.60. */
-  intlCallingCents: 390,
+  intlCallingCents: 325,
   /** Call recording add-on. Ceiling $4.60. */
-  recordingCents: 390,
+  recordingCents: 350,
 } as const;
 
 /** Course ceilings in cents (spec §2), per billing period. */

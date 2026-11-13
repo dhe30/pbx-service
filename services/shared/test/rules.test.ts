@@ -95,11 +95,17 @@ describe('§2 Prices stay under the ceilings', () => {
     expect(DEFAULT_CALL_PRICING.usPerMin).toBeLessThanOrEqual(PRICE_CEILINGS.usPerMin);
     expect(DEFAULT_CALL_PRICING.tollFreeInPerMin).toBeLessThanOrEqual(PRICE_CEILINGS.tollFreeInPerMin);
   });
-  it('international price <= 6x vendor rate (at least $0.06), for any vendor rate', () => {
+  it('international price <= 6x vendor rate (at least $0.06), and never below cost, for any vendor rate', () => {
     for (const vendor of [0, 0.001, 0.005, 0.01, 0.0123, 0.05, 0.3, 1.7]) {
       expect(intlRetailPerMin(vendor, DEFAULT_CALL_PRICING)).toBeLessThanOrEqual(intlCeilingPerMin(vendor) + 1e-9);
-      expect(intlRetailPerMin(vendor, DEFAULT_CALL_PRICING)).toBeGreaterThanOrEqual(0.06);
+      expect(intlRetailPerMin(vendor, DEFAULT_CALL_PRICING)).toBeGreaterThanOrEqual(DEFAULT_CALL_PRICING.intlMinPerMin);
+      expect(intlRetailPerMin(vendor, DEFAULT_CALL_PRICING)).toBeGreaterThan(vendor);
     }
+  });
+  it('US and incoming toll-free prices stay above what they cost us', () => {
+    const usVendorMaxPerMin = 0.015; // us-vendor-rates.csv, 2026-11-13: highest prefix (Alaska)
+    expect(DEFAULT_CALL_PRICING.usPerMin).toBeGreaterThan(usVendorMaxPerMin);
+    expect(DEFAULT_CALL_PRICING.tollFreeInPerMin).toBeGreaterThan(DEFAULT_CALL_PRICING.tollFreeInCostPerMin);
   });
 });
 

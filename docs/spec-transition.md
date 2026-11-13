@@ -168,7 +168,7 @@ Change any of these by editing the code they point at. Each is small and local.
 | S12 | **`*98` identifies the mailbox by the calling extension; no PIN** | The phone is already digest-authenticated as that extension |
 | S13 | **Voicemail "saved" = `heard=true`; delete = row deleted** | Matches the web inbox flag; the object stays in the store (cleanup is a backend job) |
 | S14 | **US vs international by NANP area code**: Canada and Caribbean → international; US territories and toll-free → US | Spec: "International vendor: everything else, including non-US +1 countries". [VERIFY] against the imported US rate deck |
-| S15 | **Default prices** in `call_pricing`: US $0.05/min, incoming toll-free $0.055, international 5× vendor rate (min $0.06). DB CHECKs enforce the ceilings | Under the spec ceilings with margin. Business can change them; the CHECKs stop an accidental overcharge ("customers leave over overcharges") |
+| S15 | **Default prices** in `call_pricing`: US $0.025/min, incoming toll-free $0.04, international 2.5× vendor rate (min $0.02); repriced 2026-11-13 (was $0.05, $0.055, 5×, min $0.06) to compete in the course market. DB CHECKs enforce the ceilings | Under the spec ceilings with margin. Business can change them; the CHECKs stop an accidental overcharge ("customers leave over overcharges") |
 | S16 | **Vendor Request-URI is `+E.164`** (`vendor_number_format`) | Unknown vendor expectation; one variable to flip |
 
 ## 4. Load bottlenecks: status

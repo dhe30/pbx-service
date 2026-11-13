@@ -89,7 +89,7 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     expect(t.cardSetup.clientSecret).toBe(`${t.cardSetup.setupIntentId}_secret`);
 
     const before = (await t.call('GET', '/billing')).json();
-    expect(before).toMatchObject({ card: null, planPaidThrough: null, extensions: { used: 0, allowed: 2 } });
+    expect(before).toMatchObject({ card: null, planPaidThrough: null, extensions: { used: 0, allowed: PLAN.includedExtensions } });
     const blocked = await t.call('POST', '/extensions', extension(1));
     expect(blocked.statusCode).toBe(402);
     expect(blocked.json().error).toBe('payment_required');
@@ -120,13 +120,13 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     expect((await t.call('POST', '/billing/card', { setupIntentId: t.cardSetup.setupIntentId })).statusCode).toBe(200);
     expect(stripe.charges.length).toBe(charges + 1);
 
-    // Plan includes 2 extensions.
-    expect((await t.call('POST', '/extensions', extension(1))).statusCode).toBe(201);
-    expect((await t.call('POST', '/extensions', extension(2))).statusCode).toBe(201);
-    const third = await t.call('POST', '/extensions', extension(3));
-    expect(third.statusCode).toBe(409);
-    expect(third.json().error).toBe('extension_limit');
-    expect((await t.call('GET', '/billing')).json().extensions).toEqual({ used: 2, allowed: 2 });
+    // The plan's included extensions can be created; one more needs a purchased extension.
+    const n = PLAN.includedExtensions;
+    for (let i = 1; i <= n; i++) expect((await t.call('POST', '/extensions', extension(i))).statusCode).toBe(201);
+    const over = await t.call('POST', '/extensions', extension(n + 1));
+    expect(over.statusCode).toBe(409);
+    expect(over.json().error).toBe('extension_limit');
+    expect((await t.call('GET', '/billing')).json().extensions).toEqual({ used: n, allowed: n });
 
     // Replacing the card later: new setup, no charge (the plan is paid).
     const setup = (await t.call('POST', '/billing/setup-intent')).json();
@@ -196,7 +196,7 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     const [p] = await sql`select us_per_min from call_pricing`;
     expect(res.json()).toMatchObject({
       currency: 'usd',
-      plan: { priceCents: PLAN.priceCents, includedExtensions: 2 },
+      plan: { priceCents: PLAN.priceCents, includedExtensions: PLAN.includedExtensions },
       extensionCents: PRICES.extensionCents,
       perMinute: { usPerMin: Number(p!.usPerMin) },
     });
