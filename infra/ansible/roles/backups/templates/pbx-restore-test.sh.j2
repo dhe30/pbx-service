@@ -41,6 +41,9 @@ if as_repo pgbackrest --config="$CONF" --stanza="$STANZA" restore; then
   # Our own access rules: trust on the private socket only (the restored pg_hba.conf allows peer
   # logins, and there is no "pgbackrest" role in the database).
   echo "local all all trust" >"$DIR/hba.conf" && chown pgbackrest:pgbackrest "$DIR/hba.conf"
+  # The backup is copied from a Patroni replica: never come up as a standby (it would wait for
+  # more WAL forever). recovery.signal (written by restore) replays the archive, then opens.
+  rm -f "$DIR/data/standby.signal"
   log "starting a throwaway Postgres (replays WAL, can take a while)"
   # Command-line settings beat the restored postgresql.conf (written by Patroni for a db node):
   # no network, no archiving, no streaming from the real primary, small memory.
@@ -49,6 +52,18 @@ if as_repo pgbackrest --config="$CONF" --stanza="$STANZA" restore; then
       -c hba_file=$DIR/hba.conf -c archive_mode=off -c hot_standby=off \
       -c primary_conninfo='' -c primary_slot_name='' -c cluster_name=restore-test \
       -c shared_buffers=128MB -c effective_cache_size=256MB -c logging_collector=off"; then
+    # pg_ctl -w returns once recovery has started; queries only work after the WAL replay
+    # ends and the server opens (pg_isready exit 0). Give up after 30 min or if it stops.
+    waited=0
+    until as_repo "$BIN/pg_isready" -q -h "$DIR/run" -p "$PORT"; do
+      if [ ! -f "$DIR/data/postmaster.pid" ] || [ "$waited" -ge 1800 ]; then
+        log "the restored Postgres did not open after ${waited} s; last lines of its log:"
+        tail -n 30 "$DIR/postgres.log"
+        break
+      fi
+      sleep 2; waited=$((waited + 2))
+    done
+    as_repo "$BIN/pg_isready" -q -h "$DIR/run" -p "$PORT" && log "open after ${waited} s of WAL replay"
     q() { as_repo "$BIN/psql" -X -A -t -h "$DIR/run" -p "$PORT" -U postgres -d "$DB" -c "$1"; }
     tables=$(q "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'") || tables=0
     tenants=$(q "SELECT CASE WHEN to_regclass('public.tenants') IS NULL THEN -1 ELSE (SELECT count(*) FROM public.tenants) END") || tenants=-1
