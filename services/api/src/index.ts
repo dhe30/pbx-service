@@ -80,6 +80,14 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+  // A bug that escapes every handler: log it as one JSON line like every other API log and exit,
+  // as Node would anyway; systemd restarts us and the other app node keeps serving meanwhile.
+  const crash = (kind: string) => (err: unknown) => {
+    app.log.fatal({ err }, `${kind}; exiting`);
+    process.exit(1);
+  };
+  process.on('uncaughtException', crash('uncaught exception'));
+  process.on('unhandledRejection', crash('unhandled promise rejection'));
 
   await app.listen({ host: cfg.HOST, port: cfg.PORT });
 }

@@ -171,7 +171,12 @@ export async function ringTargets(
         continue;
       }
       outcomes.push(outcomeFromCause(ev.cause));
-      if (leg.target.kind === 'external') metrics.vendorLegFailures.inc({ cause: String(ev.cause) });
+      if (leg.target.kind === 'external') {
+        metrics.vendorLegFailures.inc({ cause: String(ev.cause) });
+        // A PSTN vendor answers 402 when our prepaid balance with it is $0; Asterisk reports that as
+        // cause 21. Warn so it can be found in the logs (cause 21 is also an ordinary rejection).
+        if (ev.cause === 21) s.log.warn({ target: leg.target, trunk: trunks[leg.trunkIdx] }, 'vendor rejected the call (cause 21; 402 = vendor balance empty)');
+      }
     }
     return { winner: null, outcome: combineOutcomes(outcomes, false) };
   } finally {
