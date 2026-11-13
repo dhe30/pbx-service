@@ -64,6 +64,14 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', () => shutdown(0, true));
   process.on('SIGINT', () => shutdown(0, false));
+  // A bug that escapes every handler: log it as one JSON line like every other log and exit, as
+  // Node would anyway; systemd restarts us and Kamailio sends new calls to the other pbx node.
+  const crash = (kind: string) => (err: unknown) => {
+    log.fatal({ err, activeCalls: app.activeCalls }, `${kind}; exiting`);
+    process.exit(1);
+  };
+  process.on('uncaughtException', crash('uncaught exception'));
+  process.on('unhandledRejection', crash('unhandled promise rejection'));
 
   // Buffer events until orphan cleanup is done, so we never hang up a brand-new call by mistake.
   let ready = false;

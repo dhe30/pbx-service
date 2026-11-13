@@ -270,7 +270,7 @@ async function chargeInvoice(d: BillingDeps, tx: Db, inv: InvoiceToCharge, now: 
       update invoices set status = 'failed', attempts = ${attempt}, last_error = ${error},
                           next_attempt_at = ${new Date(now.getTime() + delay * 1000)}
        where id = ${inv.id}`;
-    d.log.info({ tenantId: inv.tenantId, invoiceId: inv.id, attempt, error }, 'invoice charge failed');
+    d.log.warn({ tenantId: inv.tenantId, invoiceId: inv.id, attempt, error }, 'invoice charge failed');
     return false;
   }
   await tx`
