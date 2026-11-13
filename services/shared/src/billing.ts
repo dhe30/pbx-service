@@ -43,11 +43,13 @@ export interface CallPricing {
   tollFreeInCostPerMin: number;
 }
 
+// Mirrors the live call_pricing row (migration 20261118000000_competitive_prices.sql).
+// Costs: US vendor $0.006/min (Alaska $0.015), incoming toll-free $0.025/min.
 export const DEFAULT_CALL_PRICING: CallPricing = {
-  usPerMin: 0.05,
-  tollFreeInPerMin: 0.055,
-  intlMultiplier: 5,
-  intlMinPerMin: 0.06,
+  usPerMin: 0.025,
+  tollFreeInPerMin: 0.04,
+  intlMultiplier: 2.5,
+  intlMinPerMin: 0.02,
   tollFreeInCostPerMin: 0.025,
 };
 

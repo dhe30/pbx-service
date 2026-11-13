@@ -67,10 +67,13 @@ Stripe itself. It never takes the browser's word for it.
 ## Decisions taken (review these; billing-flows §8)
 
 1. **Plan and prices** (§8.6, §8.7), in `catalog.ts`:
-   - plan "Business": $19.00 per 7 days, 2 extensions, 100 US minutes;
-   - extra extension $9.00; local number $2.75; toll-free $3.50 (raised from $3.00 on 2026-11-11:
+   - plan "Business": $8.50 per 7 days, 1 extension, 500 US minutes;
+   - extra extension $8.50; local number $2.50; toll-free $3.50 (raised from $3.00 on 2026-11-11:
      the provider charges 2.00 setup + 3.00 per period, verify-backlog V-D15);
-   - international calling $3.90; recording $3.90.
+   - international calling $3.25; recording $3.50.
+   - Repriced 2026-11-13 (was $19 / 2 ext / 100 min, extension $9, local $2.75, add-ons $3.90):
+     the course market compares public price lists and nobody signed up at the old prices.
+     Per-minute prices: migration `20261118000000_competitive_prices.sql`.
 
    All are under the ceilings (a test checks). The number prices still need checking against
    DIDWW's setup and 7-day renewal fees.

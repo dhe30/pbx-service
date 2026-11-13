@@ -3,6 +3,7 @@ import type { Sql } from '@pbx/shared';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ACCESS_COOKIE, REFRESH_COOKIE, authenticate, requireRole } from '../src/auth.js';
+import { PLAN } from '../src/billing/catalog.js';
 import { build, connectTestDb } from './helpers.js';
 
 /** Value of a Set-Cookie from an inject() response. */
@@ -202,7 +203,11 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     expect(user).toEqual({ tenantId: body.tenantId, role: 'owner' });
     const [settings] = await sql`
       select record_calls, included_extensions, included_us_minutes from tenant_settings where tenant_id = ${body.tenantId}`;
-    expect(settings).toEqual({ recordCalls: false, includedExtensions: 2, includedUsMinutes: 100 });
+    expect(settings).toEqual({
+      recordCalls: false,
+      includedExtensions: PLAN.includedExtensions,
+      includedUsMinutes: PLAN.includedUsMinutes,
+    });
     const [tenant] = await sql`select timezone, status from tenants where id = ${body.tenantId}`;
     expect(tenant).toEqual({ timezone: 'America/Chicago', status: 'active' });
 

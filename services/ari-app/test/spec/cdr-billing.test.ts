@@ -66,7 +66,7 @@ describe('§5 Rating', () => {
     await w.drain();
     const [r] = await a.cdrs();
     expect(r!.billableSec).toBe(96); // 95 s -> 30 + 11 x 6
-    expect(Number(r!.charge)).toBeCloseTo((96 * 0.05) / 60, 6);
+    expect(Number(r!.charge)).toBeCloseTo((96 * DEFAULT_CALL_PRICING.usPerMin) / 60, 6);
     expect(Number(r!.cost)).toBeCloseTo((95 * 0.012) / 60, 6); // vendors bill per second answered
   });
 
@@ -100,7 +100,7 @@ describe('§5 Rating', () => {
     await w.drain();
     const [r] = await a.cdrs();
     expect(r!.includedSec).toBe(60);
-    expect(Number(r!.charge)).toBeCloseTo((36 * 0.05) / 60, 6);
+    expect(Number(r!.charge)).toBeCloseTo((36 * DEFAULT_CALL_PRICING.usPerMin) / 60, 6);
   });
 
   it('international: always per minute at vendor rate x multiplier (>= floor), never above the ceiling', async () => {
