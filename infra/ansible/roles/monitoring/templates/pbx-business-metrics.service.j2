@@ -1,0 +1,7 @@
+# Managed by Ansible (roles/monitoring). Started every minute by pbx-business-metrics.timer.
+[Unit]
+Description=Support-ticket and DID-balance checks for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pbx-business-metrics

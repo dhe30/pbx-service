@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/backups).
+[Unit]
+Description=Weekly restore test of the newest Postgres backup
+
+[Timer]
+OnCalendar={{ backup_restore_test_schedule }}
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

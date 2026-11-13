@@ -1,0 +1,53 @@
+#!/bin/sh
+# Postgres backup (managed by Ansible, roles/backups). Run by pbx-backup.timer, or by hand:
+#   pbx-backup            full backup (what the timer does)
+#   pbx-backup diff       differential backup (changes since the last full one)
+# Afterwards it writes the result for Prometheus (node_exporter textfile collector):
+# pbx_backup_run_success, pbx_backup_last_success_timestamp_seconds, ... (alerts: BackupFailed,
+# BackupTooOld in roles/monitoring).
+set -u
+STANZA={{ pgbackrest_stanza }}
+TYPE=${1:-full}
+PROM=/var/lib/prometheus/node-exporter/pbx_backup.prom
+
+as_repo() { runuser -u pgbackrest -- "$@"; }
+
+start=$(date +%s)
+if as_repo pgbackrest --stanza="$STANZA" --type="$TYPE" backup; then ok=1; else ok=0; fi
+end=$(date +%s)
+
+# The newest backup in the repository (whatever run made it).
+info=$(as_repo pgbackrest --stanza="$STANZA" --output=json info 2>/dev/null || echo '[]')
+last=$(printf '%s' "$info" | jq -c '[.[0].backup[]? | select(.error != true)] | last // empty')
+count=$(printf '%s' "$info" | jq '[.[0].backup[]?] | length')
+
+tmp=$(mktemp "$PROM.XXXXXX")
+{
+  echo "# HELP pbx_backup_run_success 1 if the last backup run succeeded, 0 if it failed."
+  echo "# TYPE pbx_backup_run_success gauge"
+  echo "pbx_backup_run_success $ok"
+  echo "# HELP pbx_backup_run_timestamp_seconds When the last backup run finished."
+  echo "# TYPE pbx_backup_run_timestamp_seconds gauge"
+  echo "pbx_backup_run_timestamp_seconds $end"
+  echo "# HELP pbx_backup_run_duration_seconds How long the last backup run took."
+  echo "# TYPE pbx_backup_run_duration_seconds gauge"
+  echo "pbx_backup_run_duration_seconds $((end - start))"
+  echo "# HELP pbx_backup_count Backups in the repository."
+  echo "# TYPE pbx_backup_count gauge"
+  echo "pbx_backup_count ${count:-0}"
+  if [ -n "$last" ]; then
+    echo "# HELP pbx_backup_last_success_timestamp_seconds End time of the newest good backup."
+    echo "# TYPE pbx_backup_last_success_timestamp_seconds gauge"
+    echo "pbx_backup_last_success_timestamp_seconds $(printf '%s' "$last" | jq '.timestamp.stop')"
+    echo "# HELP pbx_backup_last_size_bytes Size of the newest backup in the repository (compressed)."
+    echo "# TYPE pbx_backup_last_size_bytes gauge"
+    echo "pbx_backup_last_size_bytes $(printf '%s' "$last" | jq '.info.repository.size')"
+    echo "# HELP pbx_backup_database_size_bytes Size of the database the newest backup was taken from."
+    echo "# TYPE pbx_backup_database_size_bytes gauge"
+    echo "pbx_backup_database_size_bytes $(printf '%s' "$last" | jq '.info.size')"
+  fi
+} >"$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$PROM"
+
+[ "$ok" = 1 ]

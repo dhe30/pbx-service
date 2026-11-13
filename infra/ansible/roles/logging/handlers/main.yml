@@ -1,0 +1,12 @@
+---
+# Restarting journald is safe: services keep their connection to it (the socket stays open).
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+
+- name: Restart logrotate timer
+  ansible.builtin.systemd:
+    name: logrotate.timer
+    state: restarted
+    daemon_reload: true

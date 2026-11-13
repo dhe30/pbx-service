@@ -1,0 +1,90 @@
+---
+# Logs on every VM (Track 4): persistent, size-capped journal; size-capped, hourly-checked
+# logrotate; rotation for the log files nothing else rotates (Asterisk, pgBackRest).
+
+# ---- journald ------------------------------------------------------------------------------
+- name: journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: journald limits (persistent, size cap, rate limit)
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/pbx.conf
+    mode: "0644"
+  notify: Restart journald
+
+# ---- logrotate -----------------------------------------------------------------------------
+- name: Install logrotate
+  ansible.builtin.apt:
+    name: logrotate
+
+# A global default in logrotate.conf applies to every file in /etc/logrotate.d that doesn't set
+# its own size limit (e.g. rsyslog's /var/log/syslog, which is otherwise rotated only daily).
+- name: Global size limit for rotated log files
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.conf
+    regexp: '^maxsize '
+    line: "maxsize {{ logrotate_max_size }}"
+    insertbefore: '^include /etc/logrotate.d'
+
+# The size limit only helps if logrotate looks often enough: hourly instead of daily.
+- name: logrotate timer drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/logrotate.timer.d
+    state: directory
+    mode: "0755"
+
+- name: Run logrotate hourly
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/logrotate.timer.d/hourly.conf
+    content: |
+      # Managed by Ansible (roles/logging): check sizes every hour (maxsize in logrotate.conf).
+      [Timer]
+      OnCalendar=
+      OnCalendar=hourly
+      AccuracySec=1m
+    mode: "0644"
+  notify: Restart logrotate timer
+
+- name: Asterisk log rotation (pbx nodes)
+  ansible.builtin.template:
+    src: logrotate-asterisk.j2
+    dest: /etc/logrotate.d/asterisk
+    mode: "0644"
+  when: inventory_hostname in groups.get('pbx', [])
+
+# pgBackRest runs as postgres on the db nodes and as pgbackrest on mon-1 (roles/backups).
+# This role runs before roles/backups, so on a new mon-1 the user must exist before logrotate
+# accepts the `su pgbackrest pgbackrest` line. Same settings as roles/backups (which adds the
+# shell and SSH key).
+- name: pgbackrest user on mon-1 (needed by the rotation rule below)
+  ansible.builtin.user:
+    name: pgbackrest
+    system: true
+    home: "{{ backup_repo_path | default('/var/lib/pgbackrest') }}"
+  when:
+    - backup_enabled | bool
+    - inventory_hostname in groups.get('mon', [])
+
+- name: pgBackRest log rotation (db nodes and mon-1)
+  ansible.builtin.template:
+    src: logrotate-pgbackrest.j2
+    dest: /etc/logrotate.d/pgbackrest
+    mode: "0644"
+  vars:
+    pgbackrest_log_owner: "{{ 'postgres' if inventory_hostname in groups.get('db', []) else 'pgbackrest' }}"
+  when:
+    - backup_enabled | bool
+    - inventory_hostname in groups.get('db', []) or inventory_hostname in groups.get('mon', [])
+
+- name: Apply journald / timer changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Check the logrotate configuration
+  ansible.builtin.command: logrotate --debug /etc/logrotate.conf
+  register: logrotate_check
+  changed_when: false
+  failed_when: logrotate_check.rc != 0 or 'error:' in logrotate_check.stderr

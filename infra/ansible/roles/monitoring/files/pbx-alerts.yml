@@ -161,16 +161,232 @@ groups:
         annotations:
           summary: etcd has lost quorum (half or more members down)
 
+      # postgres_exporter can't query its local Postgres (down, or still starting after a deploy).
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: Postgres is not answering"
+          description: "On the primary this is a failover in progress (see PatroniNoPrimary); on a replica, `patronictl list` on any db node."
+
+      # New connections are refused at max_connections (API, ARI app, Kamailio all reconnect then).
+      - alert: PostgresConnectionsHigh
+        expr: sum by (instance) (pg_stat_activity_count) / on (instance) max by (instance) (pg_settings_max_connections) > 0.80
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanizePercentage }} of Postgres connections in use"
+
+      - alert: PostgresDeadlocks
+        expr: increase(pg_stat_database_deadlocks{datname!~"template.*|postgres"}[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanize }} deadlock(s) in {{ $labels.datname }} in 10 min"
+
+      # A transaction open for minutes holds locks and blocks vacuum (tables bloat, queries slow down).
+      - alert: PostgresLongTransaction
+        expr: pg_stat_activity_max_tx_duration{datname!~"template.*|postgres"} > 300
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: a transaction in {{ $labels.datname }} has been open for {{ $value | humanizeDuration }}"
+          description: "Find it: SELECT pid, state, xact_start, query FROM pg_stat_activity ORDER BY xact_start;"
+
+  # ---- Calls (ARI app on the pbx nodes, read through the metrics gateway) ---------------------
+  - name: calls
+    rules:
+      # The app lost its connection to Asterisk: new calls to this pbx node get 503 and Kamailio
+      # sends them to the other node, so capacity is halved until it reconnects.
+      - alert: AriDisconnected
+        expr: pbx_ari_connected == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: call-control app is not connected to Asterisk"
+          description: Calls to this node fail over to the other pbx node. Check `journalctl -u pbx-ari-app` and Asterisk.
+
+      # CDRs are written in batches from a local spool; a growing backlog means Postgres writes fail
+      # or are too slow (call history and billing fall behind; nothing is lost while the disk holds).
+      - alert: CdrBacklogGrowing
+        expr: pbx_cdr_backlog > 500
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value }} call records waiting to be written to the database"
+
+      - alert: CdrWritesFailing
+        expr: increase(pbx_cdr_write_errors_total[10m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: call record inserts are failing"
+          description: Check the database (PatroniNoPrimary?) and the ARI app log.
+
+      # Recordings/voicemail wait in the local spool until the object store accepts them.
+      - alert: UploadBacklogGrowing
+        expr: pbx_upload_backlog > 100
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value }} recordings waiting for upload to the object store"
+
+      # Q.850 cause 21 = call rejected; a PSTN vendor with a $0 prepaid balance answers 402, which
+      # arrives as 21. Many in a row usually means the vendor balance ran out.
+      - alert: VendorCallsRejected
+        expr: sum by (instance) (increase(pbx_vendor_leg_failures_total{cause="21"}[10m])) >= 5
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanize }} outgoing calls rejected by a PSTN vendor in 10 min"
+          description: Probably a vendor balance at $0 (402 Payment Required). Top up on the Course Services tab.
+
+  # ---- Object store (Garage on the db nodes) ------------------------------------------------------
+  # [VERIFY] metric names against http://<db node>:3903/metrics on the first deployment.
+  - name: storage
+    rules:
+      # Garage can't serve reads/writes (fewer than 2 of 3 copies reachable).
+      - alert: GarageUnavailable
+        expr: cluster_available == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: object store unavailable (recordings, voicemail, greetings)"
+
+      # Still serving, but a node is missing: one more failure makes it unavailable.
+      - alert: GarageDegraded
+        expr: cluster_healthy == 0 and cluster_available == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: object store degraded (a Garage node is down)"
+
+  # ---- Backups (pgBackRest on mon-1, results written by pbx-backup / pbx-restore-test) --------
+  - name: backups
+    rules:
+      - alert: BackupFailed
+        expr: pbx_backup_run_success == 0
+        labels: { severity: warning }
+        annotations:
+          summary: The last Postgres backup run failed
+          description: "On mon-1: journalctl -u pbx-backup, /var/log/pgbackrest/. Retry with `systemctl start pbx-backup`."
+
+      # Nightly backups: older than 26 h means at least one night was missed.
+      - alert: BackupTooOld
+        expr: time() - pbx_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Newest Postgres backup is {{ $value | humanizeDuration }} old"
+
+      - alert: RestoreTestFailed
+        expr: pbx_restore_test_success == 0
+        labels: { severity: warning }
+        annotations:
+          summary: The weekly restore test could not bring the backup up
+          description: "On mon-1: journalctl -u pbx-restore-test. Until fixed, assume the backups can't be restored."
+
+      # The primary can't hand WAL to pgBackRest (mon-1 down, SSH key, full repository). Unshipped
+      # WAL waits on the db node; beyond 4 GiB pgBackRest drops it and the backups get a gap.
+      - alert: WalArchivingFailing
+        expr: increase(pg_stat_archiver_failed_count[15m]) > 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: Postgres WAL archiving to the backup repository is failing"
+          description: "On the db node: /var/log/pgbackrest/, `sudo -u postgres pgbackrest --stanza=pbx check`."
+
   # ---- Edge ----------------------------------------------------------------------------------------
   - name: edge
     rules:
-      # e.g. every API node down: the website and API return 503.
+      # Edge HAProxy (e.g. every API node down) and the local DB/S3 proxy on every client node.
       - alert: HAProxyBackendDown
         expr: haproxy_backend_active_servers == 0
         for: 1m
         labels: { severity: critical }
         annotations:
-          summary: "{{ $labels.instance }}: HAProxy backend {{ $labels.proxy }} has no healthy servers"
+          summary: "{{ $labels.instance }}: {{ $labels.job }} backend {{ $labels.proxy }} has no healthy servers"
+          description: >-
+            edge_haproxy: website/API/WebSocket backends. dbproxy: pg_primary = no database primary
+            reachable from this node, s3 = no Garage node reachable.
+
+  # ---- Edges from outside (blackbox exporter on mon-1) ------------------------------------------
+  - name: probes
+    rules:
+      # Customers whose DNS/SRV lands on this edge see errors (API/website) or phones can't connect
+      # over TLS. probe_api also fails when the API can't reach the database or object store.
+      - alert: EdgeProbeFailing
+        expr: probe_success == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} is failing from mon-1"
+          description: >-
+            probe_api = GET /ready through the edge (API + database + object store),
+            probe_web = the website, probe_sip_tls = TLS handshake on the SIP TLS port.
+
+      - alert: EdgeProbeSlow
+        expr: probe_duration_seconds{job=~"probe_api|probe_web"} > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} takes {{ $value | humanize }}s from mon-1"
+
+      # Let's Encrypt renews 30 days before expiry, so 14 days left means renewal is failing.
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} certificate expires in {{ $value | humanize }} days"
+          description: "Renewal is failing. On the ACME edge: certbot renew --dry-run, /var/log/letsencrypt/letsencrypt.log."
+
+      - alert: CertificateExpiringVerySoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 3
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.job }} certificate expires in {{ $value | humanize }} days"
+          description: Browsers, the course's tools and TLS phones will refuse the connection when it expires.
+
+  # ---- Customers and course services (pbx-business-metrics on mon-1) ------------------------------
+  - name: business
+    rules:
+      # Simulated customers open a ticket when something fails for them, well before they leave.
+      - alert: NewSupportTicket
+        expr: pbx_support_tickets_opened_last_15m > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} new support ticket(s) in the last 15 minutes"
+          description: Something is failing for customers. Read them on the provider ticket page (GET /operator/tickets) and check the other alerts.
+
+      - alert: SupportTicketsOpenLong
+        expr: time() - pbx_support_tickets_oldest_open_timestamp_seconds > 6 * 3600
+        labels: { severity: warning }
+        annotations:
+          summary: "A support ticket has been open for {{ $value | humanizeDuration }}"
+
+      # The DID provider charges a weekly fee per number and per-second fees on toll-free calls from
+      # this prepaid balance; at $0 it stops delivering incoming calls. Top up on the Course Services tab.
+      - alert: DidBalanceLow
+        expr: pbx_did_balance_usd < 10
+        labels: { severity: warning }
+        annotations:
+          summary: "DID provider balance is ${{ $value | humanize }}"
+          description: At $0 incoming calls stop. Top up from the bank on the Course Services tab.
+
+      - alert: DidBalanceCritical
+        expr: pbx_did_balance_usd < 3
+        labels: { severity: critical }
+        annotations:
+          summary: "DID provider balance is ${{ $value | humanize }}: incoming calls stop at $0"
+
+      - alert: BusinessCheckFailing
+        expr: pbx_support_tickets_check_success == 0 or pbx_did_balance_check_success == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "mon-1 can't read the support tickets or the DID balance"
+          description: "On mon-1: systemctl status pbx-business-metrics; run /usr/local/bin/pbx-business-metrics by hand."
 
   # ---- Monitoring itself ---------------------------------------------------------------------------
   - name: monitoring

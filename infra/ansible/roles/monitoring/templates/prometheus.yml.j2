@@ -17,6 +17,11 @@
 {% set edge_hosts = groups.get('edge', []) %}
 {% set app_hosts = groups.get('app', []) %}
 {% set rtpengine_hosts = groups.get('media') or edge_hosts %}
+{# Hosts running the local DB proxy + its metrics gateway (roles/db_local_proxy). A host that is
+   also a db node (all-in-one VM) has no local proxy. #}
+{% set proxy_hosts = groups.get('db_clients', []) | reject('in', db_hosts) | list %}
+{% set gateway_pbx_hosts = groups.get('pbx', []) | select('in', proxy_hosts) | list %}
+{% set gateway_port = dbproxy_metrics_port | default(9200) %}
 global:
   scrape_interval: {{ prometheus_scrape_interval }}
   evaluation_interval: {{ prometheus_scrape_interval }}
@@ -49,6 +54,11 @@ scrape_configs:
 
   - job_name: etcd
 {{ scrape(db_hosts, etcd_client_port | default(2379)) }}
+
+  # Postgres internals (roles/postgres_exporter) on every db node: connections, transactions,
+  # cache hits, locks, long transactions, and the most expensive queries (pg_stat_statements).
+  - job_name: postgres
+{{ scrape(db_hosts, postgres_exporter_port | default(9187)) }}
 {% endif %}
 {% if rtpengine_hosts %}
 
@@ -68,6 +78,71 @@ scrape_configs:
   - job_name: api
 {{ scrape(app_hosts, api_port | default(3000)) }}
 {% endif %}
+{% if db_hosts %}
 
-# Not scraped yet (they listen on 127.0.0.1 only, docs/split-contracts.md O1): ARI app (9101),
-# Asterisk (8088), Garage (3903), local DB proxy (8405). Kamailio has no metrics endpoint yet.
+  # Garage (S3 object store): cluster health, connected nodes, request rates and errors.
+  - job_name: garage
+{{ scrape(db_hosts, 3903) }}
+{% endif %}
+{% if proxy_hosts %}
+
+  # The local DB/S3 proxy on every client node: which db node is primary/replica as THIS node
+  # sees it, connection counts, S3 backends. Read through the metrics gateway.
+  - job_name: dbproxy
+    metrics_path: /metrics/proxy
+{{ scrape(proxy_hosts, gateway_port) }}
+{% endif %}
+{% if gateway_pbx_hosts %}
+
+  # Call control (services/ari-app): active calls, finished legs by outcome, CDR/upload backlogs,
+  # vendor failures. Loopback-only on the pbx node; read through the metrics gateway.
+  - job_name: ari_app
+    metrics_path: /metrics/ari
+{{ scrape(gateway_pbx_hosts, gateway_port) }}
+
+  # Asterisk (res_prometheus): channels, bridges, endpoints. Same gateway.
+  - job_name: asterisk
+    metrics_path: /metrics/asterisk
+{{ scrape(gateway_pbx_hosts, gateway_port) }}
+{% endif %}
+
+{% if edge_hosts %}
+{#
+  Probes through the blackbox exporter on this host: Prometheus asks it to probe each edge
+  (target = the address the edge's HAProxy/Kamailio listen on: the private IP behind Clanode's
+  1:1 NAT, else the public IP). Results: probe_success, probe_duration_seconds,
+  probe_ssl_earliest_cert_expiry. instance = the edge's inventory name.
+#}
+{% set probes = [
+     {'job': 'probe_api', 'module': 'pbx_api', 'what': 'API through the edge (GET /ready)'},
+     {'job': 'probe_web', 'module': 'pbx_web', 'what': 'website (GET / as a browser)'},
+     {'job': 'probe_sip_tls', 'module': 'pbx_sip_tls', 'what': 'SIP over TLS handshake'},
+   ] %}
+{% for p in probes %}
+
+  # Blackbox: {{ p.what }} on every edge.
+  - job_name: {{ p.job }}
+    metrics_path: /probe
+    params:
+      module: [{{ p.module }}]
+    static_configs:
+{% for host in edge_hosts %}
+{% set ip = hostvars[host].public_bind_ip %}
+{% if p.job == 'probe_api' %}
+      - targets: ["https://{{ ip }}/ready"]
+{% elif p.job == 'probe_web' %}
+      - targets: ["https://{{ ip }}/"]
+{% else %}
+      - targets: ["{{ ip }}:{{ kamailio_tls_port | default(5061) }}"]
+{% endif %}
+        labels: { instance: "{{ host }}" }
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: "{{ private_ip }}:{{ blackbox_port }}"
+{% endfor %}
+{% endif %}
+
+# Not scraped yet: Kamailio (no metrics endpoint).

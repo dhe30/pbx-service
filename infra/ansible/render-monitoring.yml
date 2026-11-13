@@ -29,6 +29,8 @@
         - grafana.env
         - grafana-datasource.yml
         - grafana-dashboards.yml
+        - blackbox.yml
+        - prometheus-blackbox-exporter.default
 
     - name: Static files (alert rules, dashboards)
       ansible.builtin.copy:

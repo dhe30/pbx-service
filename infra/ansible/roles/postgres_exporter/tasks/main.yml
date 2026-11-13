@@ -1,0 +1,22 @@
+---
+# postgres_exporter on every db node (Debian package). It needs the database role "prometheus",
+# which roles/db_schema creates on the primary (replicas get it through replication). Until then
+# the exporter reports pg_up 0 and keeps retrying, so the order of the two roles doesn't matter.
+
+- name: Install postgres_exporter
+  ansible.builtin.apt:
+    name: prometheus-postgres-exporter
+    install_recommends: false
+
+- name: postgres_exporter settings (private IP, local socket login)
+  ansible.builtin.template:
+    src: prometheus-postgres-exporter.default.j2
+    dest: /etc/default/prometheus-postgres-exporter
+    mode: "0644"
+  notify: Restart postgres_exporter
+
+- name: Start postgres_exporter
+  ansible.builtin.service:
+    name: prometheus-postgres-exporter
+    enabled: true
+    state: started

@@ -22,3 +22,8 @@
     name: grafana-server
     state: restarted
     daemon_reload: true
+
+- name: Restart blackbox exporter
+  ansible.builtin.systemd:
+    name: prometheus-blackbox-exporter
+    state: restarted

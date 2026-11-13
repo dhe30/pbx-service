@@ -1,1 +1,25 @@
 ---
+# Postgres backups on mon-1 with pgBackRest (Track 4). mon-1 holds the repository: nightly full
+# backups + the WAL the db nodes push continuously (roles/postgres_patroni). Restoring = latest
+# full backup + WAL replay, so at most ~5 min of committed data can be missing (archive_timeout).
+#
+# Put backup_repo_path on its own Volume if possible: the repository must survive mon-1's disk
+# filling up with metrics, and it should be sized for (retention + 1) full backups + a week of WAL.
+backup_repo_path: /var/lib/pgbackrest
+
+# Full backups kept (one per night = a week). Older ones and the WAL they need are expired
+# automatically after each backup.
+backup_retention_full: 7
+
+# systemd OnCalendar times (the VMs' clock is UTC).
+backup_schedule: "*-*-* 03:00:00"
+# Weekly restore test: restores the latest backup on mon-1, checks it, deletes it.
+backup_restore_test_schedule: "Sun *-*-* 05:00:00"
+
+# Where the restore test puts its scratch copy (needs as much space as the database), and the
+# local port its temporary Postgres listens on (unix socket only, no network).
+backup_restore_test_dir: /var/lib/pgbackrest-restore-test
+backup_restore_test_port: 5499
+
+# Must match patroni_data_dir (roles/postgres_patroni) on the db nodes.
+backup_pg_path: "/var/lib/postgresql/{{ postgres_version }}/patroni"

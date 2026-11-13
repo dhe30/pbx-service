@@ -1,0 +1,13 @@
+# Managed by Ansible (roles/backups). Started by pbx-restore-test.timer; `systemctl start
+# pbx-restore-test` runs it now. Output: journalctl -u pbx-restore-test.
+[Unit]
+Description=Restore test of the newest Postgres backup (pgBackRest)
+# Only reads the repository, so it may overlap a backup; if both are queued, the backup goes first.
+After=pbx-backup.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pbx-restore-test
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h

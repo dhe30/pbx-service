@@ -1,0 +1,3 @@
+# Blackbox exporter options (managed by Ansible, roles/monitoring). Read by Debian's systemd unit.
+# Private IP only: Prometheus on this host calls it with the target to probe.
+ARGS="--config.file=/etc/prometheus/blackbox.yml --web.listen-address={{ private_ip }}:{{ blackbox_port }}"

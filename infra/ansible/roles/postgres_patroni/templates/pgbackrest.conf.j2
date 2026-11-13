@@ -1,0 +1,21 @@
+# pgBackRest on db node {{ inventory_hostname }} (managed by Ansible, roles/postgres_patroni).
+# This side only pushes WAL (archive_command) to the repository on mon-1 over SSH; backups and
+# restores are run from mon-1 (roles/backups).
+[global]
+repo1-host={{ backup_repo_ip }}
+repo1-host-user=pgbackrest
+log-level-console=warn
+log-level-file=info
+log-path=/var/log/pgbackrest
+# Asynchronous push: Postgres hands the segment to a local spool and continues; a background
+# process ships it. If mon-1 is down, at most archive-push-queue-max of WAL waits here; beyond
+# that pgBackRest DROPS it (reports success) so the db disk can't fill. The backups then have a
+# gap until the next full backup, and WalArchivingFailing has already fired.
+archive-async=y
+spool-path=/var/spool/pgbackrest
+archive-push-queue-max=4GiB
+compress-type=zst
+
+[{{ pgbackrest_stanza }}]
+pg1-path={{ patroni_data_dir }}
+pg1-socket-path=/var/run/postgresql

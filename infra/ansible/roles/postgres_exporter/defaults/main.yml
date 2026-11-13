@@ -1,0 +1,6 @@
+---
+# Postgres metrics for Prometheus on mon-1 (roles/monitoring, job "postgres"), one exporter per db
+# node reading ITS OWN Postgres (primary or replica): connections, transactions, cache hit rate,
+# locks, long transactions, replication, and the most expensive queries (pg_stat_statements).
+# Private IP only; the host firewall limits it to cluster nodes.
+postgres_exporter_port: 9187

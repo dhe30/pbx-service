@@ -16,5 +16,8 @@ s3_region = "{{ s3_region }}"
 api_bind_addr = "{{ private_ip }}:{{ s3_port }}"
 root_domain = ".s3.pbx.internal"
 
+# Admin API: on the private IP so Prometheus on mon-1 can read /metrics (host firewall: cluster
+# nodes only). No admin_token is set, so the admin endpoints themselves stay disabled; only
+# /metrics and /health answer.
 [admin]
-api_bind_addr = "127.0.0.1:3903"
+api_bind_addr = "{{ private_ip }}:3903"

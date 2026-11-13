@@ -1,0 +1,63 @@
+#!/bin/sh
+# Business checks for Prometheus (managed by Ansible, roles/monitoring). Run every minute by
+# pbx-business-metrics.timer; writes {{ business_metrics_file }} for node_exporter's textfile collector.
+#
+#   Support tickets: GET /operator/tickets?status=open on any app node (provider token). Customers
+#   open tickets when something fails for them, usually well before they leave.
+#   DID provider balance: GET <did_provider_url>/balance (DIDWW v3 clone, Api-Key). At $0 the
+#   provider stops delivering incoming calls.
+#
+# A check that fails reports *_check_success 0 (alert BusinessCheckFailing) and keeps no stale value.
+set -u
+. /etc/pbx/business-metrics.env      # OPERATOR_TOKEN, DID_API_KEY (secrets, root only)
+PROM={{ business_metrics_file }}
+NOW=$(date +%s)
+APP_NODES="{{ groups.get('app', []) | map('extract', hostvars, 'private_ip') | join(' ') }}"
+
+out=$(mktemp "$PROM.XXXXXX")
+trap 'rm -f "$out"' EXIT
+metric() { echo "# TYPE $1 gauge" >>"$out"; echo "$1${3:+$3} $2" >>"$out"; }
+
+# ---- Support tickets ------------------------------------------------------------------------------
+# First app node that answers. Pages of 100 until nextCursor is null (stops at 50 pages).
+tickets_ok=0
+for ip in $APP_NODES; do
+  open=0; recent=0; oldest=""; cursor=""; pages=0; ok=1
+  while :; do
+    url="http://$ip:{{ api_port | default(3000) }}/operator/tickets?status=open&limit=100${cursor:+&cursor=$cursor}"
+    body=$(curl -fsS -m 10 -H "Authorization: Bearer $OPERATOR_TOKEN" "$url") || { ok=0; break; }
+    n=$(printf '%s' "$body" | jq '.items | length') || { ok=0; break; }
+    open=$((open + n))
+    # Opened in the last 15 minutes / oldest open ticket's creation time.
+    r=$(printf '%s' "$body" | jq --argjson now "$NOW" '[.items[].createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | select(. > $now - 900)] | length')
+    recent=$((recent + r))
+    o=$(printf '%s' "$body" | jq '[.items[].createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601] | min // empty')
+    [ -n "$o" ] && { [ -z "$oldest" ] || [ "$o" -lt "$oldest" ]; } && oldest=$o
+    cursor=$(printf '%s' "$body" | jq -r '.nextCursor // empty')
+    pages=$((pages + 1))
+    [ -z "$cursor" ] || [ "$pages" -ge 50 ] && break
+  done
+  if [ "$ok" = 1 ]; then tickets_ok=1; break; fi
+done
+metric pbx_support_tickets_check_success "$tickets_ok"
+if [ "$tickets_ok" = 1 ]; then
+  metric pbx_support_tickets_open "$open"
+  metric pbx_support_tickets_opened_last_15m "$recent"
+  [ -n "$oldest" ] && metric pbx_support_tickets_oldest_open_timestamp_seconds "$oldest"
+fi
+
+# ---- DID provider balance -------------------------------------------------------------------------
+{% if did_provider_url | default('') %}
+balance_ok=0
+body=$(curl -fsS -m 10 -H "Api-Key: $DID_API_KEY" -H "Accept: application/vnd.api+json" "{{ did_provider_url | regex_replace('/$', '') }}/balance") \
+  && bal=$(printf '%s' "$body" | jq -er '.data.attributes.total_balance // .data.attributes.balance | tonumber') \
+  && balance_ok=1
+metric pbx_did_balance_check_success "$balance_ok"
+[ "$balance_ok" = 1 ] && metric pbx_did_balance_usd "$bal"
+{% else %}
+# did_provider_url is not set: no DID balance check.
+{% endif %}
+
+chmod 0644 "$out"
+mv "$out" "$PROM"
+trap - EXIT

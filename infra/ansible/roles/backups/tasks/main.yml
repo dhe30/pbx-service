@@ -1,2 +1,212 @@
 ---
-# TODO: backups role tasks.
+# pgBackRest repository on mon-1 (Track 4): nightly full backups, WAL from the db nodes, a weekly
+# restore test, and metrics for Prometheus. Runs after the db play (site.yml), so the db side
+# (roles/postgres_patroni, tasks/pgbackrest.yml) already has pgBackRest and its SSH key.
+#
+# SSH in both directions, each key only accepted from the other side's private IP:
+#   pgbackrest@mon-1 -> postgres@db-N   (take backups)
+#   postgres@db-N    -> pgbackrest@mon-1 (push WAL)
+
+# Nothing to back up in an inventory without db hosts (e.g. a monitoring-only test).
+- name: Skip backups without db hosts
+  ansible.builtin.meta: end_role
+  when: groups.get('db', []) | length == 0
+
+# ---- Packages: pgBackRest + Postgres binaries (for the restore test) -------------------------
+# Same PGDG repository as the db nodes, so pgBackRest has the SAME version on both sides (it
+# refuses to talk to a different version) and the restore test uses the same Postgres.
+- name: postgresql-common config directory
+  ansible.builtin.file:
+    path: /etc/postgresql-common
+    state: directory
+    mode: "0755"
+
+- name: Don't let the postgresql package create a cluster on mon-1
+  ansible.builtin.copy:
+    dest: /etc/postgresql-common/createcluster.conf
+    content: |
+      # Managed by Ansible (roles/backups): Postgres is only used by the restore test here.
+      create_main_cluster = false
+    mode: "0644"
+
+- name: PGDG apt signing key
+  ansible.builtin.get_url:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    dest: /usr/share/keyrings/pgdg.asc
+    mode: "0644"
+
+- name: PGDG apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pgdg.list
+    content: "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main\n"
+    mode: "0644"
+
+- name: Install pgBackRest and PostgreSQL {{ postgres_version }} binaries
+  ansible.builtin.apt:
+    name:
+      - pgbackrest
+      - "postgresql-{{ postgres_version }}"
+      - "postgresql-client-{{ postgres_version }}"
+    update_cache: true
+
+- name: Debian postgresql service stays off on mon-1
+  ansible.builtin.systemd:
+    name: postgresql
+    state: stopped
+    enabled: false
+
+# ---- Repository user, directories, config ----------------------------------------------------
+- name: pgbackrest user (owns the repository)
+  ansible.builtin.user:
+    name: pgbackrest
+    system: true
+    home: "{{ backup_repo_path }}"
+    shell: /bin/bash          # pgBackRest's remote commands run through the login shell
+    generate_ssh_key: true
+    ssh_key_type: ed25519
+    ssh_key_comment: "pgbackrest@{{ inventory_hostname }} (backups)"
+
+- name: Repository and log directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0750"
+  loop:
+    - "{{ backup_repo_path }}"
+    - /var/log/pgbackrest
+    - /etc/pgbackrest
+
+- name: pgBackRest configs (repository + restore test)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/pgbackrest/{{ item }}"
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0640"
+  loop: [pgbackrest.conf, restore-test.conf]
+
+- name: SSH client settings for pgbackrest (accept the db nodes' host keys on first use)
+  ansible.builtin.copy:
+    dest: "{{ backup_repo_path }}/.ssh/config"
+    content: |
+      # Managed by Ansible (roles/backups): the db nodes.
+      Host {{ groups['db'] | map('extract', hostvars, 'private_ip') | join(' ') }}
+        StrictHostKeyChecking accept-new
+        BatchMode yes
+        ConnectTimeout 10
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0600"
+
+# ---- Key exchange --------------------------------------------------------------------------
+- name: Read mon-1's pgbackrest public key
+  ansible.builtin.slurp:
+    src: "{{ backup_repo_path }}/.ssh/id_ed25519.pub"
+  register: backup_repo_pubkey
+
+- name: Read the db nodes' postgres public keys
+  ansible.builtin.slurp:
+    src: /var/lib/postgresql/.ssh/id_ed25519.pub
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['db'] }}"
+  register: backup_db_pubkeys
+
+- name: Let the db nodes push WAL (postgres@db -> pgbackrest@mon-1)
+  ansible.builtin.copy:
+    dest: "{{ backup_repo_path }}/.ssh/authorized_keys"
+    content: |
+      # Managed by Ansible (roles/backups): postgres@<db node>, each only from its own private IP.
+      {% for r in backup_db_pubkeys.results %}
+      from="{{ hostvars[r.item].private_ip }}" {{ r.content | b64decode | trim }}
+      {% endfor %}
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0600"
+
+- name: Let mon-1 take backups (pgbackrest@mon-1 -> postgres@db)
+  ansible.builtin.lineinfile:
+    path: /var/lib/postgresql/.ssh/authorized_keys
+    regexp: "pgbackrest@{{ inventory_hostname }} \\(backups\\)$"
+    line: 'from="{{ private_ip }}" {{ backup_repo_pubkey.content | b64decode | trim }}'
+    create: true
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['db'] }}"
+
+# ---- Stanza (the repository's record of this cluster) ------------------------------------------
+# stanza-create is safe to repeat: it only checks an existing stanza.
+- name: Create or check the stanza
+  ansible.builtin.command: pgbackrest --stanza={{ pgbackrest_stanza }} stanza-create
+  become: true
+  become_user: pgbackrest
+  changed_when: false
+
+# Fails until the db nodes run with archive_mode on (needs the one-time Postgres restart that
+# roles/postgres_patroni prints). Reported, not fatal.
+- name: Check that WAL archiving reaches the repository
+  ansible.builtin.command: pgbackrest --stanza={{ pgbackrest_stanza }} check
+  become: true
+  become_user: pgbackrest
+  register: backup_check
+  changed_when: false
+  failed_when: false
+
+- name: WAL archiving status
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'WAL archiving works.' if backup_check.rc == 0 else
+         'WAL archiving does NOT work yet: ' ~ (backup_check.stderr | default('') | trim | truncate(300)) ~
+         ' (if a db node shows "Pending restart" in `patronictl list`, do the one-time restart printed by the db play).' }}
+
+# ---- Scripts, timers ---------------------------------------------------------------------------
+- name: Backup and restore-test scripts
+  ansible.builtin.template:
+    src: "{{ item }}.sh.j2"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+  loop: [pbx-backup, pbx-restore-test]
+
+- name: node_exporter textfile directory (backup metrics)
+  ansible.builtin.file:
+    path: /var/lib/prometheus/node-exporter
+    state: directory
+    mode: "0755"
+
+- name: systemd units for backups and restore tests
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - pbx-backup.service
+    - pbx-backup.timer
+    - pbx-restore-test.service
+    - pbx-restore-test.timer
+
+- name: Enable the timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [pbx-backup.timer, pbx-restore-test.timer]
+
+# ---- First backup ------------------------------------------------------------------------------
+# So there is something to restore (and BackupTooOld has a value) from the first day. Only when
+# archiving works: a backup needs its WAL to be archived to be restorable.
+- name: Does the repository have a backup yet?
+  ansible.builtin.command: pgbackrest --stanza={{ pgbackrest_stanza }} --output=json info
+  become: true
+  become_user: pgbackrest
+  register: backup_info
+  changed_when: false
+
+- name: Take the first full backup now
+  ansible.builtin.command: /usr/local/bin/pbx-backup full
+  when:
+    - backup_check.rc == 0
+    - (backup_info.stdout | from_json)[0].backup | default([]) | length == 0

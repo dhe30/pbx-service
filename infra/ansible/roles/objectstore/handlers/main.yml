@@ -1,6 +1,17 @@
 ---
+# One node at a time, waiting until it is healthy again: every object has 3 copies and needs 2 for
+# reads/writes, so restarting the nodes together (or back to back) would make S3 (recordings,
+# voicemail, greetings) unavailable for a few seconds.
+# The wait gives up after 30 s without failing: on a brand-new cluster /health stays 503 until the
+# layout is applied later in the role.
 - name: Restart garage
-  ansible.builtin.systemd:
-    name: garage
-    state: restarted
-    daemon_reload: true
+  ansible.builtin.shell: |
+    systemctl daemon-reload
+    systemctl restart garage
+    for i in $(seq 1 30); do
+      curl -fsS -o /dev/null http://{{ private_ip }}:3903/health && exit 0
+      sleep 1
+    done
+    echo "garage on {{ inventory_hostname }} not healthy 30 s after restart (normal on a new cluster)"
+  changed_when: true
+  throttle: 1

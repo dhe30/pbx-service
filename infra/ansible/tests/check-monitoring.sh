@@ -1,6 +1,6 @@
 #!/bin/sh
 # Offline check of the monitoring configs (Linux/WSL; needs ansible-core and Debian's
-# `prometheus` + `prometheus-alertmanager` packages for promtool/amtool):
+# `prometheus`, `prometheus-alertmanager` and `prometheus-blackbox-exporter` packages):
 #   1. render roles/monitoring for the 10-VM example inventory (render-monitoring.yml)
 #   2. promtool check rules / check config, amtool check-config
 # Output goes to infra/ansible/tests/.rendered-monitoring/ (gitignored).
@@ -27,4 +27,5 @@ check() {
 check promtool check rules "$MON/pbx-alerts.yml"
 check promtool check config "$MON/prometheus.test.yml"
 check amtool check-config "$MON/alertmanager.yml"
+check prometheus-blackbox-exporter --config.check --config.file="$MON/blackbox.yml"
 exit $status

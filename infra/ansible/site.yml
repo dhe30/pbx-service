@@ -1,17 +1,18 @@
 ---
-# Full multi-VM deployment (phase 4+; backups is still a stub).
+# Full multi-VM deployment (phase 4+).
 # Cloud runbook (inventory/production.ini, deploy order, code updates): docs/cloud-deploy.md §5.
 # For phase 1 use phase1-allinone.yml.
 # See CLAUDE.md §15 for ordering and cross-group dependencies.
 - hosts: all
   become: true
-  roles: [common]
+  # logging: persistent, size-capped journal and log rotation on every VM (no log can fill a disk).
+  roles: [common, logging]
 
 # Data tier: etcd quorum first (Patroni needs it to elect a primary), then Postgres, then Garage.
 - name: Data tier
   hosts: db
   become: true
-  roles: [etcd, postgres_patroni, objectstore]
+  roles: [etcd, postgres_patroni, objectstore, postgres_exporter]
 
 # Schema changes must run on whichever node is primary NOW (it may not be db-1 after a failover).
 - name: Find the current Patroni primary

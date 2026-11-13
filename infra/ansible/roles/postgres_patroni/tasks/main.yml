@@ -142,3 +142,8 @@
   ansible.builtin.debug:
     msg: "{{ patroni_cluster.json.members | map(attribute='name') | zip(patroni_cluster.json.members | map(attribute='role')) | list }}"
   run_once: true
+
+# ---- Backups (WAL archiving to mon-1) -------------------------------------------------------
+- name: pgBackRest (WAL push to the backup repository on mon-1)
+  ansible.builtin.include_tasks: pgbackrest.yml
+  when: backup_enabled | bool

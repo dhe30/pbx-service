@@ -1,0 +1,12 @@
+# Managed by Ansible (roles/backups).
+[Unit]
+Description=Nightly Postgres backup (pgBackRest)
+
+[Timer]
+OnCalendar={{ backup_schedule }}
+# A run missed while mon-1 was off happens at the next boot.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

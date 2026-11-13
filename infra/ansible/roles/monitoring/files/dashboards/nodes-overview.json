@@ -87,7 +87,9 @@
             "uid": "prometheus"
           },
           "expr": "up{job=\"node\"}",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "{{instance}}",
+          "instant": true,
+          "range": false
         }
       ]
     },

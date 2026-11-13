@@ -132,6 +132,14 @@ did_trunk_id: ""
 # node_exporter on every host (roles/common), scraped by Prometheus on mon-1 (roles/monitoring).
 node_exporter_port: 9100
 
+# ---- Backups (Track 4) -------------------------------------------------------------------------
+# Postgres backups with pgBackRest: the repository lives on mon-1 (roles/backups), never on the db
+# nodes. The db nodes ship WAL there continuously (roles/postgres_patroni). Only when the
+# inventory has a mon host.
+backup_enabled: "{{ groups.get('mon', []) | length > 0 }}"
+pgbackrest_stanza: "pbx"
+backup_repo_ip: "{{ hostvars[groups['mon'][0]].private_ip if groups.get('mon') else '' }}"
+
 # ---- Test data (phase 1) -----------------------------------------------------------------------
 load_test_seed: true
 test_did: "+15555550100"

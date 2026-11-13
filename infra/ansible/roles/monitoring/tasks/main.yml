@@ -14,7 +14,7 @@
 # ---- Prometheus + Alertmanager -------------------------------------------------------------------
 - name: Install Prometheus and Alertmanager
   ansible.builtin.apt:
-    name: [prometheus, prometheus-alertmanager]
+    name: [prometheus, prometheus-alertmanager, prometheus-blackbox-exporter]
     install_recommends: false
     update_cache: true
     cache_valid_time: 3600
@@ -69,6 +69,21 @@
     dest: /etc/default/prometheus-alertmanager
     mode: "0644"
   notify: Restart alertmanager
+
+- name: Blackbox exporter probes (edges from outside, certificate expiry)
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: /etc/prometheus/blackbox.yml
+    mode: "0644"
+    validate: prometheus-blackbox-exporter --config.check --config.file=%s
+  notify: Restart blackbox exporter
+
+- name: Blackbox exporter options (listen address)
+  ansible.builtin.template:
+    src: prometheus-blackbox-exporter.default.j2
+    dest: /etc/default/prometheus-blackbox-exporter
+    mode: "0644"
+  notify: Restart blackbox exporter
 
 # ---- Grafana -------------------------------------------------------------------------------------
 - name: Grafana apt key
@@ -143,6 +158,42 @@
     group: grafana
     mode: "0644"
 
+# ---- Business checks (support tickets, DID balance) --------------------------------------------
+- name: node_exporter textfile directory
+  ansible.builtin.file:
+    path: /var/lib/prometheus/node-exporter
+    state: directory
+    mode: "0755"
+
+- name: Secrets for the business checks (operator token, DID API key)
+  ansible.builtin.template:
+    src: business-metrics.env.j2
+    dest: /etc/pbx/business-metrics.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Business checks script
+  ansible.builtin.template:
+    src: pbx-business-metrics.sh.j2
+    dest: /usr/local/bin/pbx-business-metrics
+    mode: "0755"
+
+- name: Business checks systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop: [pbx-business-metrics.service, pbx-business-metrics.timer]
+
+- name: Run the business checks every minute
+  ansible.builtin.systemd:
+    name: pbx-business-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
 # ---- Start and check -----------------------------------------------------------------------------
 - name: Start monitoring services
   ansible.builtin.systemd:
@@ -150,7 +201,7 @@
     enabled: true
     state: started
     daemon_reload: true
-  loop: [prometheus, prometheus-alertmanager, grafana-server]
+  loop: [prometheus, prometheus-alertmanager, prometheus-blackbox-exporter, grafana-server]
 
 - name: Apply pending restarts
   ansible.builtin.meta: flush_handlers
