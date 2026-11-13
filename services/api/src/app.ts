@@ -125,7 +125,7 @@ export async function buildApp(cfg: AppConfig, deps: AppDeps): Promise<FastifyIn
 
   await app.register(healthRoutes, { checks: deps.readinessChecks, isDraining: deps.isDraining });
   const cardSetup = { stripe: deps.stripe, publishableKey: cfg.STRIPE_PUBLISHABLE_KEY, stripeJsUrl: cfg.STRIPE_JS_URL };
-  await app.register(authRoutes, { sql: deps.sql });
+  await app.register(authRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(businessRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingRoutes, { sql: deps.sql, ...cardSetup });
   await app.register(billingItemRoutes, { sql: deps.sql, stripe: deps.stripe });

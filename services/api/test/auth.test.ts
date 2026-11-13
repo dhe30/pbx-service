@@ -172,14 +172,57 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     expect(membership!.tenantId).toBeNull();
   });
 
-  it('signup accepts only email and password', async () => {
+  it('signup with businessName + timezone creates the business in the same call (one step)', async () => {
+    const email = uniqueEmail();
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: 'No business here', email: uniqueEmail(), password: 'correct horse battery' },
+      payload: { email, password: 'correct horse battery', businessName: 'One Step Bakery (test)', timezone: 'america/new_york' },
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toMatch(/Unrecognized key/);
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    userIds.push(body.userId);
+    tenantIds.push(body.tenantId);
+    expect(body).toMatchObject({
+      userId: expect.any(String),
+      tenantId: expect.any(String),
+      role: 'owner',
+      cardSetup: {
+        setupIntentId: expect.any(String),
+        clientSecret: expect.any(String),
+        publishableKey: 'pk_test_fake',
+        stripeJsUrl: 'https://stripe.test/v3/',
+      },
+    });
+
+    const [settings] = await sql`select included_extensions from tenant_settings where tenant_id = ${body.tenantId}`;
+    expect(settings).toEqual({ includedExtensions: PLAN.includedExtensions });
+    // The cookie already carries the business: the very next call works as the owner.
+    const me = await app.inject({ method: 'GET', url: '/me', cookies: { [ACCESS_COOKIE]: cookie(res, ACCESS_COOKIE)!.value } });
+    expect(me.json()).toMatchObject({
+      user: { id: body.userId, email, role: 'owner' },
+      tenant: { id: body.tenantId, name: 'One Step Bakery (test)', timezone: 'America/New_York', status: 'active' },
+    });
+  });
+
+  it('signup rejects businessName without timezone, and unknown fields, creating nothing', async () => {
+    const email = uniqueEmail();
+    const half = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: { businessName: 'Half a business', email, password: 'correct horse battery' },
+    });
+    expect(half.statusCode).toBe(400);
+    expect(half.json().message).toMatch(/together/);
+    expect((await sql`select 1 from users where email = ${email}`).length).toBe(0);
+
+    const extra = await app.inject({
+      method: 'POST',
+      url: '/auth/signup',
+      payload: { nickname: 'x', email: uniqueEmail(), password: 'correct horse battery' },
+    });
+    expect(extra.statusCode).toBe(400);
+    expect(extra.json().message).toMatch(/Unrecognized key/);
   });
 
   it('POST /businesses assigns an unassigned user as owner and starts card setup', async () => {

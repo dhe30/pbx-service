@@ -5,18 +5,29 @@ import { authenticate, clearAuthCookies, readRefreshToken, setAuthCookies, type 
 import { HttpError, isUniqueViolation } from '../errors.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
 import { hashPassword, verifyPassword } from '../passwords.js';
-import { email, parse, password } from '../validation.js';
+import { email, name, parse, password, timeZone } from '../validation.js';
+import { CardSetupSchema, cardSetupOrNull, createBusinessForUser, type CardSetupConfig } from './businesses.js';
 
-// POST /auth/signup   create an unattached user and log them in                 201
+// POST /auth/signup   create a user and log them in; with businessName +       201
+//                     timezone it also creates their business (one step)
 // POST /auth/login    email + password -> auth cookies                         200
 // POST /auth/refresh  refresh cookie -> new access + refresh cookies           200
 // POST /auth/logout   clear auth cookies                                       204
 // GET  /me            the logged-in user and optional business                 200, 401
 // Auth responses carry only { userId, tenantId, role }; profile data comes from GET /me.
 
+// businessName + timezone are optional, but go together: with them signup is one step (account +
+// business + card setup), as in the course spec's signup; without them the web's two-step flow
+// (POST /businesses afterwards) is unchanged.
 const SignupBody = z.object({
   email,
   password,
+  businessName: name
+    .optional()
+    .describe('Business name, 1-100 characters. Send with timezone to create the business in the same call.'),
+  timezone: timeZone
+    .optional()
+    .describe('IANA time zone of the business, e.g. America/New_York. Send with businessName.'),
 }).strict();
 
 const LoginBody = z.object({
@@ -30,7 +41,11 @@ const AuthUserSchema = z.object({
   tenantId: z.string().uuid().nullable().describe('Business id, or null until the user joins or creates a business.'),
   role,
 });
-const SignupSchema = AuthUserSchema;
+const SignupSchema = AuthUserSchema.extend({
+  cardSetup: CardSetupSchema.optional().describe(
+    'Only when the business was created in this call: card setup for Stripe.js, then POST /billing/card.',
+  ),
+});
 
 const MeSchema = z.object({
   user: z
@@ -61,10 +76,16 @@ const docs = {
     tag: 'Auth',
     auth: 'public',
     summary: 'Create an account',
-    description: 'Creates an account without a business and logs the user in. Create or join a business separately.',
+    description:
+      'Creates an account and logs the user in. With businessName and timezone it also creates the business with ' +
+      'this user as owner and starts card setup (save the card with Stripe.js, then POST /billing/card). Without ' +
+      'them the account has no business yet: create one with POST /businesses.',
     body: SignupBody,
     responses: { 201: { description: 'Created and logged in', schema: SignupSchema, headers: cookiesSet } },
-    errors: { 409: 'A user with this email already exists (`email_taken`).' },
+    errors: {
+      400: 'Invalid body, or only one of businessName / timezone (`invalid_request`).',
+      409: 'A user with this email already exists (`email_taken`).',
+    },
   },
   login: {
     tag: 'Auth',
@@ -109,24 +130,35 @@ interface MeRow {
   tenantCreatedAt: Date | null;
 }
 
-export interface AuthRouteOptions {
+export interface AuthRouteOptions extends CardSetupConfig {
   sql: Sql;
 }
 
-export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sql }) => {
+export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sql, ...cardCfg }) => {
   app.post('/auth/signup', withDoc({}, docs.signup), async (req, reply) => {
     const body = parse(SignupBody, req.body);
+    if ((body.businessName === undefined) !== (body.timezone === undefined)) {
+      throw new HttpError(400, 'invalid_request', 'businessName and timezone must be sent together');
+    }
+    const business =
+      body.businessName !== undefined ? { name: body.businessName, timezone: body.timezone! } : null;
     const passwordHash = await hashPassword(body.password);
 
-    let userId: string;
+    // User and business in one transaction: a failed business never leaves a half-made account.
+    let created: { userId: string; tenantId: string | null };
     try {
-      const [row] = await withRetry(
-        () => sql<{ id: string }[]>`
-          insert into users (tenant_id, email, password_hash, role)
-          values (null, ${body.email}, ${passwordHash}, 'unassigned')
-          returning id`,
+      created = await withRetry(() =>
+        sql.begin(async (tx) => {
+          const [row] = await tx<{ id: string }[]>`
+            insert into users (tenant_id, email, password_hash, role)
+            values (null, ${body.email}, ${passwordHash}, 'unassigned')
+            returning id`;
+          const tenantId = business
+            ? await createBusinessForUser(tx, row!.id, business.name, business.timezone)
+            : null;
+          return { userId: row!.id, tenantId };
+        }),
       );
-      userId = row!.id;
     } catch (err) {
       if (isUniqueViolation(err, 'users_email_key')) {
         throw new HttpError(409, 'email_taken', 'A user with this email already exists');
@@ -134,10 +166,19 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, { sq
       throw err;
     }
 
-    const user: AuthUser = { userId, tenantId: null, role: 'unassigned' };
-    req.log.info({ userId }, 'user signed up');
+    const { userId, tenantId } = created;
+    if (!tenantId) {
+      const user: AuthUser = { userId, tenantId: null, role: 'unassigned' };
+      req.log.info({ userId }, 'user signed up');
+      setAuthCookies(reply, user);
+      return reply.status(201).send(user);
+    }
+
+    const user: AuthUser = { userId, tenantId, role: 'owner' };
     setAuthCookies(reply, user);
-    return reply.status(201).send(user);
+    const cardSetup = await cardSetupOrNull(sql, cardCfg, tenantId, req.log);
+    req.log.info({ userId, tenantId }, 'user signed up with a business');
+    return reply.status(201).send({ ...user, cardSetup });
   });
 
   app.post('/auth/login', withDoc({}, docs.login), async (req, reply) => {
