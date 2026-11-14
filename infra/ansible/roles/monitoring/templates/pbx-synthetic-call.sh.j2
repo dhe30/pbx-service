@@ -12,7 +12,7 @@
 # pbx_synthetic_call_setup_seconds (authenticated INVITE -> 200 OK, SIPp's response timer).
 set -u
 . /etc/pbx/synthetic-call.env        # A_USER A_PASSWORD B_USER B_PASSWORD B_NUMBER (root only)
-exec 9>/run/pbx-synthetic-call.lock
+exec 9>{{ synthetic_lock_file }}
 flock -n 9 || exit 0                 # previous run still going: skip this minute
 
 PROM={{ synthetic_metrics_file }}

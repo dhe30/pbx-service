@@ -1,0 +1,99 @@
+#!/bin/bash
+# Codec quality test (managed by Ansible, roles/monitoring). Run every {{ quality_test_interval_min }} min by
+# pbx-quality-test.timer; writes {{ quality_metrics_file }} for node_exporter's textfile collector.
+#
+# For each codec X (PCMU, PCMA, G.729, G.723.1, Opus), two calls between the synthetic test
+# extensions through one edge (edge-1 and edge-2 alternate per run):
+#   caller X    -> callee PCMU   (rtpengine converts on the caller's leg)
+#   caller PCMU -> callee X      (rtpengine converts on the callee's leg)
+# Both phones play 3 s of audio (synthetic but well-formed frames, gen_pcap.py); tcpdump counts
+# the RTP packets that ARRIVE at each phone. A direction without packets is a silent leg, which
+# the course counts as a failed call.
+#
+# A call whose SIP failed (e.g. the test phone missed a re-INVITE) is a test error, not silence:
+# it counts as sip_ok 0 and leaves the audio result unknown. Consecutive results per codec/role
+# are kept in {{ quality_state_dir }} so the alerts can require two silent runs in a row.
+#
+# Shares extension B with pbx-synthetic-call: both take {{ synthetic_lock_file }}, so they never overlap.
+set -u
+. /etc/pbx/synthetic-call.env        # A_USER A_PASSWORD B_USER B_PASSWORD B_NUMBER (root only)
+exec 9>{{ synthetic_lock_file }}
+flock -w 120 9 || { echo "synthetic call check busy for 2 min; skipping this run"; exit 0; }
+
+PROM={{ quality_metrics_file }}
+STATE={{ quality_state_dir }}
+SHARE=/usr/local/share/pbx-quality
+DOMAIN={{ sip_domain }}
+REG=/usr/local/share/pbx-synthetic/syn_register.xml
+ME={{ hostvars[inventory_hostname].private_ip }}
+EDGES=({% for host in groups['edge'] | default([]) %}{{ hostvars[host].public_ip | default(hostvars[host].ansible_host) }}:{{ host }} {% endfor %})
+pick=$(( ($(date +%s) / 60 / {{ quality_test_interval_min }}) % {{ (groups["edge"] | default([])) | length }} ))
+EDGE=${EDGES[$pick]%%:*}; EDGE_NAME=${EDGES[$pick]##*:}
+
+declare -A PT=([PCMU]=0 [PCMA]=8 [G729]=18 [G723]=4 [opus]=96)
+declare -A MAP=([PCMU]="PCMU/8000" [PCMA]="PCMA/8000" [G729]="G729/8000" [G723]="G723/8000" [opus]="opus/48000/2")
+declare -A EXTRA=([PCMU]="a=sendrecv" [PCMA]="a=sendrecv" [G729]="a=fmtp:18 annexb=no" [G723]="a=fmtp:4 annexa=no" [opus]="a=fmtp:96 useinbandfec=0")
+declare -A PTIME=([PCMU]=20 [PCMA]=20 [G729]=20 [G723]=30 [opus]=20)
+
+WORK=$(mktemp -d)
+out=$(mktemp "$PROM.XXXXXX")
+trap 'rm -rf "$WORK" "$out"' EXIT
+cd "$WORK"
+mkdir -p "$STATE"
+render() {  # render <template> <codec> <pcap> <out>
+  sed -e "s|@CODEC@|$2|g; s|@PT@|${PT[$2]}|g; s|@RTPMAP@|${MAP[$2]}|g; s|@EXTRA@|${EXTRA[$2]}|g; s|@PTIME@|${PTIME[$2]}|g; s|@PCAP@|$3|g" "$SHARE/$1" > "$4"
+}
+sipp_q() { sipp -nostdin -m 1 "$@"; }
+
+{
+  echo "# HELP pbx_quality_sip_ok Codec quality test call completed (1) or the SIP exchange failed (0, a test error)."
+  echo "# TYPE pbx_quality_sip_ok gauge"
+  echo "# HELP pbx_quality_audio_ok Audio arrived at both phones (1), at most one direction silent (0); only when sip_ok is 1."
+  echo "# TYPE pbx_quality_audio_ok gauge"
+  echo "# HELP pbx_quality_packets RTP packets that arrived at a phone during the 3 s of audio."
+  echo "# TYPE pbx_quality_packets gauge"
+  echo "# HELP pbx_quality_silent_runs Consecutive runs in which this test had a silent direction."
+  echo "# TYPE pbx_quality_silent_runs gauge"
+} >>"$out"
+
+for X in PCMU PCMA G729 G723 opus; do
+  for role in caller callee; do
+    if [ $role = caller ]; then A=$X; B=PCMU; else A=PCMU; B=$X; fi
+    lbl="codec=\"$X\",role=\"$role\",edge=\"$EDGE_NAME\""
+    python3 "$SHARE/gen_pcap.py" "$WORK/a.pcap" $A ${PT[$A]} 3
+    python3 "$SHARE/gen_pcap.py" "$WORK/b.pcap" $B ${PT[$B]} 3
+    render q_uac.xml.tpl $A "$WORK/a.pcap" a.xml
+    render q_uas.xml.tpl $B "$WORK/b.pcap" b.xml
+    sipp_q -timeout 10 -timeout_error -sf $REG -s "$B_USER" -key domain "$DOMAIN" -key expires 60 \
+      -au "$B_USER" -ap "$B_PASSWORD" -p 5097 "$EDGE:5060" >/dev/null 2>&1
+    tcpdump -i any -nn -U -w rx.pcap "udp and dst host $ME and (dst port 6100 or dst port 6200)" >/dev/null 2>&1 & TD=$!
+    sleep 0.5
+    sipp_q -timeout 25 -timeout_error -sf b.xml -p 5097 -mp 6200 "$EDGE:5060" >/dev/null 2>&1 & U=$!
+    sleep 0.3
+    sipp_q -timeout 25 -timeout_error -sf a.xml -s "$B_NUMBER" -key domain "$DOMAIN" -key from "$A_USER" \
+      -au "$A_USER" -ap "$A_PASSWORD" -p 5098 -mp 6100 "$EDGE:5060" >/dev/null 2>&1; ra=$?
+    wait $U; rb=$?
+    sleep 0.5; kill $TD 2>/dev/null; wait $TD 2>/dev/null
+    sipp_q -timeout 10 -sf $REG -s "$B_USER" -key domain "$DOMAIN" -key expires 0 \
+      -au "$B_USER" -ap "$B_PASSWORD" -p 5097 "$EDGE:5060" >/dev/null 2>&1
+    toA=$(tcpdump -nn -r rx.pcap 2>/dev/null | grep -c "> $ME.6100:")
+    toB=$(tcpdump -nn -r rx.pcap 2>/dev/null | grep -c "> $ME.6200:")
+    sip_ok=$([ $ra = 0 ] && [ $rb = 0 ] && echo 1 || echo 0)
+    f="$STATE/silent_${X}_${role}"; runs=$(cat "$f" 2>/dev/null || echo 0)
+    if [ $sip_ok = 1 ]; then
+      if [ "$toA" -ge 60 ] && [ "$toB" -ge 60 ]; then audio_ok=1; runs=0; else audio_ok=0; runs=$((runs + 1)); fi
+      echo "pbx_quality_audio_ok{$lbl} $audio_ok" >>"$out"
+      echo "$runs" >"$f"
+    fi
+    echo "pbx_quality_sip_ok{$lbl} $sip_ok" >>"$out"
+    echo "pbx_quality_packets{$lbl,to=\"caller\"} $toA" >>"$out"
+    echo "pbx_quality_packets{$lbl,to=\"callee\"} $toB" >>"$out"
+    echo "pbx_quality_silent_runs{codec=\"$X\",role=\"$role\"} $runs" >>"$out"
+    echo "$EDGE_NAME $X $role: sip_ok=$sip_ok to_caller=$toA to_callee=$toB silent_runs=$runs"
+  done
+done
+
+echo "# TYPE pbx_quality_last_run_timestamp_seconds gauge" >>"$out"
+echo "pbx_quality_last_run_timestamp_seconds $(date +%s)" >>"$out"
+chmod 0644 "$out"
+mv "$out" "$PROM"

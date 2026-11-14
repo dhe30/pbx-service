@@ -239,6 +239,41 @@
         state: started
         daemon_reload: true
 
+# ---- Codec quality test (audio both ways per codec, every quality_test_interval_min) -------------
+- name: Codec quality test
+  when: quality_test_enabled | bool
+  block:
+    - name: tcpdump (counts the RTP packets that reach the test phones)
+      ansible.builtin.apt:
+        name: tcpdump
+        state: present
+
+    - name: Quality test scenarios and audio generator
+      ansible.builtin.copy:
+        src: quality/
+        dest: /usr/local/share/pbx-quality/
+        mode: "0644"
+
+    - name: Quality test script
+      ansible.builtin.template:
+        src: pbx-quality-test.sh.j2
+        dest: /usr/local/bin/pbx-quality-test
+        mode: "0755"
+
+    - name: Quality test systemd units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop: [pbx-quality-test.service, pbx-quality-test.timer]
+
+    - name: Run the quality test on its timer
+      ansible.builtin.systemd:
+        name: pbx-quality-test.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
 # ---- Start and check -----------------------------------------------------------------------------
 - name: Start monitoring services
   ansible.builtin.systemd:

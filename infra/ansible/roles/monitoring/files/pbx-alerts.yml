@@ -406,6 +406,33 @@ groups:
         annotations:
           summary: "Test calls through {{ $labels.edge }} take {{ $value | humanize }} s to be answered"
 
+      # Codec quality test (pbx-quality-test, every 15 min): a codec/role whose call worked but
+      # whose audio did not arrive in one direction, in 2 runs in a row. Real phones with that codec
+      # get a silent leg, which the course counts as a failed call.
+      - alert: QualityAudioSilent
+        expr: pbx_quality_silent_runs >= 2
+        labels: { severity: critical }
+        annotations:
+          summary: "Silent audio with {{ $labels.codec }} ({{ $labels.role }} side) in the last 2 quality tests"
+          description: "On mon-1: journalctl -u pbx-quality-test (packets per direction); pbx_quality_packets shows which direction is missing."
+
+      # Several test calls failed at the SIP level (not answered, missed re-INVITE...) for 30 min:
+      # either the test phones or the call path is broken. Audio is not judged for those calls.
+      - alert: QualityTestCallsFailing
+        expr: count(pbx_quality_sip_ok == 0) >= 3
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} of the codec quality test calls fail at the SIP level"
+          description: "On mon-1: journalctl -u pbx-quality-test; compare with SyntheticCallFailing."
+
+      - alert: QualityTestNotRunning
+        expr: time() - pbx_quality_last_run_timestamp_seconds > 45 * 60
+        labels: { severity: warning }
+        annotations:
+          summary: "The codec quality test on mon-1 hasn't completed for 45 minutes"
+          description: "On mon-1: systemctl status pbx-quality-test.timer pbx-quality-test.service"
+
       - alert: SyntheticCheckNotRunning
         expr: time() - pbx_synthetic_last_run_timestamp_seconds > 300
         labels: { severity: warning }
