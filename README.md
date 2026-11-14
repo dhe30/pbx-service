@@ -300,6 +300,12 @@ in §3.4 as still to do.
 
 ### 3.4 Limitations and next measurements
 
+- **First production evidence (2026-11-13):** one market customer used the system for 3 hours
+  and left. Its call records and the course dashboard showed two misrouting bugs and a CDR bug
+  (fixed), external numbers always beating desk phones, possible silent legs, and our API p99
+  (3.6 s, worst of the active providers) coming from lost SYNs at the edge and Stripe-bound
+  routes. Evidence, status of each finding and the queries used:
+  [docs/incidents/2026-11-13-first-customer.md](docs/incidents/2026-11-13-first-customer.md).
 - **No load numbers from the deployed system yet.**
   - Still to run: SIPp ramps (`-r` calls/s, `-l` concurrent) with the codec matrix on the
     deployed VMs, recording capacity per pbx node and per rtpengine (CPU, `pbx_active_calls`,
@@ -381,6 +387,7 @@ More decisions with their reasons: spec-transition S1–S16, backend-for-team R1
 | [docs/cloud-deploy.md](docs/cloud-deploy.md), [docs/local-vm.md](docs/local-vm.md) | You deploy |
 | [docs/telephony-tests.md](docs/telephony-tests.md) | You add or look for tests |
 | [docs/verify-backlog.md](docs/verify-backlog.md) | You check or add an unverified assumption |
+| [docs/incidents/](docs/incidents/) | You want what live customers revealed (evidence, fixes, open findings) |
 
 ### 5.2 Adding or changing a feature
 
