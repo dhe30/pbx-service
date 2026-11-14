@@ -164,7 +164,7 @@ async function assertCanAddExtension(tx: Db, tenantId: string): Promise<void> {
     throw new HttpError(
       409,
       'extension_limit',
-      `Your plan allows ${limits.allowed} extensions and all are in use; buy an additional extension or delete one`,
+      `All ${limits.allowed} extension slots are in use: buy one more with POST /billing/items {"kind": "extension"} (Idempotency-Key header), then retry; or delete an extension`,
     );
   }
 }
@@ -206,7 +206,9 @@ const docs = crudDocs({
   auth: { read: 'user', write: 'owner' },
   createErrors: {
     402: 'The plan is not paid yet (`payment_required`): save a card first (POST /billing/card).',
-    409: 'Another extension already has this number (`number_taken`), or the plan limit is reached (`extension_limit`; see GET /billing).',
+    409:
+      'Another extension already has this number (`number_taken`), or every extension slot is in use (`extension_limit`): ' +
+      'buy one more slot with POST /billing/items {"kind": "extension"}, then retry. Slots in use / allowed: GET /billing.',
   },
   replaceErrors: { 409: 'Another extension already has this number (`number_taken`).' },
   deleteDescription:
@@ -216,7 +218,10 @@ const docs = crudDocs({
     "hang up if it had none; other extensions' forwarding to it is switched off (null); it leaves every ring group " +
     '(a group left without members goes straight to its no-answer destination).',
 });
-docs.create.description = 'Creates the extension, its SIP account and (unless mailboxId is given) a mailbox, in one step.';
+docs.create.description =
+  'Creates the extension, its SIP account and (unless mailboxId is given) a mailbox, in one step. ' +
+  'The plan includes a fixed number of extensions (GET /billing/prices `plan.includedExtensions`); for each extension ' +
+  'beyond that, first buy a slot with POST /billing/items {"kind": "extension"} (GET /billing shows used / allowed).';
 
 export const extensionRoutes: FastifyPluginAsync<ExtensionOptions> = async (app, { sql, sipDomain }) => {
   const anyUser = { preHandler: [authenticate] };

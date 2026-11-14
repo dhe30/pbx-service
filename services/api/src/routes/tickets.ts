@@ -33,7 +33,6 @@ const CreateBody = z
     subject: z.string().trim().min(1).max(200).describe('Short summary of the problem, 1-200 characters (trimmed).'),
     description: z.string().trim().min(1).max(10_000).describe('What happened, 1-10000 characters (trimmed).'),
   })
-  .strict()
   .describe('A new support ticket.');
 
 const ListQuery = z.object({

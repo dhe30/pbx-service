@@ -7,6 +7,7 @@ import { PRICES, proratedCents } from '../src/billing/catalog.js';
 import { FAKE_TOLL_FREE_COST_PER_MIN, FakeDidProvider } from '../src/numbers/fake-provider.js';
 import { DidProviderError, type AvailableNumber, type OrderResult } from '../src/numbers/provider.js';
 import { FakeStripe, build, connectTestDb, payPlan } from './helpers.js';
+import { IdempotencyKeyHeader } from '../src/billing/purchase-requests.js';
 
 // Step 8: number search, purchase (idempotent, resumable), list, release.
 
@@ -51,10 +52,20 @@ describe('number routes without a DB', () => {
     const res = await app.inject({ method: 'POST', url: '/numbers/purchase', cookies: owner, payload: { availableNumberId: 'x' } });
     expect(res.statusCode).toBe(400);
     expect(res.json().message).toMatch(/Idempotency-Key/);
-    const bad = await app.inject({
-      method: 'POST', url: '/numbers/purchase', cookies: owner, payload: { availableNumberId: 'x' }, headers: { 'idempotency-key': 'has spaces' },
+    const tooLong = await app.inject({
+      method: 'POST', url: '/numbers/purchase', cookies: owner, payload: { availableNumberId: 'x' }, headers: { 'idempotency-key': 'k'.repeat(256) },
     });
-    expect(bad.statusCode).toBe(400);
+    expect(tooLong.statusCode).toBe(400);
+  });
+
+  it('accepts any printable Idempotency-Key up to 255 characters (Stripe-style), storing long or unusual ones hashed', () => {
+    expect(IdempotencyKeyHeader.parse('3f1c0d2e-9a7b-4c1d-8e2f-0a1b2c3d4e5f')).toBe('3f1c0d2e-9a7b-4c1d-8e2f-0a1b2c3d4e5f');
+    const b64 = IdempotencyKeyHeader.parse('q+/Zx9w==');
+    expect(b64).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(IdempotencyKeyHeader.parse('q+/Zx9w==')).toBe(b64); // same key, same purchase
+    expect(IdempotencyKeyHeader.parse('k'.repeat(255))).toMatch(/^sha256:/);
+    expect(IdempotencyKeyHeader.safeParse('').success).toBe(false);
+    expect(IdempotencyKeyHeader.safeParse('tab	here').success).toBe(false);
   });
 
   it('maps provider outages to 502', async () => {

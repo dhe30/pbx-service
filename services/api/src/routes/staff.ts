@@ -30,7 +30,7 @@ export interface StaffOptions {
   sipDomain: string;
 }
 
-const CreateStaffBody = z.object({ email, password: password.optional() }).strict();
+const CreateStaffBody = z.object({ email, password: password.optional() });
 const CredentialsQuery = z.object({
   extensionId: z.string().uuid().optional().describe('Extension to use (GET /extensions). Default: the one assigned to this user.'),
 });

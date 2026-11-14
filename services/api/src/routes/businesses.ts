@@ -9,7 +9,10 @@ import { HttpError } from '../errors.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
 import { timeZone, name, parse } from '../validation.js';
 
-const CreateBusinessBody = z.object({ name, timezone: timeZone }).strict();
+const CreateBusinessBody = z.object({
+  name: name.describe('Business name shown on invoices and the dashboard, 1-100 characters (trimmed).'),
+  timezone: timeZone,
+});
 const CardSetupSchema = z
   .object({
     setupIntentId: z.string().describe('SetupIntent id for POST /billing/card.'),

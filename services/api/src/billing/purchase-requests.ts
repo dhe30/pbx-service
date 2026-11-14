@@ -1,4 +1,6 @@
 import { withRetry, type Db, type Sql } from '@pbx/shared';
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { HttpError } from '../errors.js';
 
 // Idempotent, resumable purchases (number purchases: src/numbers/purchase.ts; plan add-ons and
@@ -10,8 +12,25 @@ import { HttpError } from '../errors.js';
 
 export const LEASE_SEC = 30;
 
-/** Idempotency-Key header: any client-chosen string, e.g. a UUID per purchase attempt. */
-export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
+/** Client keys stored as they are: short and plain. Everything else is stored hashed (below). */
+const PLAIN_KEY_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+/**
+ * Idempotency-Key header, as Stripe accepts it: any printable string of 1-255 characters (UUIDs,
+ * base64 with + / =, ...). Plain keys are kept as they are (keys already stored stay valid); any
+ * other key becomes "sha256:<hex>", so the stored key and the derived Stripe keys
+ * ("number:<tenant>:<key>", at most 44 + 200 characters) stay under Stripe's 255-character limit.
+ */
+export const IdempotencyKeyHeader = z
+  .string({ required_error: 'Idempotency-Key header is required' })
+  .trim()
+  .min(1, 'Idempotency-Key must not be empty')
+  .max(255, 'Idempotency-Key must be at most 255 characters')
+  .regex(/^[\x20-\x7E]+$/, 'Idempotency-Key must be printable ASCII')
+  .transform((k) => (PLAIN_KEY_RE.test(k) ? k : `sha256:${createHash('sha256').update(k).digest('hex')}`));
+
+export const IDEMPOTENCY_KEY_DOC =
+  'Unique per purchase (e.g. a UUID), 1-255 printable characters. Reuse it to retry: the same key never buys or charges twice.';
 
 export type PurchaseKind = 'number' | 'item';
 

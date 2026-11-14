@@ -172,14 +172,14 @@ describe.skipIf(!db)('auth routes (Postgres)', () => {
     expect(membership!.tenantId).toBeNull();
   });
 
-  it('signup accepts only email and password', async () => {
+  it('signup ignores extra fields (e.g. the business part of the form) and creates no business', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/auth/signup',
-      payload: { businessName: 'No business here', email: uniqueEmail(), password: 'correct horse battery' },
+      payload: { businessName: 'No business here', timezone: 'America/New_York', email: uniqueEmail(), password: 'correct horse battery' },
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toMatch(/Unrecognized key/);
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ tenantId: null, role: 'unassigned' });
   });
 
   it('POST /businesses assigns an unassigned user as owner and starts card setup', async () => {

@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { proratedCents } from '../billing/catalog.js';
+import { IDEMPOTENCY_KEY_DOC, IdempotencyKeyHeader } from '../billing/purchase-requests.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { HttpError } from '../errors.js';
 import type { DidProvider } from '../numbers/provider.js';
@@ -74,13 +75,10 @@ const PurchaseBody = z
   .object({
     availableNumberId: z.string().min(1).max(200).describe('`id` of a number from GET /numbers/available.'),
   })
-  .strict()
   .describe('The number to buy.');
 
 /** Idempotency-Key: any client-chosen string, e.g. a UUID per purchase attempt. */
-const IdempotencyKey = z
-  .string({ required_error: 'Idempotency-Key header is required' })
-  .regex(/^[A-Za-z0-9_.:-]{1,200}$/, 'Idempotency-Key must be 1-200 letters, digits or _.:-');
+const IdempotencyKey = IdempotencyKeyHeader;
 
 interface PhoneNumber {
   id: string;
@@ -221,7 +219,7 @@ const docs = {
       'If the card is declined the number is not kept. **Idempotent:** send a unique Idempotency-Key per purchase; ' +
       'repeating the request with the same key never buys or charges twice. It returns the first result, finishes an ' +
       'interrupted purchase, or (202) is still processing.',
-    headers: { 'Idempotency-Key': { description: 'Unique per purchase (e.g. a UUID), 1-200 of A-Z a-z 0-9 _ . : -. Reuse it to retry.', required: true } },
+    headers: { 'Idempotency-Key': { description: IDEMPOTENCY_KEY_DOC, required: true } },
     body: PurchaseBody,
     responses: {
       201: { description: 'Bought (or replayed)', schema: PurchaseResultSchema },
