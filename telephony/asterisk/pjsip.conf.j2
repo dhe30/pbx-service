@@ -49,6 +49,13 @@ rtp_timeout_hold={{ hold_max_sec }}
 ; Transfers (REFER) are handed to the ARI app: it sets PJSIP_TRANSFER_HANDLING()=ari-only on each
 ; bridged channel (ChannelTransfer events). allow_transfer must stay on for Asterisk to accept REFER.
 allow_transfer=yes
+; No connected-line updates. They made Asterisk re-INVITE both legs right after every answer;
+; rtpengine turned that PCMU-only re-offer into "PCMU PCMA G729 G723 opus" toward the phone, the
+; course's phones answered with another codec first, and their next session refresh (every 30 s)
+; switched what we SENT them to that codec while they kept sending PCMU: a silent leg mid-call.
+; That was every Extension -> US / extension failure of 2026-11-14
+; (docs/incidents/2026-11-14-codec-flip.md). The caller ID in the initial INVITE is unaffected.
+send_connected_line=no
 
 {% for host in groups['edge'] %}
 {% set trunk = {'name': edge_trunk_names[loop.index0], 'ip': hostvars[host].private_ip} %}
