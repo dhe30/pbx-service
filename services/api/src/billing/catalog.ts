@@ -21,14 +21,14 @@ export const PLAN = {
   name: 'Business',
   /** Plan price per period. Ceiling: $11.50 per included extension. */
   priceCents: 850,
-  includedExtensions: 1,
+  includedExtensions: 3,
   /** US outgoing minutes included per period, shared by the account. */
   includedUsMinutes: 500,
 } as const;
 
 export const PRICES = {
   /** Each additional extension, per period. Ceiling $11.50. */
-  extensionCents: 850,
+  extensionCents: 175,
   /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
   localNumberCents: 250,
   /**
