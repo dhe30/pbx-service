@@ -1,0 +1,66 @@
+#!/bin/bash
+# Synthetic call check (managed by Ansible, roles/monitoring). Run every minute by
+# pbx-synthetic-call.timer; writes {{ synthetic_metrics_file }} for node_exporter's textfile collector.
+#
+# For each edge, through its PUBLIC address (the way phones come in): test extension B registers
+# from this machine, test extension A dials B's number, B answers, A hangs up after 3 s, B
+# unregisters. That call passes Kamailio (auth, location, dispatcher), Asterisk + the ARI app on
+# a pbx node, rtpengine and the database. Not checked yet: audio content (no RTP is sent).
+#
+# Metrics per edge: pbx_synthetic_register_success, pbx_synthetic_call_success (0/1) and
+# pbx_synthetic_call_setup_seconds (INVITE -> answered, incl. the 407 round trip).
+set -u
+. /etc/pbx/synthetic-call.env        # A_USER A_PASSWORD B_USER B_PASSWORD B_NUMBER (root only)
+exec 9>/run/pbx-synthetic-call.lock
+flock -n 9 || exit 0                 # previous run still going: skip this minute
+
+PROM={{ synthetic_metrics_file }}
+DOMAIN={{ sip_domain }}
+SCEN=/usr/local/share/pbx-synthetic
+HOLD_S=3
+WORK=$(mktemp -d)
+out=$(mktemp "$PROM.XXXXXX")
+trap 'rm -rf "$WORK" "$out"' EXIT
+cd "$WORK"
+
+# Common SIPp options: no terminal, quiet, give up after 15 s and count that as a failure.
+sipp_run() { sipp -nostdin -timeout 15 -timeout_error -m 1 "$@" >/dev/null 2>&1; }
+
+echo "# TYPE pbx_synthetic_register_success gauge" >>"$out"
+echo "# TYPE pbx_synthetic_call_success gauge" >>"$out"
+echo "# TYPE pbx_synthetic_call_setup_seconds gauge" >>"$out"
+
+n=0
+{% for host in groups['edge'] | default([]) %}
+# ---- {{ host }} ----------------------------------------------------------------------------------
+EDGE={{ hostvars[host].public_ip | default(hostvars[host].ansible_host) }}
+PB=$((5091 + n * 2)); PA=$((5092 + n * 2)); n=$((n + 1))
+reg=0; call=0; setup=""
+if sipp_run -sf $SCEN/syn_register.xml -s "$B_USER" -key domain "$DOMAIN" -key expires 60 \
+     -au "$B_USER" -ap "$B_PASSWORD" -p $PB "$EDGE:5060"; then
+  reg=1
+  sipp_run -sf $SCEN/syn_uas.xml -p $PB "$EDGE:5060" &
+  uas=$!
+  sleep 0.3
+  t0=$(date +%s%N)
+  if sipp_run -sf $SCEN/syn_uac.xml -s "$B_NUMBER" -key domain "$DOMAIN" -key from "$A_USER" \
+       -au "$A_USER" -ap "$A_PASSWORD" -p $PA "$EDGE:5060"; then
+    call=1
+    t1=$(date +%s%N)
+    # Wall time minus the 3 s the call stays up = dialing until answered (+ BYE round trip, ~ms).
+    setup=$(awk -v d=$((t1 - t0)) -v h=$HOLD_S 'BEGIN { s = d / 1e9 - h; printf "%.3f", (s < 0 ? 0 : s) }')
+  fi
+  wait $uas 2>/dev/null
+  # Remove the registration so the next edge's run doesn't fork to a stale contact.
+  sipp_run -sf $SCEN/syn_register.xml -s "$B_USER" -key domain "$DOMAIN" -key expires 0 \
+    -au "$B_USER" -ap "$B_PASSWORD" -p $PB "$EDGE:5060"
+fi
+echo "pbx_synthetic_register_success{edge=\"{{ host }}\"} $reg" >>"$out"
+echo "pbx_synthetic_call_success{edge=\"{{ host }}\"} $call" >>"$out"
+[ -n "$setup" ] && echo "pbx_synthetic_call_setup_seconds{edge=\"{{ host }}\"} $setup" >>"$out"
+{% endfor %}
+
+echo "# TYPE pbx_synthetic_last_run_timestamp_seconds gauge" >>"$out"
+echo "pbx_synthetic_last_run_timestamp_seconds $(date +%s)" >>"$out"
+chmod 0644 "$out"
+mv "$out" "$PROM"

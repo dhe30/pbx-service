@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  Synthetic call check (pbx-synthetic-call): REGISTER test extension B so the edge can ring it.
+  Credentials with -au/-ap (Debian's SIPp doesn't expand csv fields inside [authentication]).
+    sipp -sf syn_register.xml -s <user> -key domain <sip_domain> -key expires 60 -au <user> -ap <pw> -p <port> -m 1 <edge>:5060
+  -key expires 0 removes the registration again.
+-->
+<scenario name="Synthetic register">
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[service]@[domain]>;tag=[pid]SynReg[call_number]
+      To: <sip:[service]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[service]@[local_ip]:[local_port]>
+      Expires: [expires]
+      Max-Forwards: 70
+      User-Agent: pbx-synthetic
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="401" auth="true"/>
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[service]@[domain]>;tag=[pid]SynReg[call_number]
+      To: <sip:[service]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:[service]@[local_ip]:[local_port]>
+      [authentication]
+      Expires: [expires]
+      Max-Forwards: 70
+      User-Agent: pbx-synthetic
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200"/>
+</scenario>

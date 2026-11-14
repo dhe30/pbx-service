@@ -28,4 +28,5 @@ check promtool check rules "$MON/pbx-alerts.yml"
 check promtool check config "$MON/prometheus.test.yml"
 check amtool check-config "$MON/alertmanager.yml"
 check prometheus-blackbox-exporter --config.check --config.file="$MON/blackbox.yml"
+check bash -n "$MON/pbx-synthetic-call.sh"
 exit $status

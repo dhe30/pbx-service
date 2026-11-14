@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/monitoring).
+[Unit]
+Description=Synthetic test call every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
