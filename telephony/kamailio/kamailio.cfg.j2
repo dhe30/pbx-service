@@ -167,7 +167,10 @@ modparam("tm", "fr_inv_timer", 120000)    # ms: provisional received, waiting fo
 
 # ----- rr -----
 modparam("rr", "enable_full_lr", 0)
-modparam("rr", "append_fromtag", 1)
+# No ;ftag= in Record-Route: only is_direction() needs it and this config never calls it. Each
+# ftag costs ~42 bytes per Record-Route (two per request), and requests to UDP phones must fit
+# in one packet (2026-11-14: a 1,609-byte INVITE was fragmented and never reached a NATed phone).
+modparam("rr", "append_fromtag", 0)
 # Two Record-Route headers when the in/out sockets differ (public<->internal, ws<->udp), each with
 # that socket's (advertised) address; loose_route() then forces the matching socket in-dialog.
 modparam("rr", "enable_double_rr", 1)
@@ -620,10 +623,28 @@ route[TO_DEVICES] {
 		# No device registered: the ARI app treats it as "no answer" (forward / voicemail).
 		# Fork logging (L_INFO, shown at debug=2): which extension rang which contact, and how each
 		# branch ended. Needed to tell "desk phone never rang" from "desk phone lost the race".
-		xlog("L_INFO", "devices: $rU has no registered contact, 480 [ci=$ci]
-");
+		xlog("L_INFO", "devices: $rU has no registered contact, 480 [ci=$ci]\n");
 		send_reply("480", "Temporarily Unavailable");
 		exit;
+	}
+	# Keep the INVITE inside one UDP packet (path MTU 1,450 on the edges). Measured 2026-11-14:
+	# 1,602-1,609 bytes, sent as two IP fragments, and a phone behind a NAT that drops fragments
+	# (campus network) never rang, retransmissions included. Cut what a phone doesn't use (~140 B):
+	#  - P-Asserted-Identity repeats From (phones and the softphone show From without it);
+	#  - User-Agent;
+	#  - Supported: keep 100rel, timer (session refresh), replaces (attended transfer);
+	#  - Allow: keep what a phone may send in this dialog (UPDATE, PRACK, INFO DTMF, REFER and its
+	#    NOTIFYs for transfer, OPTIONS); drop REGISTER, SUBSCRIBE, PUBLISH, MESSAGE.
+	# Plus no ;ftag in Record-Route (rr append_fromtag 0, ~84 B).
+	remove_hf("P-Asserted-Identity");
+	remove_hf("User-Agent");
+	if (is_present_hf("Supported")) {
+		remove_hf("Supported");
+		append_hf("Supported: 100rel, timer, replaces\r\n");
+	}
+	if (is_present_hf("Allow")) {
+		remove_hf("Allow");
+		append_hf("Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, PRACK, INFO, REFER, NOTIFY\r\n");
 	}
 	t_on_branch("DEV_BRANCH");
 	t_on_reply("DEV_REPLY");
@@ -646,8 +667,7 @@ branch_route[DEV_BRANCH] {
 	}
 	if ($var(tp) =~ "^wss?$") setbflag(FLB_WS);
 	else if ($var(tp) =~ "^tls$") setbflag(FLB_TLS);
-	xlog("L_INFO", "devices: branch $T_branch_idx of $rU -> $ru via $du ($var(tp)) [ci=$ci]
-");
+	xlog("L_INFO", "devices: branch $T_branch_idx of $rU -> $ru via $du ($var(tp)) [ci=$ci]\n");
 
 	if ($var(rcv) != "" && $(du{uri.host}) == "{{ private_ip }}") {
 		# The phone is connected to THIS edge: send straight to it (drop our own Path route), from
@@ -678,8 +698,7 @@ branch_route[DEV_BRANCH] {
 }
 
 onreply_route[DEV_REPLY] {
-	if ($rs >= 180) xlog("L_INFO", "devices: $rs $rr from $si for $tU [ci=$ci]
-");
+	if ($rs >= 180) xlog("L_INFO", "devices: $rs $rr from $si for $tU [ci=$ci]\n");
 	route(REPLY_ALIAS);
 	if (has_body("application/sdp")) {
 		$avp(extra_id) = @via[2].branch + $T_branch_idx;
@@ -695,12 +714,10 @@ onreply_route[DEV_REPLY] {
 
 failure_route[DEV_FAILURE] {
 	if (t_is_canceled()) {
-		xlog("L_INFO", "devices: fork for $rU canceled (answered elsewhere or caller hung up) [ci=$ci]
-");
+		xlog("L_INFO", "devices: fork for $rU canceled (answered elsewhere or caller hung up) [ci=$ci]\n");
 		exit;
 	}
-	xlog("L_INFO", "devices: every branch of $rU failed, best reply $T_reply_code [ci=$ci]
-");
+	xlog("L_INFO", "devices: every branch of $rU failed, best reply $T_reply_code [ci=$ci]\n");
 	rtpengine_delete();
 }
 
@@ -720,13 +737,27 @@ route[REPLY_ALIAS] {
 # The peer already engaged rtpengine; we only deliver.
 # ---------------------------------------------------------------------------------------------
 route[FROM_PEER] {
-	if (!loose_route()) {
+	# The INVITE carries OUR Path as a pre-loaded Route: <sip:{{ private_ip }}:5070;lr;received=...>.
+	# Don't use loose_route() for it: on an initial request with a pre-loaded route it returns -3
+	# ("next hop is taken from a preloaded route set", rr module docs), which `if (!...)` reads as
+	# false, so every relayed call was refused with 403 (seen live 2026-11-14: every call to a
+	# phone registered through edge-2 failed). Take the phone's address from ;received ourselves,
+	# as DEV_BRANCH does on the sending edge.
+	if (!is_present_hf("Route")) {
+		xlog("L_WARN", "devices: relay from the peer edge without a Route, 403 [ci=$ci]\n");
 		sl_send_reply("403", "Forbidden");
 		exit;
 	}
-	# path use_received=1 has set $du to the client address from our own Path ;received.
-	xlog("L_INFO", "devices: relaying for the peer edge to $du [ci=$ci]
-");
+	$var(rt) = $(hdr(Route){nameaddr.uri});
+	$var(rcv) = $(var(rt){uri.param,received}{s.unescape.param});
+	if ($(var(rt){uri.host}) != "{{ private_ip }}" || $var(rcv) == $null || $var(rcv) == "") {
+		xlog("L_WARN", "devices: relay from the peer edge with a Route that isn't our Path ($hdr(Route)), 403 [ci=$ci]\n");
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	remove_hf("Route");
+	$du = $var(rcv);
+	xlog("L_INFO", "devices: relaying for the peer edge to $du [ci=$ci]\n");
 	record_route();
 	t_on_reply("PEER_REPLY");
 	route(SEND_PUBLIC);

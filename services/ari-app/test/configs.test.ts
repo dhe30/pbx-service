@@ -70,6 +70,32 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(rep).toMatch(/\$avp\(extra_id\) = @via\[2\]\.branch \+ \$T_branch_idx;/);
       expect(rep.match(/rtpengine_answer\("via-branch=extra /g)).toHaveLength(3);
     });
+    it('a peer edge delivers a relayed INVITE from its own Path ;received, not loose_route()\'s return code', () => {
+      // loose_route() returns -3 for a pre-loaded route on an initial request: `if (!loose_route())`
+      // refused every relayed call with 403 (live, 2026-11-14).
+      const peer = block(kam, 'route[FROM_PEER]');
+      const code = peer.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+      expect(code).not.toMatch(/loose_route\(/);
+      expect(peer).toMatch(/\$var\(rt\) = \$\(hdr\(Route\)\{nameaddr\.uri\}\);/);
+      expect(peer).toMatch(/\{uri\.param,received\}\{s\.unescape\.param\}/);
+      expect(peer).toContain('$(var(rt){uri.host}) != "127.0.0.11"');
+      expect(peer).toMatch(/remove_hf\("Route"\);\n\t\$du = \$var\(rcv\);/);
+      expect(block(kam2, 'route[FROM_PEER]')).toContain('$(var(rt){uri.host}) != "127.0.0.12"');
+    });
+    it('INVITEs to phones are trimmed to fit one UDP packet', () => {
+      expect(kam).toMatch(/modparam\("rr", "append_fromtag", 0\)/);
+      const dev = block(kam, 'route[TO_DEVICES]');
+      expect(dev).toMatch(/remove_hf\("P-Asserted-Identity"\);/);
+      expect(dev).toMatch(/remove_hf\("User-Agent"\);/);
+      expect(dev).toContain('append_hf("Supported: 100rel, timer, replaces\\r\\n");');
+      // Transfers need REFER (+ NOTIFY); UPDATE/PRACK/INFO/OPTIONS stay usable in the dialog.
+      expect(dev).toContain('append_hf("Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, PRACK, INFO, REFER, NOTIFY\\r\\n");');
+      // Trimmed before relaying, so every branch (and a peer edge's relay) gets the small version.
+      expect(dev.indexOf('remove_hf("Allow")')).toBeLessThan(dev.indexOf('route(RELAY)'));
+    });
+    it('log lines end in a \\n escape, not a line break inside the string', () => {
+      expect(kam).not.toMatch(/xlog\("L_[A-Z]+", "[^"\n]*\n"\)/);
+    });
     it('transport (WS / TLS / UDP) is decided per branch, not per message', () => {
       const br = block(kam, 'branch_route[DEV_BRANCH]');
       expect(br).toMatch(/setbflag\(FLB_WS\)/);
