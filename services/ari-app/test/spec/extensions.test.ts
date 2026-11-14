@@ -40,6 +40,20 @@ describe('§3 Extensions: ringing', () => {
     await h.settle();
   });
 
+  it("never rings an external number that is the caller's own number", async () => {
+    const { h, a, did } = await setup({ number: '101', externalNumbers: ['+16315550728', '+12015557001'] });
+    const sip = a.ext['101']!.sip;
+    h.ari.sip.set(sip, { answerAfterMs: 20 });
+    // The extension's own mobile calls the shop: ring the desk phone and the OTHER number only.
+    const caller = h.ari.carrierCall(did, '+16315550728');
+    await until(() => h.ari.originates.length === 2, 2000, '2 legs');
+    const kinds = h.ari.originates.map((o) => (o.target.kind === 'sip' ? `sip:${o.target.user}` : `ext:${o.target.number}`)).sort();
+    expect(kinds).toEqual(['ext:+12015557001', `sip:${sip}`].sort());
+    expect(h.ari.legsTo('+16315550728')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('first answer wins; the other legs are hung up', async () => {
     const { h, a, did } = await setup({ number: '101', externalNumbers: ['+12015557001'] });
     h.ari.external.set('+12015557001', { answerAfterMs: 5 });
