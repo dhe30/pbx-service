@@ -94,3 +94,15 @@ Remaining exposure: Asterisk still re-INVITEs if it becomes the session-timer re
    analyzer on captures with and without the flip, and `promtool test rules`; not yet run against
    the real edges.
 2. Test a 16-minute call (Asterisk as session-timer refresher).
+3. **Our own count of silent legs** (2026-11-14, not deployed yet): `pbx-call-audio` on each edge
+   (`infra/ansible/roles/rtpengine/files/pbx-call-audio.py`) turns rtpengine's "Final packet stats"
+   into one JSON line per call in `/var/log/pbx/call-audio.jsonl` (Call-ID, peer, codec, packets
+   and bytes per packet each way) and a verdict per party-facing leg: `ok`, `no_media`,
+   `silent_from_party`, `silent_to_party`, `format_mismatch` (we send the party a different packet
+   size than it sends us). Metric `pbx_call_audio_legs_total{verdict,test}`, alert
+   `CustomerCallAudioBad`. Backfilled over 2026-11-13 23:00 → 11-14 22:00 UTC: it flags all 21
+   bad customer legs we know of (every course-counted failure above, plus Maple's earlier long
+   calls and the TLS-phone leg that got no audio before PR #51), none after the fix, and 0 false
+   positives among 82 good customer legs. Blind spot: PCMU vs PCMA (same packet size).
+   Investigation recipe: `grep -v '"verdict":"ok"' /var/log/pbx/call-audio.jsonl` on both edges for
+   the course's failure window.

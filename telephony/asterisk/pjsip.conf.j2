@@ -11,6 +11,17 @@
 ;                                vendor's digest credentials. The ARI app dials
 ;                                PJSIP/vendor-us-edge-a/sip:+1NXXNXXXXXX@<vendor host>.
 
+[system]
+type=system
+; SIP retransmit timer T1: 100 ms instead of 500 ms. Asterisk only ever talks to the Kamailio edges,
+; over the private network (RTT < 5 ms), so a lost INVITE (ringing a phone, a vendor leg) or a lost
+; 200 OK costs 0.1 s instead of 0.5 s of post-dial delay / SIP response time. Kamailio does the
+; internet-facing transactions with standard timers. Non-INVITE timeout becomes 64 x T1 = 6.4 s,
+; still above Kamailio's fr_timer (5 s), which answers 408 first. timer_b (INVITE) stays 32 s.
+; Takes effect on an Asterisk restart (the role restarts Asterisk when this file changes).
+timer_t1=100
+timer_b=32000
+
 [global]
 type=global
 user_agent=pbx-asterisk

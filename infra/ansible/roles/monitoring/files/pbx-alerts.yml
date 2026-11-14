@@ -445,6 +445,23 @@ groups:
           summary: "The codec quality test on mon-1 hasn't completed for 45 minutes"
           description: "On mon-1: systemctl status pbx-quality-test.timer pbx-quality-test.service"
 
+      # Real customer calls (pbx-call-audio on each edge, from rtpengine's final stats): a leg where
+      # the party got no audio from us, sent none, or got a different codec than it talks. The
+      # course counts those as failed legs, and customers leave over them.
+      - alert: CustomerCallAudioBad
+        expr: sum by (instance, verdict) (increase(pbx_call_audio_legs_total{test="false",verdict=~"format_mismatch|silent_from_party|silent_to_party"}[15m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanize }} customer call leg(s) on {{ $labels.instance }} ended with {{ $labels.verdict }} in 15 min"
+          description: "On that edge: grep -v '\"verdict\":\"ok\"' /var/log/pbx/call-audio.jsonl | tail (Call-ID, peer, bytes per packet each way); then journalctl -u rtpengine-daemon and the SIP capture for that Call-ID."
+
+      - alert: CallAudioCheckNotRunning
+        expr: time() - pbx_call_audio_last_run_timestamp_seconds > 300
+        labels: { severity: warning }
+        annotations:
+          summary: "pbx-call-audio on {{ $labels.instance }} has stopped updating"
+          description: "systemctl status pbx-call-audio on that edge."
+
       - alert: SyntheticCheckNotRunning
         expr: time() - pbx_synthetic_last_run_timestamp_seconds > 300
         labels: { severity: warning }
