@@ -102,6 +102,10 @@ postgresql:
   pg_hba:
     - local all all peer
     - host all all 127.0.0.1/32 scram-sha-256
+    # Patroni on a replica opens a replication connection to its own Postgres (local timeline and
+    # LSN). Without this line it failed ~17 times a second, each with a traceback in the journal:
+    # ~30% CPU on every replica, and no local position for failover decisions.
+    - host replication replicator 127.0.0.1/32 scram-sha-256
 {% for ip in db_ips %}
     - host replication replicator {{ ip }}/32 scram-sha-256
 {% endfor %}
