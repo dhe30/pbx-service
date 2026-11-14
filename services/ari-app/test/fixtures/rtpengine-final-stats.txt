@@ -1,0 +1,59 @@
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] Final packet stats:
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] --- Tag 'bc06927f', created 1:45 ago for branch ''
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] --------- Port       10.0.0.42:35522 <> 130.245.136.128:60837, SSRC f146fdd, in 3723 p, 640216 b, 0 e, 30 ts, out 3734 p, 329488 b, 0 e
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] --------- Port       10.0.0.42:35523 <> 130.245.136.128:29923 (RTCP), SSRC f146fdd, in 0 p, 0 b, 0 e, 45 ts, out 14 p, 1400 b, 0 e
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] --- Tag '7c35b7ad-05a8-446b-aed6-6477352ee48b', created 1:45 ago for branch ''
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] --------- Port       10.0.0.42:32742 <>      10.0.1.214:16804, SSRC 785d6c1f, in 3734 p, 642248 b, 1 e, 30 ts, out 3723 p, 640356 b, 0 e
+1794673517.138346 edge-2 rtpengine[29922]: INFO: [f068b387c682ab9d298e@130.245.136.128]: [core] --------- Port       10.0.0.42:32743 <>      10.0.1.214:16805 (RTCP), SSRC 785d6c1f, in 18 p, 1800 b, 0 e, 35 ts, out 0 p, 0 b, 0 e
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] Final packet stats:
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] --- Tag 'jB3Z25Q6X0H6a', created 2:00 ago for branch ''
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] --------- Port       10.0.0.42:37740 <>  130.245.136.56:35728, SSRC 313ec366, in 4137 p, 711564 b, 0 e, 30 ts, out 4133 p, 710876 b, 0 e
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] --------- Port       10.0.0.42:37741 <>  130.245.136.56:29415 (RTCP), SSRC 313ec366, in 0 p, 0 b, 0 e, 53 ts, out 16 p, 1600 b, 0 e
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] --- Tag 'e7da385f-a5c1-4fc1-89b7-939a3c4f3516', created 2:00 ago for branch ''
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] --------- Port       10.0.0.42:34010 <>      10.0.1.214:11964, SSRC 1a33892d, in 4133 p, 710876 b, 0 e, 30 ts, out 4137 p, 711564 b, 0 e
+1794685470.384604 edge-2 rtpengine[29922]: INFO: [5e814da2-5b06-1240-5991-fa163ee84576]: [core] --------- Port       10.0.0.42:34011 <>      10.0.1.214:11965 (RTCP), SSRC 1a33892d, in 29 p, 2900 b, 0 e, 33 ts, out 0 p, 0 b, 0 e
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] Final packet stats:
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] --- Tag '6dbcb891-36b3-4d36-83c5-843dd02205c1', created 2:00 ago for branch ''
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] --------- Port       10.0.0.42:37610 <>      10.0.1.214:10626, SSRC 313ec366, in 4135 p, 711220 b, 0 e, 30 ts, out 4139 p, 711908 b, 0 e
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] --------- Port       10.0.0.42:37611 <>      10.0.1.214:10627 (RTCP), SSRC 313ec366, in 28 p, 2800 b, 0 e, 33 ts, out 0 p, 0 b, 0 e
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] --- Tag '1ab16e787919', created 2:00 ago for branch 'z9hG4bKPj3da74d46-e033-479d-baf5-907a77a8165d0'
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] ------ Media #1 (audio over RTP/SAVP) using PCMU/8000
+1794685470.386541 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] --------- Port       10.0.0.42:33966 <>  130.245.136.56:52750, SSRC 1a33892d, in 4139 p, 748768 b, 0 e, 30 ts, out 4135 p, 711260 b, 0 e
+1794685470.387534 edge-2 rtpengine[29922]: INFO: [a96833c4-34b8-4816-8d8e-b0b09a735d26]: [core] --------- Port       10.0.0.42:33967 <>  130.245.136.56:29417 (RTCP), SSRC 1a33892d, in 0 p, 0 b, 0 e, 53 ts, out 16 p, 1656 b, 0 e
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] Final packet stats:
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] --- Tag 'jsum9q17j1', created 1:05 ago for branch ''
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] ------ Media #1 (audio over RTP/SAVPF) using PCMU/8000
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] --------- Port       10.0.0.42:38813 <>   130.245.136.1:35280, SSRC 3b9df35c, in 1876 p, 244842 b, 1 e, 30 ts, out 1763 p, 302501 b, 0 e
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] --- Tag 'e2935da8-3246-4b26-916d-299139bfeea3', created 1:05 ago for branch ''
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] --------- Port       10.0.0.42:37620 <>       10.0.0.91:14190, SSRC 6624c561, in 1755 p, 301163 b, 0 e, 30 ts, out 1848 p, 230496 b, 0 e
+1794632443.094208 edge-2 rtpengine[29922]: INFO: [e38q6p2rqaf5mqorsdh1]: [core] --------- Port       10.0.0.42:37621 <>       10.0.0.91:14191 (RTCP), SSRC 6624c561, in 13 p, 1300 b, 0 e, 30 ts, out 14 p, 640 b, 0 e
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] Final packet stats:
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] --- Tag 'acb7f30b-11fe-4596-bd33-798e65755e8d', created 0:38 ago for branch ''
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] --------- Port       10.0.0.42:35280 <>      10.0.1.214:16618, SSRC 2d4576e8, in 248 p, 42656 b, 0 e, 30 ts, out 251 p, 43172 b, 0 e
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] --------- Port       10.0.0.42:35281 <>      10.0.1.214:16619 (RTCP), SSRC 2d4576e8, in 1 p, 100 b, 0 e, 30 ts, out 0 p, 0 b, 0 e
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] --- Tag '5c24e9987f52', created 0:38 ago for branch 'z9hG4bKPj359b086b-4fac-405a-84d4-e2d7a1f9d0c30'
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] ------ Media #1 (audio over RTP/SAVP) using PCMU/8000
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] --------- Port       10.0.0.42:31726 <>  130.245.136.56:43790, SSRC 59287fab, in 251 p, 44152 b, 248 e, 30 ts, out 0 p, 0 b, 0 e
+1794668165.095583 edge-2 rtpengine[29922]: INFO: [caaa731f-128f-421e-a22b-1d77f25bfdec]: [core] --------- Port       10.0.0.42:31727 <>  130.245.136.56:24283 (RTCP), SSRC 59287fab, in 0 p, 0 b, 1 e, 35 ts, out 0 p, 0 b, 0 e
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] Final packet stats:
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --- Tag '6fb3d42f-bbea-4127-839b-d48099e56fc8', created 60:01 ago for branch ''
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --------- Port       10.0.0.42:30666 <>      10.0.1.214:11702, SSRC 6e33f8a8, in 708 p, 121776 b, 0 e, 3586 ts, out 699 p, 120228 b, 0 e
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --------- Port       10.0.0.42:30667 <>      10.0.1.214:11703 (RTCP), SSRC 6e33f8a8, in 3 p, 300 b, 0 e, 3590 ts, out 5 p, 208 b, 0 e
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --- Tag '', created 60:01 ago for branch 'z9hG4bKPj37432ac0-14b3-469a-b8c3-f4a0abe865eb0'
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] ------ Media #1 (audio over RTP/AVP) using unknown codec
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --------- Port       10.0.0.42:34482 <>                :0    , SSRC 0, in 0 p, 0 b, 0 e, 3601 ts, out 0 p, 0 b, 0 e
+1794639262.365214 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --------- Port       10.0.0.42:34483 <>                :0     (RTCP), SSRC 0, in 0 p, 0 b, 0 e, 3601 ts, out 0 p, 0 b, 0 e
+1794639262.366733 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --- Tag '', created 60:01 ago for branch 'z9hG4bKPj37432ac0-14b3-469a-b8c3-f4a0abe865eb1'
+1794639262.366733 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] ------ Media #1 (audio over RTP/SAVPF) using unknown codec
+1794639262.366733 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --------- Port       10.0.0.42:32876 <>                :0    , SSRC 0, in 0 p, 0 b, 0 e, 3601 ts, out 0 p, 0 b, 0 e
+1794639262.366733 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --- Tag 'ml8pilt0vd', created 60:01 ago for branch 'z9hG4bKPj37432ac0-14b3-469a-b8c3-f4a0abe865eb2'
+1794639262.366733 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] ------ Media #1 (audio over RTP/SAVPF) using PCMU/8000
+1794639262.366733 edge-2 rtpengine[29922]: INFO: [7ea050e7-a581-443e-8fcc-c71ceadd01a6]: [core] --------- Port       10.0.0.42:30458 <>   130.245.136.1:35524, SSRC c9efd480, in 709 p, 131912 b, 8 e, 3586 ts, out 705 p, 121619 b, 0 e

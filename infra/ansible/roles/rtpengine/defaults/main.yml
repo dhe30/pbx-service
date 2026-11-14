@@ -6,3 +6,10 @@ rtpengine_service: rtpengine-daemon
 rtpengine_kernel_forwarding: true
 # Media worker threads; default = vCPUs.
 rtpengine_threads: "{{ ansible_processor_vcpus | default(2) }}"
+
+# ---- pbx-call-audio: per-call audio verdicts from rtpengine's final stats (files/pbx-call-audio.py)
+# Peers whose calls are our own tests, not customers (counted with test="true"): mon-1, whose
+# synthetic call and codec quality test reach the edges from its public egress address
+# (130.245.136.144, NAT) and announce its private address in their SDP.
+call_audio_test_peers: "{{ ['130.245.136.144'] + (groups.get('mon', []) | map('extract', hostvars, 'private_ip') | list) }}"
+call_audio_jsonl: /var/log/pbx/call-audio.jsonl
