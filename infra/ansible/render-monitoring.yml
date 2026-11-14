@@ -33,6 +33,7 @@
         - prometheus-blackbox-exporter.default
         - pbx-synthetic-call.sh
         - pbx-quality-test.sh
+        - pbx-long-call-test.sh
 
     - name: Static files (alert rules, dashboards)
       ansible.builtin.copy:

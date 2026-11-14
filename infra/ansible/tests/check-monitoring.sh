@@ -30,4 +30,5 @@ check amtool check-config "$MON/alertmanager.yml"
 check prometheus-blackbox-exporter --config.check --config.file="$MON/blackbox.yml"
 check bash -n "$MON/pbx-synthetic-call.sh"
 check bash -n "$MON/pbx-quality-test.sh"
+check bash -n "$MON/pbx-long-call-test.sh"
 exit $status

@@ -260,6 +260,12 @@
         dest: /usr/local/bin/pbx-quality-test
         mode: "0755"
 
+    - name: Long-call test script (manual, no timer; docs/incidents/2026-11-14-codec-flip.md follow-up 2)
+      ansible.builtin.template:
+        src: pbx-long-call-test.sh.j2
+        dest: /usr/local/bin/pbx-long-call-test
+        mode: "0755"
+
     - name: Quality test systemd units
       ansible.builtin.template:
         src: "{{ item }}.j2"

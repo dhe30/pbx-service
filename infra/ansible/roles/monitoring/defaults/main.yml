@@ -49,3 +49,7 @@ quality_test_enabled: "{{ synthetic_call_enabled }}"
 quality_test_interval_min: 15
 quality_metrics_file: /var/lib/prometheus/node-exporter/pbx_quality.prom
 quality_state_dir: /var/lib/pbx-quality
+# Manual long-call test (pbx-long-call-test, installed with the quality test, no timer): the
+# Session-Expires its caller proposes; Asterisk refreshes at half of it. 1800 = Asterisk's default
+# timers_sess_expires, i.e. what a phone that leaves the refresh to Asterisk gets.
+long_call_session_expires: 1800
