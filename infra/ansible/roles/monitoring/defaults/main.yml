@@ -41,7 +41,9 @@ synthetic_metrics_file: /var/lib/prometheus/node-exporter/pbx_synthetic.prom
 synthetic_lock_file: /run/pbx-synthetic-call.lock
 
 # Codec quality test (pbx-quality-test): 10 calls per run between the same test extensions, one
-# per codec and role, checking that audio arrives in both directions. Needs the synthetic call's
+# per codec and role, checking that audio arrives in both directions, plus one 45 s call that
+# refreshes its session at 30 s with a multi-codec offer (payload type + size checked after the
+# refresh). ~2.5 min per run, holding synthetic_lock_file. Needs the synthetic call's
 # credentials; enabled with it.
 quality_test_enabled: "{{ synthetic_call_enabled }}"
 quality_test_interval_min: 15

@@ -416,10 +416,22 @@ groups:
           summary: "Silent audio with {{ $labels.codec }} ({{ $labels.role }} side) in the last 2 quality tests"
           description: "On mon-1: journalctl -u pbx-quality-test (packets per direction); pbx_quality_packets shows which direction is missing."
 
+      # Session-refresh quality test (same run): a phone offering several codecs, non-PCMU first,
+      # refreshes its call at 30 s; after that it got another codec (wrong payload type or size)
+      # or nothing, in 2 runs in a row. The 2026-11-14 codec flip (docs/incidents/2026-11-14-codec-flip.md):
+      # every desk-phone call longer than ~30 s goes silent toward the phone.
+      - alert: QualityRefreshCodecChanged
+        expr: pbx_quality_refresh_silent_runs >= 2
+        labels: { severity: critical }
+        annotations:
+          summary: "After a session refresh the test phone stopped getting PCMU in the last 2 quality tests"
+          description: "Desk-phone calls go silent after ~30 s. pbx_quality_refresh_payload_type / _packet_bytes show what the phone got (4/36 B = G.723, 18/32 B = G.729, 8 = PCMA); journalctl -u pbx-quality-test shows the refresh answer's m= line. Check that Asterisk does not re-INVITE after the answer (send_connected_line=no)."
+
       # Several test calls failed at the SIP level (not answered, missed re-INVITE...) for 30 min:
       # either the test phones or the call path is broken. Audio is not judged for those calls.
+      # Includes the session-refresh call (a refused refresh drops real phones' calls too).
       - alert: QualityTestCallsFailing
-        expr: count(pbx_quality_sip_ok == 0) >= 3
+        expr: count({__name__=~"pbx_quality_(refresh_)?sip_ok"} == 0) >= 3
         for: 30m
         labels: { severity: warning }
         annotations:
