@@ -4,11 +4,12 @@
 #
 # For each edge, through its PUBLIC address (the way phones come in): test extension B registers
 # from this machine, test extension A dials B's number, B answers, A hangs up after 3 s, B
-# unregisters. That call passes Kamailio (auth, location, dispatcher), Asterisk + the ARI app on
-# a pbx node, rtpengine and the database. Not checked yet: audio content (no RTP is sent).
+# unregisters. Both answer Asterisk's re-INVITEs after the answer (connected-line updates). That
+# call passes Kamailio (auth, location, dispatcher), Asterisk + the ARI app on a pbx node, rtpengine
+# and the database. Not checked yet: audio content (no RTP is sent).
 #
 # Metrics per edge: pbx_synthetic_register_success, pbx_synthetic_call_success (0/1) and
-# pbx_synthetic_call_setup_seconds (INVITE -> answered, incl. the 407 round trip).
+# pbx_synthetic_call_setup_seconds (authenticated INVITE -> 200 OK, SIPp's response timer).
 set -u
 . /etc/pbx/synthetic-call.env        # A_USER A_PASSWORD B_USER B_PASSWORD B_NUMBER (root only)
 exec 9>/run/pbx-synthetic-call.lock
@@ -17,7 +18,6 @@ flock -n 9 || exit 0                 # previous run still going: skip this minut
 PROM={{ synthetic_metrics_file }}
 DOMAIN={{ sip_domain }}
 SCEN=/usr/local/share/pbx-synthetic
-HOLD_S=3
 WORK=$(mktemp -d)
 out=$(mktemp "$PROM.XXXXXX")
 trap 'rm -rf "$WORK" "$out"' EXIT
@@ -42,13 +42,12 @@ if sipp_run -sf $SCEN/syn_register.xml -s "$B_USER" -key domain "$DOMAIN" -key e
   sipp_run -sf $SCEN/syn_uas.xml -p $PB "$EDGE:5060" &
   uas=$!
   sleep 0.3
-  t0=$(date +%s%N)
+  rm -f syn_uac_*_rtt.csv
   if sipp_run -sf $SCEN/syn_uac.xml -s "$B_NUMBER" -key domain "$DOMAIN" -key from "$A_USER" \
-       -au "$A_USER" -ap "$A_PASSWORD" -p $PA "$EDGE:5060"; then
+       -au "$A_USER" -ap "$A_PASSWORD" -p $PA -trace_rtt -rtt_freq 1 "$EDGE:5060"; then
     call=1
-    t1=$(date +%s%N)
-    # Wall time minus the 3 s the call stays up = dialing until answered (+ BYE round trip, ~ms).
-    setup=$(awk -v d=$((t1 - t0)) -v h=$HOLD_S 'BEGIN { s = d / 1e9 - h; printf "%.3f", (s < 0 ? 0 : s) }')
+    # SIPp's own timer (rtd 1): authenticated INVITE sent -> 200 OK received, in ms.
+    setup=$(awk -F';' '$2 ~ /^[0-9.]+$/ { ms = $2 } END { if (ms != "") printf "%.3f", ms / 1000 }' syn_uac_*_rtt.csv 2>/dev/null)
   fi
   wait $uas 2>/dev/null
   # Remove the registration so the next edge's run doesn't fork to a stale contact.
