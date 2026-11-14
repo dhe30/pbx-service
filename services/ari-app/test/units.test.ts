@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AriClient, AriError } from '../src/ari/client.js';
+import { ConfigCache } from '../src/cache.js';
 import { EventBus, chKey, onChannel, onPlaybackFinished, onWatched } from '../src/ari/events.js';
 import type { AriEvent, ChannelTransfer } from '../src/ari/types.js';
 import { referTarget } from '../src/conversation.js';
@@ -164,5 +165,98 @@ describe('AriClient.stopPlayback', () => {
     const c = client();
     failWith(c, 500, '{"message":"Internal error"}');
     await expect(c.stopPlayback('x')).rejects.toThrow(/500/);
+  });
+});
+
+describe('ConfigCache background refresh (calls never wait for the DB)', () => {
+  type Deferred = { resolve: (v: unknown) => void; promise: Promise<unknown> };
+  const defer = (): Deferred => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((r) => (resolve = r));
+    return { resolve, promise };
+  };
+  const quietLog = { debug() {}, info() {}, warn() {}, error() {} } as unknown as ConstructorParameters<typeof ConfigCache>[2];
+  const setup = () => {
+    let version = 0;
+    const repo = {
+      loadTenant: vi.fn(async (id: string) => ({ id, version: ++version })),
+      tenantIdForSipUser: vi.fn(async () => 't1'),
+      tenantIdForDid: vi.fn(async () => 't1'),
+      loadRates: vi.fn(async () => ({})),
+    };
+    const cache = new ConfigCache(repo as unknown as ConstructorParameters<typeof ConfigCache>[0], 30, quietLog);
+    return { repo, cache };
+  };
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it('reloads an active account before the TTL, so the next call is a cache hit', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['Date'] });
+    try {
+      const { repo, cache } = setup();
+      await cache.tenant('t1');
+      expect(repo.loadTenant).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(20_000); // past TTL/2 (15 s)
+      cache.refreshNow();
+      await flush();
+      expect(repo.loadTenant).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(40_000); // 40 s after the first load: without the refresh this would reload
+      const t = (await cache.tenant('t1')) as unknown as { version: number };
+      expect(repo.loadTenant).toHaveBeenCalledTimes(2);
+      expect(t.version).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops accounts without a call for 10 minutes instead of refreshing them', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['Date'] });
+    try {
+      const { repo, cache } = setup();
+      await cache.tenant('t1');
+      vi.setSystemTime(11 * 60_000);
+      cache.refreshNow();
+      await flush();
+      expect(repo.loadTenant).toHaveBeenCalledTimes(1);
+      await cache.tenant('t1'); // reloaded on demand
+      expect(repo.loadTenant).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a change (NOTIFY) during a background reload is not hidden by the older result', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['Date'] });
+    try {
+      const { repo, cache } = setup();
+      await cache.tenant('t1');
+      const slow = defer();
+      repo.loadTenant.mockImplementationOnce(() => slow.promise as never);
+      vi.setSystemTime(20_000);
+      cache.refreshNow(); // reload starts with the old data...
+      cache.invalidateTenant('t1'); // ...the account changes meanwhile
+      slow.resolve({ id: 't1', version: 99 });
+      await flush();
+      const t = (await cache.tenant('t1')) as unknown as { version: number };
+      expect(t.version).not.toBe(99); // loaded again after the change, not the stale result
+      expect(repo.loadTenant).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps SIP user -> account lookups for 10 minutes (dropped at once by NOTIFY)', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['Date'] });
+    try {
+      const { repo, cache } = setup();
+      await cache.tenantForSipUser('u1');
+      vi.setSystemTime(5 * 60_000);
+      await cache.tenantForSipUser('u1');
+      expect(repo.tenantIdForSipUser).toHaveBeenCalledTimes(1);
+      cache.invalidateTenant('t1');
+      await cache.tenantForSipUser('u1');
+      expect(repo.tenantIdForSipUser).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
