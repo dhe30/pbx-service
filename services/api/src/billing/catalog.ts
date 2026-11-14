@@ -21,7 +21,7 @@ export const PLAN = {
   name: 'Business',
   /** Plan price per period. Ceiling: $11.50 per included extension. */
   priceCents: 850,
-  includedExtensions: 3,
+  includedExtensions: 5,
   /** US outgoing minutes included per period, shared by the account. */
   includedUsMinutes: 500,
 } as const;
