@@ -306,7 +306,12 @@ describe.skipIf(!db)('history (Postgres)', () => {
       expect((await call(t.owner, 'PATCH', `/voicemails/${v.id}`, { heard: false })).json().heard).toBe(false);
 
       expect((await call(t.owner, 'PATCH', `/voicemails/${v.id}`, { heard: 'yes' })).statusCode).toBe(400);
-      expect((await call(t.owner, 'PATCH', `/voicemails/${v.id}`, { heard: true, mailboxId: randomUUID() })).statusCode).toBe(400);
+      // Unknown fields are ignored, not refused (the course's tools may send extra fields), and
+      // can't move the message to another mailbox.
+      const extra = await call(t.owner, 'PATCH', `/voicemails/${v.id}`, { heard: true, mailboxId: randomUUID() });
+      expect(extra.statusCode).toBe(200);
+      expect(extra.json().heard).toBe(true);
+      expect((await sql`select mailbox_id from voicemails where id = ${v.id}`)[0]!.mailboxId).toBe(t.boxes.staff);
       expect((await call(t.other, 'PATCH', `/voicemails/${v.id}`, { heard: true })).statusCode).toBe(404);
       expect((await call(a.owner, 'PATCH', `/voicemails/${v.id}`, { heard: true })).statusCode).toBe(404);
     });
