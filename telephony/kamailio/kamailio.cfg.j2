@@ -246,8 +246,15 @@ modparam("dispatcher", "hash_pvar", "$avp(dshash)")
 # Node choice is a hash of the Call-ID.
 modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
 modparam("rtpengine", "rtpengine_disable_tout", 20)
-modparam("rtpengine", "rtpengine_tout_ms", 1000)
-modparam("rtpengine", "rtpengine_retr", 2)
+# Wait per attempt for rtpengine's reply. Measured 2026-11-14 (10 min, 191 commands): replies take
+# 0.2-6 ms (same edge < 1.5 ms, cross-edge 1-6 ms). With 1000 ms, ONE lost UDP packet held the SIP
+# message for exactly 1 s (a re-INVITE's 200 OK took 1.008 s; the course's re-INVITE p95 ~1 s),
+# and the cross-edge path does lose them: twice in 3 days both attempts were lost (ERROR "timeout
+# waiting reply" for ping on each edge; a loss recovered by the resend isn't logged). 250 ms caps a
+# single loss at 0.25 s; 3 attempts keep 750 ms of patience for an rtpengine busy transcoding.
+# Resending is safe: rtpengine answers a repeated cookie from its cache without redoing the command.
+modparam("rtpengine", "rtpengine_tout_ms", 250)
+modparam("rtpengine", "rtpengine_retr", 3)
 # Forking: each branch toward a phone gets its own media leg in rtpengine (via-branch=extra with
 # a per-branch id), otherwise the branches' offers overwrite each other and the answering phone
 # can end up with no audio.
