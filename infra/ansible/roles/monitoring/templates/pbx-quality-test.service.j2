@@ -1,0 +1,8 @@
+# Managed by Ansible (roles/monitoring). Started every {{ quality_test_interval_min }} min by pbx-quality-test.timer.
+[Unit]
+Description=Codec quality test calls (audio both ways per codec), for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pbx-quality-test
+TimeoutStartSec=600

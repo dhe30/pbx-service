@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/monitoring).
+[Unit]
+Description=Codec quality test every {{ quality_test_interval_min }} minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={{ quality_test_interval_min }}min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

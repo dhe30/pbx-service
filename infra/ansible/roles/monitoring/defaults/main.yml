@@ -37,3 +37,13 @@ business_metrics_file: /var/lib/prometheus/node-exporter/pbx_business.prom
 # / _b_password / _b_number (callee). Off until they are set.
 synthetic_call_enabled: "{{ (vault_synthetic_b_password | default('')) | length > 0 }}"
 synthetic_metrics_file: /var/lib/prometheus/node-exporter/pbx_synthetic.prom
+# Held by the synthetic call and the quality test (they share test extension B).
+synthetic_lock_file: /run/pbx-synthetic-call.lock
+
+# Codec quality test (pbx-quality-test): 10 calls per run between the same test extensions, one
+# per codec and role, checking that audio arrives in both directions. Needs the synthetic call's
+# credentials; enabled with it.
+quality_test_enabled: "{{ synthetic_call_enabled }}"
+quality_test_interval_min: 15
+quality_metrics_file: /var/lib/prometheus/node-exporter/pbx_quality.prom
+quality_state_dir: /var/lib/pbx-quality
