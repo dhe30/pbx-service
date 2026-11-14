@@ -153,11 +153,17 @@ export class AriClient extends EventEmitter<AriClientEvents> {
     return this.request('POST', `/channels/${enc(channelId)}/play`, { media, playbackId });
   }
 
+  /**
+   * Stop a playback, ignoring "already finished". A playback that is just ending answers 500
+   * "Could not stop playback" instead of 404 (seen in production: a digit pressed at the end of a
+   * prompt failed the whole call).
+   */
   async stopPlayback(playbackId: string): Promise<void> {
     try {
       await this.request('DELETE', `/playbacks/${enc(playbackId)}`);
     } catch (err) {
-      if (!(err instanceof AriError && err.gone)) throw err;
+      const finishing = err instanceof AriError && err.status === 500 && /Could not stop playback/i.test(err.message);
+      if (!(err instanceof AriError && (err.gone || finishing))) throw err;
     }
   }
 

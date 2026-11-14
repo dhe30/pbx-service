@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { AriClient, AriError } from '../src/ari/client.js';
 import { EventBus, chKey, onChannel, onPlaybackFinished, onWatched } from '../src/ari/events.js';
 import type { AriEvent, ChannelTransfer } from '../src/ari/types.js';
 import { referTarget } from '../src/conversation.js';
@@ -142,5 +143,26 @@ describe('referTarget', () => {
     expect(referTarget(ev('sip:%2B442071234567@x'))).toBe('+442071234567');
     expect(referTarget(ev('2015550123'))).toBe('2015550123');
     expect(referTarget(ev(''))).toBeNull();
+  });
+});
+
+describe('AriClient.stopPlayback', () => {
+  const client = () => new AriClient({ url: 'http://127.0.0.1:1', user: 'u', password: 'p', app: 'pbx-app' });
+  const failWith = (c: AriClient, status: number, body: string) =>
+    vi.spyOn(c, 'request').mockRejectedValue(new AriError(status, 'DELETE', '/playbacks/x', body));
+
+  it('ignores a playback that is already gone (404) or just finishing (500 "Could not stop playback")', async () => {
+    const a = client();
+    failWith(a, 404, '{"message":"Playback not found"}');
+    await expect(a.stopPlayback('x')).resolves.toBeUndefined();
+    const b = client();
+    failWith(b, 500, '{"message":"Could not stop playback"}');
+    await expect(b.stopPlayback('x')).resolves.toBeUndefined();
+  });
+
+  it('still throws on other errors', async () => {
+    const c = client();
+    failWith(c, 500, '{"message":"Internal error"}');
+    await expect(c.stopPlayback('x')).rejects.toThrow(/500/);
   });
 });
