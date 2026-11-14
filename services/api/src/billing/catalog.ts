@@ -30,7 +30,7 @@ export const PRICES = {
   /** Each additional extension, per period. Ceiling $11.50. */
   extensionCents: 175,
   /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
-  localNumberCents: 250,
+  localNumberCents: 220,
   /**
    * Ceiling $3.50, and we charge it: the DID provider takes 2.00 setup + 3.00 per 7-day period for
    * a toll-free number (verify-backlog V-D15, 2026-11-11), so 3.00 lost the setup fee and earned
