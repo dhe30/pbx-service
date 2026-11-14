@@ -151,12 +151,18 @@ describe.skipIf(!db)('support tickets (Postgres)', () => {
       { subject: 'x', description: '' },
       { subject: 'x'.repeat(201), description: 'x' },
       { subject: 'x', description: 'x'.repeat(10_001) },
-      { subject: 'x', description: 'x', status: 'closed' }, // unknown fields are refused
     ]) {
       const res = await call(a.owner, 'POST', '/tickets', body);
       expect(res.statusCode, JSON.stringify(body).slice(0, 80)).toBe(400);
       expect(res.json().error).toBe('invalid_request');
     }
+  });
+
+  it('ignores unknown fields: a client cannot open a ticket as closed', async () => {
+    const res = await call(a.owner, 'POST', '/tickets', { subject: 'x', description: 'x', status: 'closed', priority: 'high' });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ status: 'open', closedAt: null });
+    expect(res.json()).not.toHaveProperty('priority');
   });
 
   it("lists the account's tickets newest first, filtered by status, with keyset paging", async () => {

@@ -52,7 +52,7 @@ again.
 
 ## Idempotency and resuming
 
-The `Idempotency-Key` header is required (1-200 of `A-Za-z0-9_.:-`). It is scoped per account:
+The `Idempotency-Key` header is required: 1-255 printable characters, as in Stripe (since 2026-11-14; keys outside `A-Za-z0-9_.:-` or longer than 200 are stored as `sha256:<hex>`). It is scoped per account:
 the row key in `purchase_requests` is `<tenant_id>:<key>`. Each step stores its result before
 the next starts:
 

@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { BUYABLE, ITEM_PRICE_CENTS, buyItem, cancelItem, listItems } from '../billing/items.js';
-import { IDEMPOTENCY_KEY_RE } from '../billing/purchase-requests.js';
+import { IDEMPOTENCY_KEY_DOC, IdempotencyKeyHeader } from '../billing/purchase-requests.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { HttpError } from '../errors.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
@@ -30,12 +30,9 @@ const BuyBody = z
       .enum(BUYABLE)
       .describe('extension: one more extension slot. intl_calling: international calling add-on. recording: call recording add-on.'),
   })
-  .strict()
   .describe('What to buy.');
 
-const IdempotencyKey = z
-  .string({ required_error: 'Idempotency-Key header is required' })
-  .regex(IDEMPOTENCY_KEY_RE, 'Idempotency-Key must be 1-200 letters, digits or _.:-');
+const IdempotencyKey = IdempotencyKeyHeader;
 
 const ItemSchema = z
   .object({
@@ -79,7 +76,7 @@ const docs = {
       `${ITEM_PRICE_CENTS.intl_calling}, recording ${ITEM_PRICE_CENTS.recording} cents. An additional extension raises the ` +
       'extension limit by one (GET /billing). Buying a cancelled add-on that is still paid for renews it again at no charge. ' +
       '**Idempotent:** send a unique Idempotency-Key per purchase and reuse it for retries; it never charges twice.',
-    headers: { 'Idempotency-Key': { description: 'Unique per purchase (e.g. a UUID), 1-200 of A-Z a-z 0-9 _ . : -. Reuse it to retry.', required: true } },
+    headers: { 'Idempotency-Key': { description: IDEMPOTENCY_KEY_DOC, required: true } },
     body: BuyBody,
     responses: { 201: { description: 'Bought (or replayed)', schema: BuyResultSchema } },
     errors: {

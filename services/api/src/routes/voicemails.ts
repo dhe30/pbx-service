@@ -34,7 +34,6 @@ const ListQuery = z.object({
 
 const PatchBody = z
   .object({ heard: z.boolean().describe('true = mark heard ("saved"), false = mark new again.') })
-  .strict()
   .describe('Change a message\'s state.');
 
 const VoicemailSchema = z

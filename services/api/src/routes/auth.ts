@@ -14,10 +14,12 @@ import { email, parse, password } from '../validation.js';
 // GET  /me            the logged-in user and optional business                 200, 401
 // Auth responses carry only { userId, tenantId, role }; profile data comes from GET /me.
 
+// Unknown fields are ignored (zod strips them), not refused: clients that send the whole signup form
+// (business name, time zone) here still succeed; the business is created with POST /businesses.
 const SignupBody = z.object({
   email,
   password,
-}).strict();
+});
 
 const LoginBody = z.object({
   email,
@@ -61,7 +63,11 @@ const docs = {
     tag: 'Auth',
     auth: 'public',
     summary: 'Create an account',
-    description: 'Creates an account without a business and logs the user in. Create or join a business separately.',
+    description:
+      'Step 1 of signup: creates the admin login (email + password) and logs the user in (cookies). ' +
+      'Step 2: POST /businesses with the business name and time zone; it returns the SetupIntent client_secret ' +
+      'for Stripe.js. Step 3: confirm the card with Stripe.js, then POST /billing/card (charges the plan). ' +
+      'Extensions, numbers and add-ons can be bought after that.',
     body: SignupBody,
     responses: { 201: { description: 'Created and logged in', schema: SignupSchema, headers: cookiesSet } },
     errors: { 409: 'A user with this email already exists (`email_taken`).' },
