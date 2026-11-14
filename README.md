@@ -259,6 +259,8 @@ in §3.4 as still to do.
 | B8 | Recording uses a mixing bridge | — | Accepted: softmix of two PCMU streams is cheap next to transcoding. Measure with recording on | — |
 | B9 | **No rtpengine session failover** | No floating IP on the platform (V-P2), so another rtpengine can't take over a dead edge's media address | Accepted. Asterisk `rtp_timeout` 60 → 30 s so calls with dead media end sooner and free the phones | New calls go to the surviving edge; only calls in progress on the dead edge are lost |
 | API-1 | **Password hashing** in login/signup | `loadtest/api/argon2-bench.mjs` (2026-11-11, 16-vCPU dev box): with the library default argon2id (64 MiB, t=3, p=4), one process did ~28 hashes/s with p95 1.1 s at 32 concurrent logins. It was memory-bound; a larger libuv pool didn't help | OWASP minimum argon2id parameters (19 MiB, t=2, p=1). Old hashes still verify, because the parameters are stored per hash | ~160 hashes/s, p95 0.2 s on the same machine: about 5.7× the throughput. Still to re-measure on a 1-vCPU app VM |
+| API-2 | **Lost SYNs between the edges and the app nodes** | The course measured an API p99 of 3.6 s, but the API itself answered with a p99 of 0.19 s. Edge-1's HAProxy logs (6 h) showed where the time went: 47 of 6,021 API requests spent ~1,000 ms connecting to an app node (`Tc`) and only a few ms in the API. That is the kernel's 1 s retransmit after a lost SYN. Edge-1 counted 125k SYN retransmits, edge-2 4k | HAProxy `api` and `web` backends: `timeout connect 250ms`, so a connect that hasn't finished after 250 ms is retried at once (`retries 2`, the last one on the other node). `http-reuse always`, so HAProxy keeps connections to the app nodes open and shares them (PR #39) | A lost SYN now costs ~0.25 s instead of 1–3 s, and most requests need no new connection at all. The app nodes are one private hop away (connect p99 < 5 ms), so a slow API never trips the timeout. SYNs lost between clients and the edge are still open (§3.4) |
+| DB-1 | **Patroni error loop on the database replicas** | With almost no load, db-2 and db-3 used ~31% CPU, the leader 9%. Patroni 4 opens a replication connection to its own Postgres on each replica. `pg_hba` had no rule for that from 127.0.0.1, so it failed about 17 times a second, each time with a full traceback: 153,756 log lines in 5 minutes per replica | `host replication replicator 127.0.0.1/32` in `pg_hba` (`postgres_patroni` role). It is applied by a Patroni reload: no restart, no failover | The replicas dropped to 6–11% CPU with no errors. On 1-vCPU VMs that CPU goes back to the reads they serve (Kamailio auth, DID lookups) and to WAL replay. Patroni again knows each replica's position, which it needs to pick the best one in a failover |
 
 ### 3.3 How the parts affect each other
 
@@ -307,6 +309,16 @@ in §3.4 as still to do.
   0.19 s) but in lost TCP SYNs: each costs the kernel's 1 s retransmit, between the edge and the
   app nodes (PR #39) and between clients and the edge (open). Evidence, status of each finding and the queries used:
   [docs/incidents/2026-11-13-first-customer.md](docs/incidents/2026-11-13-first-customer.md).
+- **Synthetic call (since 2026-11-14).** Every minute, mon-1 places a real call through each
+  edge's public address: test extension B registers, test extension A calls it with digest auth,
+  B answers, both answer Asterisk's re-INVITE, A hangs up.
+  - Each run records success and the time to answer per edge
+    (`pbx_synthetic_call_setup_seconds`). After 3 failed runs in a row, `SyntheticCallFailing`
+    alerts the team.
+  - First samples: 0.18–0.24 s through edge-1, 0.03 s through edge-2. Edge-1 carries all public
+    traffic on 1 vCPU. An hour of samples will show whether it is the SIP bottleneck.
+- **Cost trade-off.** Every VM uses the smallest plan (1 vCPU, 2 GB). An edge with 2 vCPUs costs
+  twice as much, so we resize a VM only when the measurements show it is the bottleneck.
 - **No load numbers from the deployed system yet.**
   - Still to run: SIPp ramps (`-r` calls/s, `-l` concurrent) with the codec matrix on the
     deployed VMs, recording capacity per pbx node and per rtpengine (CPU, `pbx_active_calls`,
