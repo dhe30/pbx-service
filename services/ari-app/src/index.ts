@@ -47,6 +47,7 @@ async function main(): Promise<void> {
   await cdr.start();
   await cache.listen(sql).catch((err) => log.warn({ err }, 'LISTEN failed; config cache relies on TTL'));
   void cache.warm();
+  cache.startRefresh();
 
   let shuttingDown = false;
   const shutdown = (code: number, drain: boolean) => {
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
     log.info({ code, activeCalls: app.activeCalls }, 'shutting down');
     void (async () => {
       if (drain) await Promise.race([app.idle(), new Promise((r) => setTimeout(r, DRAIN_SEC * 1000))]);
+      cache.stopRefresh();
       uploader.stop();
       cdr.stop();
       await Promise.race([cdr.drain(), new Promise((r) => setTimeout(r, 5000))]);

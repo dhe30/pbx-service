@@ -27,6 +27,7 @@ export const metrics = {
   }),
   configCache: new Counter({ name: 'pbx_config_cache_total', help: 'Account config lookups', labelNames: ['result'] as const, registers: reg }),
   configInvalidations: new Counter({ name: 'pbx_config_invalidations_total', help: 'NOTIFY-driven cache drops', registers: reg }),
+  configRefreshes: new Counter({ name: 'pbx_config_refreshes_total', help: 'Account snapshots reloaded in the background', registers: reg }),
   cdrBacklog: new Gauge({ name: 'pbx_cdr_backlog', help: 'CDR legs spooled but not yet in Postgres', registers: reg }),
   cdrsWritten: new Counter({ name: 'pbx_cdrs_written_total', help: 'CDR legs inserted', registers: reg }),
   cdrWriteErrors: new Counter({ name: 'pbx_cdr_write_errors_total', help: 'Failed CDR batch inserts', registers: reg }),
