@@ -1,11 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "../../hooks";
-import { apiErrorMessage, dataService, type Extension, type StaffMember } from "../../services";
+import { apiErrorMessage, dataService, type Extension, type Mailbox, type StaffMember } from "../../services";
+import { ExtensionCallHandling } from "./ExtensionCallHandling";
 
 export function TeamsManagement() {
   const { user } = useAuth();
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [extensions, setExtensions] = useState<Extension[]>([]);
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
+  const [openExtensionId, setOpenExtensionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [staffEmail, setStaffEmail] = useState("");
   const [staffPassword, setStaffPassword] = useState("");
@@ -20,11 +23,12 @@ export function TeamsManagement() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([dataService.getStaff(), dataService.getExtensions()])
-      .then(([members, extensionList]) => {
+    Promise.all([dataService.getStaff(), dataService.getExtensions(), dataService.getMailboxes()])
+      .then(([members, extensionList, mailboxList]) => {
         if (!active) return;
         setStaff(members);
         setExtensions(extensionList);
+        setMailboxes(mailboxList);
       })
       .catch((cause: unknown) => {
         if (active) setError(apiErrorMessage(cause, "Could not load team information."));
@@ -231,10 +235,20 @@ export function TeamsManagement() {
         {extensions.length ? (
           <ul className="divide-y divide-gray-100">
             {extensions.map((extension) => (
-              <li key={extension.id} className="flex flex-wrap justify-between gap-3 p-5">
+              <li key={extension.id} className="p-5">
+                <div className="flex flex-wrap justify-between gap-3">
                 <div>
                   <p className="font-medium text-gray-900">{extension.name}</p>
                   <p className="mt-1 text-sm text-gray-500">Extension {extension.number} · SIP user {extension.sipUsername}</p>
+                  <p className="mt-1 text-sm text-gray-500">{callHandlingSummary(extension, extensions, mailboxes)}</p>
+                  <button
+                    type="button"
+                    onClick={() => setOpenExtensionId((current) => current === extension.id ? null : extension.id)}
+                    aria-expanded={openExtensionId === extension.id}
+                    className="mt-2 text-sm font-medium text-blue-600 hover:text-blue-800"
+                  >
+                    {openExtensionId === extension.id ? "Close call handling" : "Edit call handling"}
+                  </button>
                 </div>
                 <label className="flex items-center gap-3 text-sm text-gray-600">
                   <span>Assigned to</span>
@@ -252,6 +266,15 @@ export function TeamsManagement() {
                     ))}
                   </select>
                 </label>
+                </div>
+                {openExtensionId === extension.id && (
+                  <ExtensionCallHandling
+                    extension={extension}
+                    extensions={extensions}
+                    mailboxes={mailboxes}
+                    onSaved={(updated) => setExtensions((current) => current.map((item) => item.id === updated.id ? updated : item))}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -259,6 +282,25 @@ export function TeamsManagement() {
       </section>
     </div>
   );
+}
+
+/** One line under each extension: what its calls do besides ringing its phones. */
+function callHandlingSummary(extension: Extension, extensions: Extension[], mailboxes: Mailbox[]): string {
+  const describe = (value: unknown): string => {
+    if (!value || typeof value !== "object") return "";
+    const v = value as { type?: string; id?: string; number?: string };
+    if (v.type === "external") return v.number ?? "";
+    if (v.type === "extension") return `extension ${extensions.find((e) => e.id === v.id)?.number ?? "?"}`;
+    if (v.type === "voicemail") return `voicemail (${mailboxes.find((m) => m.id === v.id)?.name ?? "?"})`;
+    return "";
+  };
+  const parts: string[] = [];
+  if (extension.forwardAlways) parts.push(`forwards every call to ${describe(extension.forwardAlways)}`);
+  if (extension.externalNumbers.length) parts.push(`also rings ${extension.externalNumbers.join(", ")}`);
+  if (extension.forwardBusy) parts.push(`busy → ${describe(extension.forwardBusy)}`);
+  if (extension.forwardNoAnswer) parts.push(`no answer → ${describe(extension.forwardNoAnswer)}`);
+  if (!parts.length) parts.push(extension.mailboxId ? "Rings its phones, then voicemail" : "Rings its phones");
+  return parts.join(" · ").replace(/^./, (c) => c.toUpperCase());
 }
 
 export { TeamsManagement as TeamManagement };
