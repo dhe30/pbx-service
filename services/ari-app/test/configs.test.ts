@@ -93,9 +93,17 @@ describe.skipIf(!rendered)('rendered configs', () => {
       // Trimmed before relaying, so every branch (and a peer edge's relay) gets the small version.
       expect(dev.indexOf('remove_hf("Allow")')).toBeLessThan(dev.indexOf('route(RELAY)'));
     });
-    it('a lost rtpengine command costs ~0.25 s, not 1 s (replies take < 10 ms), with 3 attempts', () => {
-      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_tout_ms", 250\)/);
-      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_retr", 3\)/);
+    it('a lost rtpengine command costs ~0.1 s, not 1 s (replies take < 10 ms), with 7 attempts', () => {
+      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_tout_ms", 100\)/);
+      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_retr", 7\)/);
+    });
+    it('requests to Asterisk / the peer edge are resent after 100 ms; the internet keeps SIP defaults', () => {
+      const nh = block(kam, 'route[NH_TIMERS]');
+      // Test inventory: pbx 127.0.0.21/.22, peer edge 127.0.0.12 (edge-1 is .11, not its own hop).
+      expect(nh).toContain('$nh(d) == "127.0.0.21" || $nh(d) == "127.0.0.22" || $nh(d) == "127.0.0.12"');
+      expect(nh).toContain('t_set_retr(100, 400);');
+      expect(block(kam, 'route[RELAY]').indexOf('route(NH_TIMERS)')).toBeLessThan(block(kam, 'route[RELAY]').indexOf('t_relay()'));
+      expect(block(kam, 'failure_route[PBX_FAILOVER]')).toMatch(/route\(NH_TIMERS\);\n\s*t_relay\(\);/);
     });
     it('log lines end in a \\n escape, not a line break inside the string', () => {
       expect(kam).not.toMatch(/xlog\("L_[A-Z]+", "[^"\n]*\n"\)/);
@@ -200,6 +208,9 @@ describe.skipIf(!rendered)('rendered configs', () => {
     });
     it('REFER accepted (transfers handled by the ARI app)', () => {
       expect(pjsip).toMatch(/allow_transfer=yes/);
+    });
+    it('SIP T1 100 ms toward the edges (private network); INVITE timeout unchanged', () => {
+      expect(pjsip).toMatch(/\[system\]\ntype=system\n[\s\S]*\ntimer_t1=100\ntimer_b=32000\n/);
     });
     it('no connected-line re-INVITEs: a mid-call re-offer let the codec flip (2026-11-14 incident)', () => {
       expect(pjsip).toMatch(/\[edge-common\]\(!\)[\s\S]*\nsend_connected_line=no\n/);

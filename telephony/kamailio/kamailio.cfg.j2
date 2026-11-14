@@ -259,8 +259,13 @@ modparam("rtpengine", "rtpengine_disable_tout", 20)
 # waiting reply" for ping on each edge; a loss recovered by the resend isn't logged). 250 ms caps a
 # single loss at 0.25 s; 3 attempts keep 750 ms of patience for an rtpengine busy transcoding.
 # Resending is safe: rtpengine answers a repeated cookie from its cache without redoing the command.
-modparam("rtpengine", "rtpengine_tout_ms", 250)
-modparam("rtpengine", "rtpengine_retr", 3)
+# 2026-11-14: 100 ms x 7. Half of all calls use the OTHER edge's rtpengine (Call-ID hash), and
+# new TCP connections from edge-1 to private peers stall on a lost SYN 0.5-0.8% of the time (UDP
+# commands are as exposed): each loss in a re-INVITE/answer showed up as a 200-300 ms SIP
+# transaction in the course's histogram. Replies take < 10 ms, so 100 ms is still 10x the worst
+# reply seen; 7 attempts keep 700 ms of patience.
+modparam("rtpengine", "rtpengine_tout_ms", 100)
+modparam("rtpengine", "rtpengine_retr", 7)
 # Forking: each branch toward a phone gets its own media leg in rtpengine (via-branch=extra with
 # a per-branch id), otherwise the branches' offers overwrite each other and the answering phone
 # can end up with no audio.
@@ -418,10 +423,26 @@ route[NATDETECT] {
 }
 
 route[RELAY] {
+	route(NH_TIMERS);
 	if (!t_relay()) {
 		sl_reply_error();
 	}
 	exit;
+}
+
+# Next hop is Asterisk or the peer edge over the private network (RTT < 5 ms): resend a lost UDP
+# request after 100 ms (then 200, 400, 400...) instead of SIP's default T1 of 500 ms. Without this,
+# one lost packet on that hop added 0.5 s to the transaction (2026-11-14: a carrier re-INVITE's
+# first copy to Asterisk got no answer; the resend 444 ms later was answered in 1.4 ms). Requests
+# to the internet keep the defaults. tm never retransmits over TCP/TLS/WS, so only UDP is affected.
+{% set private_hops = ((groups.get('pbx', []) | map('extract', hostvars, 'private_ip') | list) + edge_peer_ips) | reject('equalto', private_ip) | unique | list %}
+route[NH_TIMERS] {
+{% if private_hops %}
+	if ({% for ip in private_hops %}$nh(d) == "{{ ip }}"{% if not loop.last %} || {% endif %}{% endfor %}) {
+		t_set_retr(100, 400);
+	}
+{% endif %}
+	return;
 }
 
 # A new request leaves toward the internet (carrier, vendor, phone): send it from the public UDP
@@ -514,6 +535,7 @@ failure_route[PBX_FAILOVER] {
 		ds_mark_dst("ip");   # inactive + probing until it answers OPTIONS again
 		if (ds_next_dst()) {
 			route(PBX_TIMERS);
+			route(NH_TIMERS);
 			t_relay();
 			exit;
 		}
