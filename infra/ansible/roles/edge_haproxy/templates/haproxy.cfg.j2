@@ -80,6 +80,10 @@ backend api
     # Retry another app node when a connection fails (node died between checks).
     retries 2
     option redispatch
+    # A lost connect on the private network otherwise waits 1-3 s for the kernel's retry.
+    timeout connect 250ms
+    # Reuse open connections to the app nodes (the API is stateless).
+    http-reuse always
     # The website reaches the API under /api, but the refresh cookie is scoped Path=/auth
     # (services/api/src/auth.ts): rewrite it to /api/auth on those responses, or the browser
     # never sends it back to /api/auth/refresh. (The access cookie is Path=/: fine as is.)
@@ -95,6 +99,9 @@ backend web
     default-server inter 2s fall 2 rise 2
     retries 2
     option redispatch
+    # Same as backend api.
+    timeout connect 250ms
+    http-reuse always
 {% for host in groups['app'] | default([]) %}
     server {{ host }}-web {{ hostvars[host].private_ip }}:{{ web_port | default(8081) }} check
 {% endfor %}
