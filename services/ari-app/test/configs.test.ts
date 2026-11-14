@@ -93,6 +93,10 @@ describe.skipIf(!rendered)('rendered configs', () => {
       // Trimmed before relaying, so every branch (and a peer edge's relay) gets the small version.
       expect(dev.indexOf('remove_hf("Allow")')).toBeLessThan(dev.indexOf('route(RELAY)'));
     });
+    it('a lost rtpengine command costs ~0.25 s, not 1 s (replies take < 10 ms), with 3 attempts', () => {
+      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_tout_ms", 250\)/);
+      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_retr", 3\)/);
+    });
     it('log lines end in a \\n escape, not a line break inside the string', () => {
       expect(kam).not.toMatch(/xlog\("L_[A-Z]+", "[^"\n]*\n"\)/);
     });
