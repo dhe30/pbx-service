@@ -10,6 +10,10 @@
 # the RTP packets that ARRIVE at each phone. A direction without packets is a silent leg, which
 # the course counts as a failed call.
 #
+# Then one 45 s call that refreshes its session at 30 s with a multi-codec offer (non-PCMU first)
+# and checks the payload type and size each phone receives after the refresh: the 2026-11-14
+# codec flip (docs/incidents/2026-11-14-codec-flip.md), which a packet count cannot see.
+#
 # A call whose SIP failed (e.g. the test phone missed a re-INVITE) is a test error, not silence:
 # it counts as sip_ok 0 and leaves the audio result unknown. Consecutive results per codec/role
 # are kept in {{ quality_state_dir }} so the alerts can require two silent runs in a row.
@@ -92,6 +96,76 @@ for X in PCMU PCMA G729 G723 opus; do
     echo "$EDGE_NAME $X $role: sip_ok=$sip_ok to_caller=$toA to_callee=$toB silent_runs=$runs"
   done
 done
+
+# ---- Codec held across a session refresh (docs/incidents/2026-11-14-codec-flip.md) -----------------
+# One longer call per run, like the desk phones that went silent on 2026-11-14: caller A offers
+# several codecs with a non-PCMU one FIRST but sends PCMU, answers Asterisk's re-INVITEs with that
+# preference list, and refreshes the session at REFRESH_AT s (same SDP, Session-Expires: 90). With
+# the bug, rtpengine answered the refresh with that first codec and sent it to A, who heard nothing.
+# Judged by payload type and size of what each phone receives after the refresh (rtp_check.py), not
+# by the packet count (a silent leg there still carries ~50 packets/s). The first codec rotates
+# per run (with the edge, all 6 combinations every 6 runs). B answers PCMU only, as above.
+# This call holds the lock ~50 s longer; the every-minute synthetic call skips those minutes.
+REFRESH_AT=30; HANGUP_AT=45
+declare -A OFFER=([G723]="4 0 8 18 101" [G729]="18 0 8 4 101" [PCMA]="8 0 18 4 101")
+FIRSTS=(G723 G729 PCMA)
+FIRST=${FIRSTS[$(( ($(date +%s) / 60 / {{ quality_test_interval_min }}) % 3 ))]}
+lbl="offer=\"$FIRST\",edge=\"$EDGE_NAME\""
+python3 "$SHARE/gen_pcap.py" "$WORK/ra.pcap" PCMU 0 $HANGUP_AT
+python3 "$SHARE/gen_pcap.py" "$WORK/rb.pcap" PCMU 0 $HANGUP_AT
+sed -e "s|@PTS@|${OFFER[$FIRST]}|g; s|@PCAP@|$WORK/ra.pcap|g; s|@REFRESH_S@|$REFRESH_AT|g; s|@HANGUP_S@|$HANGUP_AT|g" \
+  "$SHARE/q_refresh_uac.xml.tpl" > ra.xml
+render q_uas.xml.tpl PCMU "$WORK/rb.pcap" rb.xml
+sipp_q -timeout 10 -timeout_error -sf $REG -s "$B_USER" -key domain "$DOMAIN" -key expires 90 \
+  -au "$B_USER" -ap "$B_PASSWORD" -p 5097 "$EDGE:5060" >/dev/null 2>&1
+# RTP to both phones + SIP to the caller (to find the refresh's 200 OK and its SDP answer).
+tcpdump -i any -nn -U -w rr.pcap "udp and dst host $ME and (dst port 6100 or dst port 6200 or dst port 5098)" >/dev/null 2>&1 & TD=$!
+sleep 0.5
+sipp_q -timeout $((HANGUP_AT + 25)) -timeout_error -sf rb.xml -p 5097 -mp 6200 "$EDGE:5060" >/dev/null 2>&1 & U=$!
+sleep 0.3
+sipp_q -timeout $((HANGUP_AT + 20)) -timeout_error -sf ra.xml -s "$B_NUMBER" -key domain "$DOMAIN" -key from "$A_USER" \
+  -au "$A_USER" -ap "$A_PASSWORD" -p 5098 -mp 6100 "$EDGE:5060" >/dev/null 2>&1; ra=$?
+wait $U; rb=$?
+sleep 0.5; kill $TD 2>/dev/null; wait $TD 2>/dev/null
+sipp_q -timeout 10 -sf $REG -s "$B_USER" -key domain "$DOMAIN" -key expires 0 \
+  -au "$B_USER" -ap "$B_PASSWORD" -p 5097 "$EDGE:5060" >/dev/null 2>&1
+read -r found answer goodA wrongA ptA sizeA goodB wrongB ptB sizeB earlyA earlyB \
+  < <(python3 "$SHARE/rtp_check.py" rr.pcap "$ME" 5098 6100 6200)
+sip_ok=$([ $ra = 0 ] && [ $rb = 0 ] && [ "${found:-0}" = 1 ] && echo 1 || echo 0)
+f="$STATE/silent_refresh"; runs=$(cat "$f" 2>/dev/null || echo 0)
+{
+  echo "# HELP pbx_quality_refresh_sip_ok Session-refresh test call (multi-codec offer, refresh at ${REFRESH_AT} s) completed (1) or its SIP failed (0)."
+  echo "# TYPE pbx_quality_refresh_sip_ok gauge"
+  echo "# HELP pbx_quality_refresh_audio_ok After the refresh both phones still got PCMU of the right size (1), or one got another codec or nothing (0); only when sip_ok is 1."
+  echo "# TYPE pbx_quality_refresh_audio_ok gauge"
+  echo "# HELP pbx_quality_refresh_packets RTP packets a phone received after the refresh: payload ok = PCMU in whole 10 ms frames, wrong = any other codec or size."
+  echo "# TYPE pbx_quality_refresh_packets gauge"
+  echo "# HELP pbx_quality_refresh_payload_type Most common RTP payload type a phone received after the refresh (0 = PCMU; -1 = nothing)."
+  echo "# TYPE pbx_quality_refresh_payload_type gauge"
+  echo "# HELP pbx_quality_refresh_packet_bytes Most common RTP packet size (header + payload) a phone received after the refresh (172 = 20 ms PCMU)."
+  echo "# TYPE pbx_quality_refresh_packet_bytes gauge"
+  echo "# HELP pbx_quality_refresh_silent_runs Consecutive runs in which the session-refresh test had a silent or wrong-codec direction."
+  echo "# TYPE pbx_quality_refresh_silent_runs gauge"
+} >>"$out"
+if [ $sip_ok = 1 ]; then
+  # 1 s guard after the refresh, ~14 s of audio left: >= 250 good packets (5 s) and <= 5 % wrong.
+  if [ "$goodA" -ge 250 ] && [ "$goodB" -ge 250 ] && [ $((wrongA * 20)) -le $((goodA + wrongA)) ] \
+     && [ $((wrongB * 20)) -le $((goodB + wrongB)) ]; then audio_ok=1; runs=0; else audio_ok=0; runs=$((runs + 1)); fi
+  echo "pbx_quality_refresh_audio_ok{$lbl} $audio_ok" >>"$out"
+  echo "$runs" >"$f"
+fi
+echo "pbx_quality_refresh_sip_ok{$lbl} $sip_ok" >>"$out"
+for side in caller callee; do
+  if [ $side = caller ]; then g=$goodA w=$wrongA p=$ptA s=$sizeA; else g=$goodB w=$wrongB p=$ptB s=$sizeB; fi
+  echo "pbx_quality_refresh_packets{$lbl,to=\"$side\",payload=\"ok\"} ${g:-0}" >>"$out"
+  echo "pbx_quality_refresh_packets{$lbl,to=\"$side\",payload=\"wrong\"} ${w:-0}" >>"$out"
+  echo "pbx_quality_refresh_payload_type{$lbl,to=\"$side\"} ${p:--1}" >>"$out"
+  echo "pbx_quality_refresh_packet_bytes{$lbl,to=\"$side\"} ${s:-0}" >>"$out"
+done
+echo "pbx_quality_refresh_silent_runs $runs" >>"$out"
+echo "$EDGE_NAME refresh offer=${OFFER[$FIRST]}: sip_ok=$sip_ok refresh_answer=${answer:--}" \
+  "to_caller=${goodA:-0}ok/${wrongA:-0}wrong(pt ${ptA:--1}, ${sizeA:-0} B)" \
+  "to_callee=${goodB:-0}ok/${wrongB:-0}wrong(pt ${ptB:--1}, ${sizeB:-0} B) before=${earlyA:-0}/${earlyB:-0} silent_runs=$runs"
 
 echo "# TYPE pbx_quality_last_run_timestamp_seconds gauge" >>"$out"
 echo "pbx_quality_last_run_timestamp_seconds $(date +%s)" >>"$out"

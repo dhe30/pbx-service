@@ -80,7 +80,17 @@ Remaining exposure: Asterisk still re-INVITEs if it becomes the session-timer re
 
 ## Follow-ups
 
-1. Extend the codec quality test (PR #53, 3-second calls today) with a > 30 s call that refreshes the
+1. ~~Extend the codec quality test (PR #53, 3-second calls today) with a > 30 s call that refreshes the
    session and offers several codecs, and check the payload type each phone receives, not only the
-   packet count. That would have caught this.
+   packet count. That would have caught this.~~ **Done (2026-11-14, not deployed yet).** Every
+   quality-test run now adds one 45 s call (`files/quality/q_refresh_uac.xml.tpl`): the caller
+   offers `4 0 8 18 101`, `18 0 8 4 101` or `8 0 18 4 101` (rotating per run) but sends PCMU,
+   answers Asterisk's re-INVITEs with that list, and refreshes at 30 s with the same SDP and
+   `Session-Expires: 90;refresher=uac`. `files/quality/rtp_check.py` judges the RTP each phone gets
+   after the refresh by payload type and size (good = pt 0 in whole 10 ms frames; 36-byte G.723 or
+   32-byte G.729 is wrong). Metrics `pbx_quality_refresh_{sip_ok,audio_ok,packets,payload_type,
+   packet_bytes,silent_runs}`; alert `QualityRefreshCodecChanged` (critical, 2 runs in a row).
+   Checked offline only: SIPp flow against a fake edge that answers the refresh with `4 101`, the
+   analyzer on captures with and without the flip, and `promtool test rules`; not yet run against
+   the real edges.
 2. Test a 16-minute call (Asterisk as session-timer refresher).
