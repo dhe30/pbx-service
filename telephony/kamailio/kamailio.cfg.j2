@@ -42,6 +42,12 @@
 {% set BASE = "replace-origin replace-session-connection" %}
 {% set TO_PBX_CODECS = "codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event" %}
 {% set TO_FAR_CODECS = "codec-transcode=PCMA codec-transcode=G729 codec-transcode=G723 codec-transcode=opus" %}
+{# SDES offer toward TLS phones: only the AES_CM_128 suites. rtpengine accepts an answer only if
+   its a=crypto suite AND tag match one it offered, and numbers its own suites from 1 in its
+   internal order (AEAD/AES-256 first). A phone that answered "a=crypto:1 AES_CM_128_HMAC_SHA1_80"
+   was rejected ("SRTP output wanted, but no crypto suite was negotiated") and heard nothing
+   (2026-11-14, 1 of 5 TLS calls). With only these two, _80 is tag 1 and _32 tag 2. #}
+{% set TLS_SDES = "SDES-only-AES_CM_128_HMAC_SHA1_80 SDES-only-AES_CM_128_HMAC_SHA1_32" %}
 {% set F = {
   'plain': {
     'far_offer':   "direction=external direction=internal " ~ BASE ~ " ICE=remove RTP/AVP " ~ TO_PBX_CODECS,
@@ -52,7 +58,7 @@
   'tls': {
     'far_offer':   "direction=external direction=internal " ~ BASE ~ " ICE=remove DTLS=off RTP/AVP " ~ TO_PBX_CODECS,
     'far_answer':  BASE ~ " ICE=remove DTLS=off RTP/SAVP",
-    'pbx_offer':   "direction=internal direction=external " ~ BASE ~ " ICE=remove DTLS=off RTP/SAVP " ~ TO_FAR_CODECS,
+    'pbx_offer':   "direction=internal direction=external " ~ BASE ~ " ICE=remove DTLS=off RTP/SAVP " ~ TLS_SDES ~ " " ~ TO_FAR_CODECS,
     'pbx_answer':  BASE ~ " ICE=remove DTLS=off RTP/AVP",
   },
   'ws': {
