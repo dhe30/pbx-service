@@ -194,6 +194,51 @@
     state: started
     daemon_reload: true
 
+# ---- Synthetic test call (SIPp, every minute, through each edge) ---------------------------------
+# Off until the test extensions' credentials are in the vault (synthetic_call_enabled, defaults).
+- name: Synthetic call check
+  when: synthetic_call_enabled | bool
+  block:
+    - name: SIPp
+      ansible.builtin.apt:
+        name: sip-tester
+        state: present
+
+    - name: SIPp scenarios for the synthetic call
+      ansible.builtin.copy:
+        src: synthetic/
+        dest: /usr/local/share/pbx-synthetic/
+        mode: "0644"
+
+    - name: Test extensions' credentials
+      ansible.builtin.template:
+        src: synthetic-call.env.j2
+        dest: /etc/pbx/synthetic-call.env
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Synthetic call script
+      ansible.builtin.template:
+        src: pbx-synthetic-call.sh.j2
+        dest: /usr/local/bin/pbx-synthetic-call
+        mode: "0755"
+
+    - name: Synthetic call systemd units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop: [pbx-synthetic-call.service, pbx-synthetic-call.timer]
+
+    - name: Run the synthetic call every minute
+      ansible.builtin.systemd:
+        name: pbx-synthetic-call.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
 # ---- Start and check -----------------------------------------------------------------------------
 - name: Start monitoring services
   ansible.builtin.systemd:

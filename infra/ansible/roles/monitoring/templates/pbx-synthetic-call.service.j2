@@ -1,0 +1,8 @@
+# Managed by Ansible (roles/monitoring). Started every minute by pbx-synthetic-call.timer.
+[Unit]
+Description=Synthetic test call through each edge, for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pbx-synthetic-call
+TimeoutStartSec=55

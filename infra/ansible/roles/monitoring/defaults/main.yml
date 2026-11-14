@@ -31,3 +31,9 @@ grafana_version: ""
 # Support tickets + DID provider balance, checked every minute by a script on mon-1
 # (pbx-business-metrics) through the API's provider-only route and the DID API.
 business_metrics_file: /var/lib/prometheus/node-exporter/pbx_business.prom
+
+# Synthetic test call every minute through each edge (pbx-synthetic-call). Needs two extensions
+# of a test account in the vault: vault_synthetic_a_user / _a_password (caller), vault_synthetic_b_user
+# / _b_password / _b_number (callee). Off until they are set.
+synthetic_call_enabled: "{{ (vault_synthetic_b_password | default('')) | length > 0 }}"
+synthetic_metrics_file: /var/lib/prometheus/node-exporter/pbx_synthetic.prom

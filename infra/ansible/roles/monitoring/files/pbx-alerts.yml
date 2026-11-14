@@ -388,6 +388,31 @@ groups:
           summary: "mon-1 can't read the support tickets or the DID balance"
           description: "On mon-1: systemctl status pbx-business-metrics; run /usr/local/bin/pbx-business-metrics by hand."
 
+  # ---- Synthetic test call (pbx-synthetic-call on mon-1, every minute, per edge) ---------------
+  - name: synthetic
+    rules:
+      # No successful test call through this edge in the last 3 runs.
+      - alert: SyntheticCallFailing
+        expr: max_over_time(pbx_synthetic_call_success[3m]) == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Test calls through {{ $labels.edge }} are failing"
+          description: "Phones on this edge likely can't call. On mon-1: journalctl -u pbx-synthetic-call; run /usr/local/bin/pbx-synthetic-call by hand. Register OK? pbx_synthetic_register_success."
+
+      - alert: SyntheticCallSlow
+        expr: avg_over_time(pbx_synthetic_call_setup_seconds[10m]) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Test calls through {{ $labels.edge }} take {{ $value | humanize }} s to be answered"
+
+      - alert: SyntheticCheckNotRunning
+        expr: time() - pbx_synthetic_last_run_timestamp_seconds > 300
+        labels: { severity: warning }
+        annotations:
+          summary: "The synthetic call check on mon-1 hasn't run for 5 minutes"
+          description: "On mon-1: systemctl status pbx-synthetic-call.timer"
+
   # ---- Monitoring itself ---------------------------------------------------------------------------
   - name: monitoring
     rules:
