@@ -40,10 +40,12 @@ export async function routeTo(ctx: Ctx, s: CallSession, dest: Destination | null
           d = g.noAnswer;
           break;
         }
+        const caller = callerNumberOf(s);
+        const targetsOf = (e: ExtensionCfg) => extensionTargets(e, caller);
         const r =
           g.strategy === 'sequential'
-            ? await ringSequential(ctx, s, members.map(extensionTargets), g.ringTimeoutSec, g.totalTimeoutSec)
-            : await ringTargets(ctx, s, members.flatMap(extensionTargets), Math.min(g.ringTimeoutSec, g.totalTimeoutSec ?? Infinity));
+            ? await ringSequential(ctx, s, members.map(targetsOf), g.ringTimeoutSec, g.totalTimeoutSec)
+            : await ringTargets(ctx, s, members.flatMap(targetsOf), Math.min(g.ringTimeoutSec, g.totalTimeoutSec ?? Infinity));
         if (r.winner) return connect(ctx, s, r.winner);
         s.ringOutcome = r.outcome;
         d = g.noAnswer;
@@ -94,7 +96,7 @@ export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg)
     s.log.info({ ext: ext.number, to: ext.forwardAlways }, 'forward always');
     return forwardDest(ext.forwardAlways);
   }
-  const r: RingResult = await ringTargets(ctx, s, extensionTargets(ext), ext.ringTimeoutSec);
+  const r: RingResult = await ringTargets(ctx, s, extensionTargets(ext, callerNumberOf(s)), ext.ringTimeoutSec);
   if (r.winner) {
     await connect(ctx, s, r.winner);
     return null;
@@ -104,6 +106,11 @@ export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg)
   if (r.outcome !== 'busy' && ext.forwardNoAnswer) return forwardDest(ext.forwardNoAnswer);
   if (ext.mailboxId) return { type: 'voicemail', id: ext.mailboxId };
   return null;
+}
+
+/** The PSTN caller's number (E.164), never rung as one of an extension's external numbers. */
+function callerNumberOf(s: CallSession): string | null {
+  return s.main?.direction === 'incoming' ? s.main.fromNumber : null;
 }
 
 /** Bridge the caller with whoever answered and drive the call; follows blind transfers. */

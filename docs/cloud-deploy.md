@@ -161,6 +161,8 @@ Watch on the VM while testing:
 sngrep                                   # SIP ladder
 journalctl -u pbx-ari-app -f
 journalctl -u kamailio -f
+journalctl -u kamailio -o cat | grep 'devices:'          # who each extension call rang, and how each branch ended
+journalctl -u rtpengine-daemon -o cat | grep -iA6 'final packet stats'   # per-call codecs + packets (log-level 6)
 ```
 
 | # | Check | How | If it fails |

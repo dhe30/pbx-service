@@ -56,11 +56,18 @@ interface Leg {
   draft: LegDraft | null;
 }
 
-/** All targets for one extension: its devices + its external numbers. */
-export function extensionTargets(ext: ExtensionCfg): RingTarget[] {
+/**
+ * All targets for one extension: its devices + its external numbers. An external number equal to
+ * the caller is skipped: ringing it would connect the caller to itself (seen live 2026-11-13: a
+ * customer's mobile called the shop, the shop's extension rang that same mobile, and the call
+ * "answered" for 31 minutes).
+ */
+export function extensionTargets(ext: ExtensionCfg, callerNumber: string | null = null): RingTarget[] {
   return [
     { kind: 'sip', sipUsername: ext.sipUsername, extension: ext },
-    ...ext.externalNumbers.map((number): RingTarget => ({ kind: 'external', number, extension: ext })),
+    ...ext.externalNumbers
+      .filter((number) => number !== callerNumber)
+      .map((number): RingTarget => ({ kind: 'external', number, extension: ext })),
   ];
 }
 

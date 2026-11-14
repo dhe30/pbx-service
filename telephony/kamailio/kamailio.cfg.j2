@@ -618,6 +618,10 @@ failure_route[VENDOR_FAILURE] {
 route[TO_DEVICES] {
 	if (!lookup("location")) {
 		# No device registered: the ARI app treats it as "no answer" (forward / voicemail).
+		# Fork logging (L_INFO, shown at debug=2): which extension rang which contact, and how each
+		# branch ended. Needed to tell "desk phone never rang" from "desk phone lost the race".
+		xlog("L_INFO", "devices: $rU has no registered contact, 480 [ci=$ci]
+");
 		send_reply("480", "Temporarily Unavailable");
 		exit;
 	}
@@ -642,6 +646,8 @@ branch_route[DEV_BRANCH] {
 	}
 	if ($var(tp) =~ "^wss?$") setbflag(FLB_WS);
 	else if ($var(tp) =~ "^tls$") setbflag(FLB_TLS);
+	xlog("L_INFO", "devices: branch $T_branch_idx of $rU -> $ru via $du ($var(tp)) [ci=$ci]
+");
 
 	if ($var(rcv) != "" && $(du{uri.host}) == "{{ private_ip }}") {
 		# The phone is connected to THIS edge: send straight to it (drop our own Path route), from
@@ -672,6 +678,8 @@ branch_route[DEV_BRANCH] {
 }
 
 onreply_route[DEV_REPLY] {
+	if ($rs >= 180) xlog("L_INFO", "devices: $rs $rr from $si for $tU [ci=$ci]
+");
 	route(REPLY_ALIAS);
 	if (has_body("application/sdp")) {
 		$avp(extra_id) = @via[2].branch + $T_branch_idx;
@@ -686,7 +694,13 @@ onreply_route[DEV_REPLY] {
 }
 
 failure_route[DEV_FAILURE] {
-	if (t_is_canceled()) exit;
+	if (t_is_canceled()) {
+		xlog("L_INFO", "devices: fork for $rU canceled (answered elsewhere or caller hung up) [ci=$ci]
+");
+		exit;
+	}
+	xlog("L_INFO", "devices: every branch of $rU failed, best reply $T_reply_code [ci=$ci]
+");
 	rtpengine_delete();
 }
 
@@ -711,6 +725,8 @@ route[FROM_PEER] {
 		exit;
 	}
 	# path use_received=1 has set $du to the client address from our own Path ;received.
+	xlog("L_INFO", "devices: relaying for the peer edge to $du [ci=$ci]
+");
 	record_route();
 	t_on_reply("PEER_REPLY");
 	route(SEND_PUBLIC);

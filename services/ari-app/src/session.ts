@@ -137,7 +137,10 @@ export class CallSession {
     if (this.answered) return;
     await ari.answer(this.primary);
     this.answered = true;
-    if (this.main && !this.main.answeredAt && this.main.direction === 'incoming') this.main.answeredAt = new Date();
+    // Answering the caller ourselves (IVR, voicemail, *98) is when an incoming or internal call is
+    // answered. Before 2026-11-14 only incoming calls got this, so every *98 call was stored as
+    // "answered" with no answer time. Outgoing calls are answered by the vendor leg instead.
+    if (this.main && !this.main.answeredAt && this.main.direction !== 'outgoing') this.main.answeredAt = new Date();
   }
 
   /** The final CDR rows, once every owned leg has ended. */

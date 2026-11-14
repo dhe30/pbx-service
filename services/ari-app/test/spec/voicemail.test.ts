@@ -211,6 +211,10 @@ describe('§3 *98: Cisco Unity standard conversation', () => {
     await sleep(5);
     h.ari.remoteHangup(ch);
     await h.settle();
-    expect((await a.cdrs())[0]).toMatchObject({ direction: 'internal', toNumber: '*98', charge: '0.000000', fromExtension: '101' });
+    const [row] = await a.cdrs();
+    expect(row).toMatchObject({ direction: 'internal', toNumber: '*98', outcome: 'answered', charge: '0.000000', fromExtension: '101' });
+    // Answered by the PBX itself: the answer time is set like any answered call's.
+    expect(row!.answeredAt).not.toBeNull();
+    expect(row!.endedAt.getTime()).toBeGreaterThanOrEqual(row!.answeredAt!.getTime());
   });
 });

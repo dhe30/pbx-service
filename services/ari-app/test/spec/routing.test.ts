@@ -48,6 +48,21 @@ describe('§3 Number routing: each number routes to an extension, ring group, IV
     await h.settle();
   });
 
+  it("a ring group never rings a member's external number that is the caller", async () => {
+    const { h, a } = await acct();
+    await a.extension({ number: '101', externalNumbers: ['+16315550728'] });
+    await a.extension({ number: '102' });
+    const g = await a.ringGroup('all', ['101', '102'], 20, null);
+    const did = nextDid();
+    await a.number(did, { type: 'ring_group', id: g });
+    const caller = h.ari.carrierCall(did, '+16315550728');
+    await until(() => h.ari.originates.length === 2, 2000, 'both desk phones');
+    expect(h.ari.originates.every((o) => o.target.kind === 'sip')).toBe(true);
+    expect(h.ari.legsTo('+16315550728')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('a phase-1 number with only ivr_menu_id still routes to its menu', async () => {
     const { h, a } = await acct();
     const menu = await a.ivr({ options: {} });
@@ -327,5 +342,23 @@ describe('§3 Caller blocklist: listed callers are rejected', () => {
     expect(h.ari.originates).toHaveLength(0);
     await h.settle();
     expect((await a.cdrs())[0]).toMatchObject({ outcome: 'blocked', direction: 'incoming', fromNumber: '+16315550666' });
+  });
+
+  it('the same blocked call coming straight back is rejected again but recorded once', async () => {
+    const { h, a } = await acct();
+    await a.extension({ number: '101' });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['101']!.id });
+    await a.block('+16315550772');
+    // Seen live: the carrier retries a rejected call (other trunk) within the same second.
+    const first = h.ari.carrierCall(did, '+16315550772');
+    await until(() => h.ari.destroyed.has(first));
+    const second = h.ari.carrierCall(did, '+16315550772');
+    await until(() => h.ari.destroyed.has(second));
+    expect(h.ari.hangups.find((x) => x.channelId === second)?.reason).toBe('rejected');
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ outcome: 'blocked', fromNumber: '+16315550772' });
   });
 });
