@@ -80,17 +80,9 @@ backend api
     # Retry another app node when a connection fails (node died between checks).
     retries 2
     option redispatch
-    # Lost SYNs on the private network (2026-11-13, edge-1 HAProxy logs: 47 of 6021 API requests had
-    # Tc ~1000 ms = the kernel's 1 s SYN retransmit, while the API itself answered in 5-10 ms). The
-    # app nodes are one private hop away (connect < 5 ms at p99), so give up on a connect after
-    # 250 ms and retry at once (retries 2; the last one goes to the other node): a lost SYN costs
-    # ~0.25 s instead of 1 s (or 3 s if lost twice). The kernel finishes the handshake even when Node
-    # is busy, so a slow API never trips this.
+    # A lost connect on the private network otherwise waits 1-3 s for the kernel's retry.
     timeout connect 250ms
-    # Keep server connections open and share them between clients (the API is stateless: cookies
-    # travel with each request), so most requests need no new connection at all. Fastify's
-    # keepAliveTimeout (72 s) is longer than HAProxy's idle-pool purge, so the API never closes an
-    # idle connection that HAProxy is about to reuse.
+    # Reuse open connections to the app nodes (the API is stateless).
     http-reuse always
     # The website reaches the API under /api, but the refresh cookie is scoped Path=/auth
     # (services/api/src/auth.ts): rewrite it to /api/auth on those responses, or the browser
@@ -107,7 +99,7 @@ backend web
     default-server inter 2s fall 2 rise 2
     retries 2
     option redispatch
-    # Same lost-SYN protection and connection reuse as backend api.
+    # Same as backend api.
     timeout connect 250ms
     http-reuse always
 {% for host in groups['app'] | default([]) %}
