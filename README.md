@@ -309,9 +309,18 @@ in §3.4 as still to do.
   0.19 s) but in lost TCP SYNs: each costs the kernel's 1 s retransmit, between the edge and the
   app nodes (PR #39) and between clients and the edge (open). Evidence, status of each finding and the queries used:
   [docs/incidents/2026-11-13-first-customer.md](docs/incidents/2026-11-13-first-customer.md).
+- **Silent legs after a mid-call re-INVITE (2026-11-14):** two more customers left. Almost every
+  failure the course counted was a phone's outgoing call longer than ~60 s. Asterisk re-INVITEd
+  each leg right after the answer (connected-line update); rtpengine turned that into an offer of
+  five codecs to the phone, and at the phone's next 30 s session refresh we started sending it
+  G.723/G.729/PCMA while it kept sending PCMU. Evidence: rtpengine byte counts per packet and
+  transcoder metrics for each failed call, then a SIPp reproduction. Fix: `send_connected_line=no`
+  (also two fewer SIP transactions per call). Trade-off: phones no longer get a mid-call caller-ID
+  display update. [docs/incidents/2026-11-14-codec-flip.md](docs/incidents/2026-11-14-codec-flip.md).
 - **Synthetic call (since 2026-11-14).** Every minute, mon-1 places a real call through each
   edge's public address: test extension B registers, test extension A calls it with digest auth,
-  B answers, both answer Asterisk's re-INVITE, A hangs up.
+  B answers, both would answer a re-INVITE from Asterisk (none since `send_connected_line=no`),
+  A hangs up.
   - Each run records success and the time to answer per edge
     (`pbx_synthetic_call_setup_seconds`). After 3 failed runs in a row, `SyntheticCallFailing`
     alerts the team.
