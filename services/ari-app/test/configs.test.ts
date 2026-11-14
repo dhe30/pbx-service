@@ -142,6 +142,11 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(read('edge-1', 'tls.cfg')).toMatch(/certificate = \/etc\/kamailio\/tls\/cert\.pem/);
       const tlsOffer = [...block(kam, 'branch_route[DEV_BRANCH]').matchAll(/rtpengine_offer\("([^"]+)"\)/g)].map((m) => m[1]!).find((f) => f.includes('RTP/SAVP '))!;
       expect(tlsOffer).toMatch(/DTLS=off/);
+      // Only the AES_CM_128 suites, so AES_CM_128_HMAC_SHA1_80 is tag 1 (phones that answer tag 1
+      // with it were rejected when rtpengine offered every suite).
+      expect(tlsOffer).toContain('SDES-only-AES_CM_128_HMAC_SHA1_80 SDES-only-AES_CM_128_HMAC_SHA1_32');
+      const reinviteTls = block(kam, 'route[INDLG_SDP]');
+      expect(reinviteTls).toContain('SDES-only-AES_CM_128_HMAC_SHA1_80');
     });
   });
 
