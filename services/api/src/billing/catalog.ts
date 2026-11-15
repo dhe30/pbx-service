@@ -17,10 +17,14 @@
 // gateway fees of 2.9% + $0.30 per charge: plan $8.50 nets ~$7.95; its 500 US minutes cost
 // $3.00 at the US vendor's $0.006/min (up to $7.50 if every minute went to Alaska at $0.015).
 
+// REPRICED (2026-11-15): lower plan, extension, local number and add-on prices, all still above
+// cost (extensions, plan and add-ons have no direct cost; local numbers cost 1.50/period). Per-minute
+// prices are in migration 20261119000000_price_cut.sql, which also lowers existing customers' items
+// to these prices.
 export const PLAN = {
   name: 'Business',
   /** Plan price per period. Ceiling: $11.50 per included extension. */
-  priceCents: 850,
+  priceCents: 450,
   includedExtensions: 5,
   /** US outgoing minutes included per period, shared by the account. */
   includedUsMinutes: 500,
@@ -28,9 +32,9 @@ export const PLAN = {
 
 export const PRICES = {
   /** Each additional extension, per period. Ceiling $11.50. */
-  extensionCents: 175,
+  extensionCents: 49,
   /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
-  localNumberCents: 220,
+  localNumberCents: 215,
   /**
    * Ceiling $3.50, and we charge it: the DID provider takes 2.00 setup + 3.00 per 7-day period for
    * a toll-free number (verify-backlog V-D15, 2026-11-11), so 3.00 lost the setup fee and earned
@@ -38,9 +42,9 @@ export const PRICES = {
    */
   tollFreeNumberCents: 350,
   /** International calling add-on. Ceiling $4.60. */
-  intlCallingCents: 325,
+  intlCallingCents: 150,
   /** Call recording add-on. Ceiling $4.60. */
-  recordingCents: 350,
+  recordingCents: 150,
 } as const;
 
 /** Course ceilings in cents (spec §2), per billing period. */
