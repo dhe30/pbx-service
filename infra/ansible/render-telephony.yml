@@ -10,7 +10,7 @@
   vars:
     ansible_processor_vcpus: 4
     asterisk_sip_port: 5060   # role default (roles/asterisk/defaults)
-    asterisk_maxload: "{{ (ansible_processor_vcpus | default(1) | int) * 2 }}"   # role default
+    asterisk_maxcalls: "{{ (ansible_processor_vcpus | default(1) | int) * 80 }}"   # role default
     rtpengine_kernel_forwarding: true
     rtpengine_threads: 4
   tasks:

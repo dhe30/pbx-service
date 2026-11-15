@@ -289,8 +289,10 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
                                  ; retries another pbx node   [VERIFY cause->503 mapping]
 - ari.conf: user pbxapp, password from vault. http.conf: bind 127.0.0.1:8088 only.
 - rtp.conf: rtpstart=10000, rtpend=20000 (private network only).
-- asterisk.conf maxload = 2 x vCPUs (`asterisk_maxload`): above it Asterisk answers new calls 503 and
-  Kamailio tries the other pbx node (0.95 refused calls in normal spikes on 1 vCPU, 2026-11-15).
+- asterisk.conf maxcalls = 80 x vCPUs (`asterisk_maxcalls`), NO maxload: above the cap Asterisk
+  answers new calls 503 and Kamailio tries the other pbx node. The load-average limit (0.95, then
+  2 x vCPUs) refused hundreds of calls an hour at half-idle CPU on 2026-11-15. ~1 % CPU per call
+  (proxy_media) + ~10 % base per vCPU.
 - Recordings spool: /var/spool/asterisk/recording (on a dedicated disk/volume if possible).
 - Sounds cache for tenant greetings: /var/lib/asterisk/sounds/cache/<media_id>.wav (8 kHz mono).
 - Load res_prometheus for metrics [VERIFY]; logrotate for logs.

@@ -14,9 +14,10 @@ astsbindir => /usr/sbin
 
 [options]
 transcode_via_sln = yes
-; Refuse NEW calls (Kamailio gets 503 and tries the other pbx node) only when the 1-minute load
-; average is above asterisk_maxload (default 2 x vCPUs). It was 0.95, which on our 1-vCPU nodes
-; refused calls during ordinary load spikes (pbx-2, 2026-11-15: 5 times, peak load 1.46, Asterisk at
-; ~9 % CPU). Every refusal also sends the call to the other node, away from its account's node.
-maxload = {{ asterisk_maxload }}
+; Overload guard: refuse NEW calls (Kamailio gets 503 and tries the other pbx node) above
+; asterisk_maxcalls active calls (default 80 per vCPU). No load-average limit (maxload): the 1-minute
+; load average spikes to 2-3 from bursts of short-lived Asterisk threads while the CPU is half idle,
+; and refused hundreds of calls an hour on 2026-11-15 (0.95, then 2 x vCPUs). Measured that day:
+; ~1 % CPU per call with proxy_media bridges + ~10 % base on a 1-vCPU node, so 80 calls ~ 90 %.
+maxcalls = {{ asterisk_maxcalls }}
 documentation_language = en_US
