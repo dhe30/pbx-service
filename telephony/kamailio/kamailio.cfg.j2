@@ -162,6 +162,26 @@ loadmodule "xhttp.so"
 loadmodule "websocket.so"
 loadmodule "dmq.so"
 loadmodule "dmq_usrloc.so"
+{% if kamailio_sipdump | default(true) %}
+loadmodule "sipdump.so"
+{% endif %}
+
+{% if kamailio_sipdump | default(true) %}
+# ----- sipdump: SIP history (2026-11-15) -----
+# Every SIP message this edge receives or sends, on every transport, written by a separate writer
+# process to hourly pcap files. TLS phones and browsers (WebSocket) are written AFTER decryption, so
+# their calls and REGISTERs become searchable too (the old tcpdump ring saw UDP only). Mode 4 =
+# pcap, + 8 = a P-KSR-SIPDump header in each written message with the real transport and addresses
+# (the pcap's own IP/UDP headers are synthetic for TCP/TLS/WS). Search with
+# loadtest/diag/sip-history.py. Kill switch without a restart: `kamcmd sipdump.enable 0`.
+modparam("sipdump", "enable", 1)
+modparam("sipdump", "mode", 12)
+modparam("sipdump", "wait", 10000)        # µs the writer sleeps when idle (default 100 = busy on 1 vCPU)
+modparam("sipdump", "rotate", 3600)       # one file per hour
+modparam("sipdump", "folder", "{{ kamailio_sipdump_dir | default('/var/log/pbx/sipdump') }}")
+modparam("sipdump", "fprefix", "sip-")
+modparam("sipdump", "fage", {{ (kamailio_sipdump_keep_hours | default(24)) * 3600 }})   # s; tmpfiles.d is the backstop
+{% endif %}
 
 # ----- tls (phones registering over _sips._tcp) -----
 modparam("tls", "config", "/etc/kamailio/tls.cfg")
