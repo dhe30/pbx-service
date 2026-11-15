@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
-<!-- Quality test caller: offers ONLY @CODEC@ (pt @PT@), plays 3 s of @CODEC@ audio after the
+<!-- Quality test caller: offers ONLY @CODEC@ (pt @PT@) + telephone-event 101, plays 3 s of @CODEC@ audio after the
      answer, answers re-INVITEs with the same SDP, hangs up after 5 s without one. -->
 <scenario name="Quality caller @CODEC@">
   <send retrans="500">
@@ -23,9 +23,11 @@
       s=-
       c=IN IP[media_ip_type] [media_ip]
       t=0 0
-      m=audio [media_port] RTP/AVP @PT@
+      m=audio [media_port] RTP/AVP @PT@ 101
       a=rtpmap:@PT@ @RTPMAP@
       @EXTRA@
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
       a=ptime:@PTIME@
 
     ]]>
@@ -67,9 +69,11 @@
       s=-
       c=IN IP[media_ip_type] [media_ip]
       t=0 0
-      m=audio [media_port] RTP/AVP @PT@
+      m=audio [media_port] RTP/AVP @PT@ 101
       a=rtpmap:@PT@ @RTPMAP@
       @EXTRA@
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
       a=ptime:@PTIME@
 
     ]]>
@@ -123,9 +127,11 @@
       s=-
       c=IN IP[media_ip_type] [media_ip]
       t=0 0
-      m=audio [media_port] RTP/AVP @PT@
+      m=audio [media_port] RTP/AVP @PT@ 101
       a=rtpmap:@PT@ @RTPMAP@
       @EXTRA@
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
       a=ptime:@PTIME@
 
     ]]>

@@ -318,6 +318,14 @@ in §3.4 as still to do.
   transcoder metrics for each failed call, then a SIPp reproduction. Fix: `send_connected_line=no`
   (also two fewer SIP transactions per call). Trade-off: phones no longer get a mid-call caller-ID
   display update. [docs/incidents/2026-11-14-codec-flip.md](docs/incidents/2026-11-14-codec-flip.md).
+- **G.723 phones answering with DTMF (2026-11-15, first large customer, 98 extensions):** our
+  per-call audio record flagged 3 silent legs within 20 minutes, all toward G.723 phones. A phone
+  answering G.723 with an `fmtp` line plus telephone-event made rtpengine 26.0.1 forward an answer
+  with no audio codec to Asterisk, which then sent nothing. Found by pairing every phone answer
+  in the edge captures with what reached Asterisk (only that combination failed, 3 of 3);
+  reproduced on rtpengine's control port with real RTP, then end to end. Fix: `reuse-codecs` on
+  just those answers (it would drop DTMF for Opus, so not global); the quality test's phones now
+  offer DTMF like the course's. [docs/incidents/2026-11-15-g723-dtmf-answer.md](docs/incidents/2026-11-15-g723-dtmf-answer.md).
 - **Synthetic call (since 2026-11-14).** Every minute, mon-1 places a real call through each
   edge's public address: test extension B registers, test extension A calls it with digest auth,
   B answers, both would answer a re-INVITE from Asterisk (none since `send_connected_line=no`),
