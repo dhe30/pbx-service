@@ -554,17 +554,24 @@ route[FROM_CARRIER] {
 	# DID -> account, cached; a DB hiccup only costs affinity (fall back to hashing the DID).
 	# Failures are cached too (autoexpire), so a DB outage costs ONE timeout per DID, not one per call
 	# (post-dial delay is graded).
+	#
+	# Test the cache entry ITSELF for $null: a $var can't hold $null (assigning $null stores the
+	# integer 0). Until 2026-11-15 this copied $sht into $var(tenant) first, so the miss check never
+	# matched, the lookup never ran (the didt table stayed empty), and 0 == "-" (compared as
+	# integers) made every carrier call hash on its DID instead of its account: one account's
+	# numbers landed on different pbx nodes (Allen: 213/888 -> pbx-1, 718 -> pbx-2, its phones ->
+	# pbx-2), which breaks attended transfer between those calls.
 	$var(did) = $rU;
 	if ($(rU{s.substr,0,1}) == "+") $var(did) = $(rU{s.substr,1,0});
-	$var(tenant) = $sht(didt=>$var(did));
-	if ($var(tenant) == $null) {
-		$var(tenant) = "-";
+	if ($sht(didt=>$var(did)) == $null) {
+		$var(found) = "-";
 		if (sql_query("ro", "select tenant_id from public.kamailio_did_tenant where did_digits = '$var(did)' limit 1", "ra")) {
-			if ($dbr(ra=>rows) > 0) $var(tenant) = $dbr(ra=>[0,0]);
+			if ($dbr(ra=>rows) > 0) $var(found) = $dbr(ra=>[0,0]);
 			sql_result_free("ra");
 		}
-		$sht(didt=>$var(did)) = $var(tenant);
+		$sht(didt=>$var(did)) = $var(found);
 	}
+	$var(tenant) = $sht(didt=>$var(did));
 	if ($var(tenant) == "-") $var(tenant) = $var(did);
 
 	append_hf("X-PBX-Src: carrier\r\n");

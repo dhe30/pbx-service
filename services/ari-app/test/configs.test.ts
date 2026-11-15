@@ -257,7 +257,13 @@ describe.skipIf(!rendered)('rendered configs', () => {
       const sel = block(kam, 'route[PBX_SELECT]');
       expect(sel).toMatch(/\$var\(alg\) = 7;/);
       expect(sel).toMatch(/ds_select_dst\("1", "\$var\(alg\)"\)/);
-      expect(block(kam, 'route[FROM_CARRIER]')).toMatch(/sql_query\("ro", "select tenant_id from public\.kamailio_did_tenant/);
+      const carrier = block(kam, 'route[FROM_CARRIER]');
+      expect(carrier).toMatch(/sql_query\("ro", "select tenant_id from public\.kamailio_did_tenant/);
+      // The cache miss is tested on $sht itself: a $var can never be $null, so testing a copy
+      // skipped the lookup and every carrier call hashed on its DID (2026-11-15).
+      expect(carrier).toMatch(/if \(\$sht\(didt=>\$var\(did\)\) == \$null\) \{/);
+      expect(carrier).not.toMatch(/\$var\(tenant\) == \$null/);
+      expect(carrier.indexOf('$var(tenant) = $sht(didt=>$var(did));')).toBeGreaterThan(carrier.indexOf('$sht(didt=>$var(did)) = $var(found);'));
       expect(read('edge-1', 'dispatcher.list')).toMatch(
         /1 sip:127\.0\.0\.21:5060 0 0 socket=udp:127\.0\.0\.11:5070\n1 sip:127\.0\.0\.22:5060 0 0 socket=udp:127\.0\.0\.11:5070/,
       );
