@@ -1,15 +1,13 @@
 # pbx-service: a hosted virtual PBX
 
-A multi-tenant cloud phone system for small businesses, built for the CSE 356 course project.
-A business signs up on our website, buys phone numbers, sets up extensions, IVR menus, ring groups
-and business hours, and then makes and takes calls from SIP desk phones and a browser softphone.
-It pays by card. The system must keep working under load from the course's simulated customers,
-and must survive the loss of any single VM.
+A multi-tenant cloud phone system for small businesses (CSE 356 course project). A business signs
+up on our website, pays by card, buys numbers, configures call handling, and makes and takes calls
+from SIP desk phones and a browser softphone. It runs on 10 VMs, keeps working under the course's
+simulated customer load, and survives the loss of any one VM.
 
-Production domain: `group-4.cse356.compas.cs.stonybrook.edu` (website, API, WSS softphone and
-SIP over UDP/TLS through the `_sip._udp` / `_sips._tcp` SRV records).
+Production: `group-4.cse356.compas.cs.stonybrook.edu` serves the website and API (HTTPS), the
+softphone (WSS), and SIP over UDP and TLS through the `_sip._udp` / `_sips._tcp` SRV records.
 
-**Contents**
 1. [Project overview](#1-project-overview)
 2. [Running the system](#2-running-the-system)
 3. [Scaling and load handling](#3-scaling-and-load-handling)
@@ -17,96 +15,91 @@ SIP over UDP/TLS through the `_sip._udp` / `_sips._tcp` SRV records).
 5. [Developer guide](#5-developer-guide)
 6. [Team process and contributions](#6-team-process-and-contributions)
 
-Deeper documentation lives in [`docs/`](docs/). The full spec and design context is in
-[CLAUDE.md](CLAUDE.md). Each section below links to the detailed document for its topic.
+Topic documents are in [`docs/`](docs/) (index in §5.2). [CLAUDE.md](CLAUDE.md) is the full spec
+and architecture reference.
 
 ---
 
 ## 1. Project overview
 
-### What it does
+Phones and browsers only ever talk to two public **edge** VMs. The edges route SIP (Kamailio) and
+relay and transcode all audio (rtpengine). Calls go to private **pbx** VMs, where Asterisk handles
+the media work and a Node app decides what each call does. The API and website run on private
+**app** VMs and write configuration to Postgres. The call path reads that configuration from an
+in-memory cache, so calls don't wait on the database.
 
-- **Self-service accounts:** signup (business name, time zone, admin login, card), a weekly plan,
-  add-ons (extra extensions, international calling, call recording), weekly invoices, and
-  blocking of outgoing calls when an account is past due.
-- **Numbers:** search and buy local and toll-free numbers from the course DID provider, route
-  each number, and release numbers.
+### Features
+
+- **Accounts and billing:** signup with business name, time zone, admin login and card; a weekly
+  plan; add-ons (extra extensions, international calling, recording); weekly invoices with
+  retries; outgoing calls blocked while past due.
+- **Numbers:** search, buy, route and release local and toll-free numbers from the course's DID
+  provider.
 - **Call handling:**
-  - extensions with any number of registered phones, which all ring at once with the softphone
-    and listed external numbers (first answer wins);
-  - forwarding (always / busy / no answer);
-  - IVR menus, ring groups (all at once or in order), and business hours in the account's time
-    zone;
-  - voicemail (web inbox and `*98` with the Cisco Unity key map) and a caller blocklist;
-  - hold, blind and attended transfer;
-  - outgoing calls to US and international numbers through two PSTN vendors;
-  - call recording.
-- **Records:** one CDR per call leg, rated by longest prefix with 30/6 billing, searchable from
-  the API and the website.
-- **Codecs:** any two phones can talk, even when each supports only one of PCMU, PCMA, G.729,
-  G.723.1 or Opus. rtpengine transcodes.
+  - extensions where every registered phone, the softphone and listed external numbers ring at
+    once (first answer wins), with forwarding on always / busy / no answer;
+  - IVR menus, ring groups (simultaneous or in order), business hours in the account's time zone;
+  - voicemail (web inbox and `*98`), caller blocklist, hold, blind and attended transfer;
+  - outgoing calls through the US and international PSTN vendors; call recording.
+- **Any codec pair works:** each phone may support only one of PCMU, PCMA, G.729, G.723.1 or Opus.
+- **Call records:** one CDR per leg, rated by longest prefix in 30/6-second increments, searchable.
 
 ### Components
 
-| Component | Technology | Where it runs | Role |
+| Component | Technology | Runs on | Job |
 |---|---|---|---|
-| SIP proxy / registrar | Kamailio 6.0 | edge-1, edge-2 (public) | Registers phones and browsers, authenticates them, routes every SIP request, picks a pbx node |
-| Media relay | rtpengine 26.0 | edge-1, edge-2 | Relays all audio, transcodes codecs, terminates WebRTC (ICE, DTLS-SRTP) and SRTP-SDES |
-| TLS front end | HAProxy 3.0 | edge-1, edge-2 | HTTPS for the website and API, WSS for the softphone, Let's Encrypt certificate |
-| Media server | Asterisk 22 LTS | pbx-1, pbx-2 (private) | Bridges, prompts, music on hold, recording, DTMF. No dialplan logic |
-| Call control | Node/TypeScript ARI app (`services/ari-app`) | pbx-1, pbx-2 | IVR, ring groups, forwarding, voicemail, transfers, CDRs and rating |
-| API | Node/TypeScript, Fastify (`services/api`) | app-1, app-2 | Accounts, numbers, configuration, billing, CDR search, media. OpenAPI 3.1 at `/openapi.json` |
-| Website + softphone | React, Vite, SIP.js (`services/web`) | app-1, app-2 (nginx) | Dashboard and the browser phone |
-| Database | Postgres 16 + Patroni + etcd | db-1..3 | Accounts, configuration, CDRs, invoices; Kamailio's `subscriber` table |
-| Object store | Garage v2 (S3 API), 3 copies | db-1..3 | Greetings, voicemail, recordings |
-| Local DB/S3 proxy | HAProxy (`pbx-dbproxy`) | every edge, pbx and app node | `127.0.0.1:5432` always reaches the current Patroni primary |
-| Monitoring | Prometheus, Alertmanager, Grafana | mon-1 | Metrics from every node, alerts |
+| SIP proxy, registrar | Kamailio 6.0 | edge-1, edge-2 (public) | Registers phones and browsers, authenticates them, routes every SIP request, picks a pbx node |
+| Media relay | rtpengine 26.0 | edge-1, edge-2 | Relays all audio; transcodes; terminates WebRTC (ICE, DTLS-SRTP) and SRTP-SDES |
+| TLS front end | HAProxy 3.0 | edge-1, edge-2 | HTTPS for the website and API, WSS for the softphone |
+| Media server | Asterisk 22 | pbx-1, pbx-2 (private) | Bridges, prompts, music on hold, recording, DTMF. No call logic in its dialplan |
+| Call control | Node/TypeScript ARI app (`services/ari-app`) | pbx-1, pbx-2 | IVR, ringing, forwarding, voicemail, transfers, CDRs and rating |
+| API | Node/TypeScript, Fastify (`services/api`) | app-1, app-2 | Accounts, numbers, configuration, billing, CDR search, audio files. OpenAPI 3.1 at `/openapi.json` |
+| Website, softphone | React, Vite, SIP.js (`services/web`) | app-1, app-2 (nginx) | Dashboard and browser phone |
+| Database | Postgres 16, Patroni, etcd | db-1..3 | All persistent data, including Kamailio's `subscriber` table |
+| Object store | Garage (S3 API), 3 copies | db-1..3 | Greetings, voicemail, recordings |
+| Local DB/S3 proxy | HAProxy (`pbx-dbproxy`) | every node that uses the DB | `127.0.0.1:5432` always reaches the current Patroni primary |
+| Monitoring | Prometheus, Alertmanager, Grafana, test-call probes | mon-1 | Metrics, alerts, synthetic calls |
 
 ### How the pieces interact
 
 ```
-           desk phones (UDP / TLS)        browsers (HTTPS + WSS)        course services
-                     |                            |                     |       |       |
-                     |  SIP + RTP/SRTP            |                DID provider | payment gateway
-                     v                            v                (carrier SIP)|  (Stripe clone)
-  +--------------------------- edge-1 / edge-2 (public IPs) ------------------+ |       ^
-  |  Kamailio (registrar, routing) <--DMQ-->  peer edge                       | |       |
-  |  rtpengine (all media, transcoding, WebRTC)                               | |       |
-  |  HAProxy :443 (HTTPS -> API/web, WSS -> Kamailio)                         |<+       |
-  +------|-------------------------|----------------------------|-------------+         |
-         | SIP (dispatcher,        | RTP, PCMU only            | HTTP                  |
-         |  hash on account)       |                            v                       |
-  +------v-------------------------v-----+           +-----------------------+         |
-  | pbx-1 / pbx-2: Asterisk + ARI app    |           | app-1 / app-2:        |---------+
-  | (call control, voicemail, recording, |           | API + website         |-- DIDWW API v3 (buy numbers)
-  |  CDR spool, vendor legs)             |           | (billing scheduler)   |
-  +------|-------------------------------+           +-----------|-----------+
-         | SQL + S3 via local proxy                              | SQL + S3 via local proxy
-  +------v-------------------------------------------------------v-----------+
-  | db-1..3: Postgres + Patroni + etcd, Garage object store (3 copies)       |
-  +--------------------------------------------------------------------------+
-  outgoing calls: ARI app -> Asterisk -> Kamailio (edge) -> US / international PSTN vendor (digest auth)
+     desk phones (UDP / TLS)      browsers (HTTPS + WSS)            course services
+               |                         |                  DID provider    payment gateway
+               | SIP + RTP/SRTP          |                  (carrier SIP)   (Stripe clone)
+               v                         v                        |               ^
+  +----------------------- edge-1 / edge-2 (public IPs) -------+  |               |
+  |  Kamailio (registrar, routing)  <--DMQ-->  peer edge        |<-+               |
+  |  rtpengine (all media, transcoding, WebRTC)                 |                  |
+  |  HAProxy :443 (HTTPS -> API / web, WSS -> Kamailio)         |                  |
+  +-------|-----------------------|-----------------------|-----+                  |
+          | SIP (dispatcher,      | RTP, PCMU only        | HTTP                   |
+          |  hash on account)     |                       v                        |
+  +-------v-----------------------v------+        +-------------------+            |
+  | pbx-1 / pbx-2: Asterisk + ARI app    |        | app-1 / app-2:    |------------+
+  | (call logic, voicemail, recording,   |        | API + website     |--> DID provider API
+  |  CDR spool, outgoing vendor legs)    |        | billing scheduler |    (buy numbers)
+  +-------|------------------------------+        +---------|---------+
+          | SQL + S3 via local proxy                        | SQL + S3 via local proxy
+  +-------v-------------------------------------------------v-------------+
+  | db-1..3: Postgres + Patroni + etcd, Garage object store (3 copies)    |
+  +-----------------------------------------------------------------------+
+  outgoing: ARI app -> Asterisk -> Kamailio (edge) -> US or international PSTN vendor (digest auth)
 ```
 
-- **Incoming call:** the DID provider sends an INVITE over UDP from `130.245.136.142` to an edge
-  (its trunk group lists both edges). Kamailio looks up the DID's account, then rtpengine
-  rewrites the SDP so the Asterisk side is PCMU. The dispatcher sends the call to the pbx node
-  chosen for that account. Asterisk passes it to the ARI app (`Stasis`). The app sends 180 at
-  once, then follows the number's destination (IVR, ring group, extension...).
-- **Ringing staff:** the ARI app originates one channel per extension toward Kamailio. Kamailio
-  forks it to every registered device of that extension (browser over WSS, desk phones over UDP
-  or TLS), each branch with its own rtpengine media leg. External numbers on the extension get
-  their own vendor leg from the ARI app. The first answer wins.
-- **Outgoing call:** a phone's INVITE is digest-authenticated by Kamailio and handed to the
-  account's pbx node. The ARI app classifies the number, applies past-due and international
-  checks and caller ID, and dials the US or international vendor through an edge.
-- **Website / API:** browsers reach the API and website through HAProxy on the edges. The API
-  writes configuration to Postgres. A trigger sends `NOTIFY pbx_config`, so the ARI apps reload
-  that account's cached configuration. The API calls the DID provider to buy numbers and the
-  payment gateway to save cards and charge invoices.
-- **Audio files:** the ARI app records voicemail and calls to local disk and uploads them to the
-  object store. The API streams them to browsers (`GET /media/:id/audio`). The store is never
-  public.
+- **Incoming call:** the DID provider sends an INVITE to an edge. Kamailio looks up the number's
+  account, and rtpengine rewrites the SDP so the Asterisk side is PCMU. The dispatcher picks the
+  pbx node for that account. The ARI app sends 180 Ringing at once, then follows the number's
+  destination (IVR, ring group, extension, ...).
+- **Ringing an extension:** the ARI app sends one INVITE per extension to Kamailio, which forks it
+  to every registered device, each with its own media leg in rtpengine. External numbers on the
+  extension get their own vendor leg. The first answer wins.
+- **Outgoing call:** Kamailio checks the phone's digest credentials and passes the call to the
+  account's pbx node. The ARI app checks past-due status, international permission and caller ID,
+  then dials the right vendor through an edge.
+- **Configuration change:** the API writes Postgres. A trigger sends `NOTIFY pbx_config`, and every
+  ARI app drops that account's cached configuration.
+- **Audio files:** the ARI app records to local disk and uploads to the object store. The API
+  streams files to browsers (`GET /media/:id/audio`). The store is never public.
 
 ---
 
@@ -116,29 +109,23 @@ Deeper documentation lives in [`docs/`](docs/). The full spec and design context
 
 | For | Needs |
 |---|---|
-| Local API / web / tests | Node 24 (`.nvmrc`), npm, Docker + docker compose (Postgres, Garage), [dbmate](https://github.com/amacneil/dbmate), ffmpeg (greeting conversion) |
-| Telephony config checks | Linux or WSL, Ansible, Kamailio 6.0 binaries (can be extracted from .debs without root; see `telephony/tests/check-configs.sh`), optionally HAProxy |
-| Cloud deploy | WSL/Linux control machine with Ansible (`infra/ansible/requirements.yml`), the vault password, an SSH key accepted by the VMs |
-| Load / VM tests | SIPp with pcap support (`sip-tester`), `sngrep` on the edges |
+| Local API, website, tests | Node 24 (`.nvmrc`), npm, Docker + compose (Postgres, Garage), [dbmate](https://github.com/amacneil/dbmate), ffmpeg |
+| Telephony config checks | Linux or WSL with Ansible and Kamailio 6.0 binaries (`telephony/tests/check-configs.sh` extracts them from .debs, no root) |
+| Cloud deploy | Linux or WSL with Ansible (`infra/ansible/requirements.yml`), the vault password, an SSH key the VMs accept |
+| Load and live tests | SIPp with pcap support (`sip-tester`); `sngrep` and `tcpdump` on the edges |
 
 ### 2.2 Configuration
 
-- **Local dev:** `cp .env.example .env`. Every variable is commented there: `DATABASE_URL`, S3,
-  `JWT_SECRET`, DID provider (`DID_PROVIDER_MODE=fake` gives fictional numbers offline), Stripe
-  test keys, billing scheduler, `OPERATOR_TOKEN`.
-- **Cloud:**
-  - `infra/ansible/inventory/production.ini`: VM addresses (private-only VMs are reached through
-    edge-1 with ProxyJump).
-  - `infra/ansible/group_vars/all/main.yml`: pinned component versions, domain, DID provider
-    URL and trunk group, ports.
-  - `infra/ansible/group_vars/all/vault.yml`: every secret (DB passwords, ARI password, JWT key,
-    S3 keys, vendor digest credentials, Stripe and DIDWW keys, operator token). It is
-    Ansible-Vault encrypted. Generate it with `infra/ansible/scripts/new-vault.sh`. Never copy
-    the example: the repo is public.
-  - The variable contracts between roles are documented in
-    [docs/split-contracts.md](docs/split-contracts.md).
+- **Local:** `cp .env.example .env`. Every variable is commented there. `DID_PROVIDER_MODE=fake`
+  gives fictional numbers with no network access.
+- **Cloud** (all under `infra/ansible/`):
+  - `inventory/production.ini`: VM addresses. Private VMs are reached through edge-1 (ProxyJump).
+  - `group_vars/all/main.yml`: pinned versions, domain, ports, DID provider settings.
+  - `group_vars/all/vault.yml`: every secret, Ansible Vault encrypted. Create it with
+    `scripts/new-vault.sh`. The repo is public, so never commit an unencrypted copy.
+  - Variables and ports shared between roles: [docs/split-contracts.md](docs/split-contracts.md).
 
-### 2.3 Local development (API + website)
+### 2.3 Local development (API and website)
 
 ```bash
 cp .env.example .env
@@ -148,222 +135,245 @@ npm run db:migrate          # app schema (dbmate)
 npm run db:kamailio         # Kamailio's subscriber/location tables
 npm run dev:s3              # create the Garage bucket + key
 npm run build -w @pbx/shared
-npm run dev -w @pbx/api     # API on :3000 (tsx watch)
-npm run dev -w @pbx/web     # website on Vite; /api is proxied to :3000
+npm run dev -w @pbx/api     # API on :3000
+npm run dev -w @pbx/web     # website (Vite), /api proxied to :3000
 npm run dev:down            # stop the containers
 ```
 
-To run the telephony stack on one VM (Kamailio + rtpengine + Asterisk + ARI app) for call-flow
-work, use the all-in-one playbook `infra/ansible/phase1-allinone.yml`. The guides are
-[docs/local-vm.md](docs/local-vm.md) (VirtualBox) and [docs/phase1.md](docs/phase1.md).
+For call-flow work, `infra/ansible/phase1-allinone.yml` puts the whole telephony stack on one VM
+([docs/local-vm.md](docs/local-vm.md), [docs/phase1.md](docs/phase1.md)).
 
 ### 2.4 Cloud deployment
 
-Full runbook: [docs/cloud-deploy.md](docs/cloud-deploy.md) (§1–2 VM and DNS setup, §3 course
-services, §4 ordered checks, §5 split deployment).
+First deployment, DNS and course-service setup: [docs/cloud-deploy.md](docs/cloud-deploy.md).
+After that, from `infra/ansible/`:
 
 ```bash
-cd infra/ansible
-ansible-playbook site.yml --ask-vault-pass --limit db   # data tier first; check `patronictl list`
-ansible-playbook site.yml --ask-vault-pass              # everything, idempotent
-ansible-playbook site.yml --ask-vault-pass --limit app  # later: API + website only
-ansible-playbook site.yml --ask-vault-pass --limit pbx  # later: ARI app / Asterisk only
+ansible-playbook site.yml --ask-vault-pass --limit db    # data tier first; then `patronictl list`
+ansible-playbook site.yml --ask-vault-pass               # everything (idempotent)
+ansible-playbook site.yml --ask-vault-pass --limit app   # API + website only
+ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app only
 ```
 
-`site.yml` updates app, pbx and edge nodes one at a time (`serial: 1`). Each node must pass its
-health check (`/ready`, ARI `/health`) before the next one is touched. After adding or replacing
-a VM, run the whole playbook, because `pg_hba`, the dispatcher list and the HAProxy backends are
-generated from the inventory.
-
-**Start / stop on a node:** everything runs under systemd: `kamailio`, `rtpengine-daemon`,
-`haproxy` (edges); `asterisk`, `pbx-ari-app` (pbx); `pbx-api`, `nginx` (app); `patroni`, `etcd`,
-`garage` (db); `pbx-dbproxy` on every client node. To drain a pbx node before maintenance, mark it
-inactive in the dispatcher on both edges (`kamcmd dispatcher.set_state i 1 sip:<pbx>:5060`) and
-wait for its active calls to reach zero.
+- **Ansible deploys your local checkout**, not GitHub: check out the commit you mean to ship.
+- App, pbx and edge nodes are updated **one at a time** and must pass their health check
+  (`/ready`, ARI `/health`) before the next.
+- After adding or replacing a VM, run the whole playbook. `pg_hba`, the dispatcher list and the
+  HAProxy backends are generated from the inventory.
+- **Start / stop:** every service is a systemd unit: `kamailio`, `rtpengine-daemon`, `haproxy`
+  (edges); `asterisk`, `pbx-ari-app` (pbx); `pbx-api`, `nginx` (app); `patroni`, `etcd`, `garage`
+  (db); `pbx-dbproxy` on every DB client.
+- **Drain a pbx node** before maintenance: `kamcmd dispatcher.set_state i 1 sip:<pbx>:5060` on
+  both edges, then wait for its calls to end.
 
 ### 2.5 Testing
 
 ```bash
-npm test                 # all workspaces: API, shared rules, call-flow spec suite (fake Asterisk + PGlite)
+npm test                 # unit tests + call-flow spec suite (fake Asterisk, PGlite with the real migrations)
 npm run typecheck
-npm run test:configs     # render every telephony template + `kamailio -c` + `haproxy -c` (Linux/WSL)
+npm run test:configs     # render every telephony template; `kamailio -c`, `haproxy -c` (Linux/WSL)
 ```
 
-- On deployed VMs: SIPp scenarios in [loadtest/sipp/README.md](loadtest/sipp/README.md) cover
-  carrier calls per codec, phones placing calls, hold, call waiting and load.
-- [docs/telephony-tests.md](docs/telephony-tests.md) maps every course-spec section to its tests.
+On the deployed system, mon-1 tests continuously and alerts on failure:
+- **synthetic call** every minute through each edge (register, call, answer, hang up);
+- **codec quality test** every 15 minutes: audio both ways for every codec, including across a
+  session refresh;
+- **per-call audio record** on the edges: flags any customer leg that was silent in either
+  direction.
 
-### 2.6 Assumptions about cloud resources and services
+Manual SIPp scenarios (per codec, hold, call waiting, load): [loadtest/sipp/README.md](loadtest/sipp/README.md).
+Which test covers which part of the course spec: [docs/telephony-tests.md](docs/telephony-tests.md).
 
-- **VMs:** 10 Clanode (Linode clone) VMs, Debian 13. On 2026-11-11 every VM was 1 vCPU / 2 GB
-  (verify-backlog V-P11).
-- **Network:**
-  - Only the two edges have public IPs, delivered by 1:1 NAT onto the private address, so the
-    edges bind the private IP and advertise the public one (V-P10).
-  - The platform has **no floating IP** (V-P2), and the group domain has one A record and one
-    target per SRV record (V-P1).
-  - Private VMs have outbound internet (V-P3).
-- **Course services:**
-  - DID provider = DIDWW API v3 clone, with an inbound trunk group listing both edges.
-  - US and international PSTN vendors use SIP digest auth.
-  - Payment gateway = Stripe clone, without webhooks.
-  - Vendor and DID provider balances are prepaid. At $0 they stop working.
-- Every open assumption has a row in [docs/verify-backlog.md](docs/verify-backlog.md) with how to
-  check it. The course grading site is the ground truth.
+### 2.6 Assumptions about the cloud and course services
+
+- 10 Clanode VMs, Debian 13, each 1 vCPU / 2 GB.
+- Only the edges have public IPs, by 1:1 NAT onto the private address. The edges therefore bind
+  the private IP and advertise the public one.
+- No floating IP. The group domain has one A record and one target per SRV record, so phones
+  reach one edge. The DID provider's trunk group lists both edges.
+- The DID provider and PSTN vendors are prepaid and stop working at a $0 balance. The payment
+  gateway has no webhooks.
+
+Every assumption, with how it was checked: [docs/verify-backlog.md](docs/verify-backlog.md).
 
 ---
 
 ## 3. Scaling and load handling
 
-### 3.1 The problem
+**Summary.**
+- **SIP:** our server answers in under 5 ms. The remaining SIP and API tail latency is mostly
+  packets lost on the platform network, which cost a full protocol retransmit timer each.
+  - Where the hop is ours, we shortened those timers.
+  - Where it isn't (replies lost on the way to one course host), we measured it and reported it.
+- **Load:** we moved the database off the call-setup path and removed per-call costs that grew
+  with load.
+- **Failures:** each silent-call cause found under real traffic was traced to one SIP/SDP
+  interaction and fixed.
+- **Still open:** transcoding CPU on 1-vCPU edges is the expected first capacity limit and hasn't
+  been load-tested on the deployed system.
 
-Grading is done by simulated businesses that sign up, use the API, and place and receive calls
-at an increasing rate. The dashboard counts:
-- completed calls per minute;
-- failures: failed, **silent** or misrouted legs, and failed registrations;
-- p95 SIP response time (REGISTER, INVITE→first response, BYE, re-INVITE);
-- p95 post-dial delay;
-- API latency and outages.
+### 3.1 What grows with load
 
-So the system has to stay **fast** on the call-setup path, **correct** (audio both ways, right
-routing, right charges) and **available** (any single VM can die), all at the same time.
-
-Each call uses four kinds of resources, and each kind grows differently with load:
+The course grades: completed calls per minute; failed, silent or misrouted legs and failed
+registrations; p95 SIP response time (REGISTER, INVITE → first response, BYE, re-INVITE); p95
+post-dial delay; API latency; outages. Each resource grows with something different:
 
 | Resource | Grows with | Where |
 |---|---|---|
-| SIP signaling (REGISTER, INVITE, re-INVITE, BYE) | registered devices × re-register rate + calls/s × devices per extension | Kamailio (edges) |
-| Media (packet relay + transcoding) | concurrent calls × legs per call × transcoding cost of the codec pair | rtpengine (edges) |
-| Call control (ARI events, bridges, prompts, recording) | concurrent calls and calls/s | Asterisk + one Node event loop per pbx node |
-| Database (config reads, CDR writes, billing, search, API) | calls/s + API requests/s + background billing | one Patroni primary |
+| SIP signaling | devices × re-registration rate, plus calls/s × devices per extension | Kamailio (edges) |
+| Media | concurrent legs × transcoding cost of each codec pair | rtpengine (edges) |
+| Call control | concurrent calls, calls/s | Asterisk + one Node process per pbx node |
+| Database | calls/s (CDRs) + API requests/s + billing | one Patroni primary |
 
-### 3.2 Bottlenecks, evidence and changes
+### 3.2 How we found bottlenecks
 
-The first architecture (phase 1, one VM) was built for inbound calls to browsers. When we
-compared it with the course spec on 2026-11-08 ([docs/spec-transition.md](docs/spec-transition.md)
-§4–5), we traced every request type through it. For each one we counted the database round
-trips, blocking workers and per-call work it causes. Most of the evidence below is that analysis.
-Each fix is pinned by an automated test (`services/ari-app/test/`) or a check on the rendered
-config, so a later change can't quietly undo it. Load measurements on the deployed VMs are listed
-in §3.4 as still to do.
+- **Before launch:** we traced every request type (REGISTER, incoming call, outgoing call,
+  re-INVITE, API write) through the design. For each step we counted database round trips,
+  blocking workers and work that grows with load. These findings are listed in §3.4.
+- **After launch:** the course's real traffic was our load test. We compared four views of the
+  same requests to find where time or audio was lost:
+  - the course dashboard's histograms;
+  - Prometheus metrics;
+  - HAProxy request timings;
+  - packet captures on the edges, plus rtpengine's per-leg packet counts.
 
-| # | Bottleneck | Evidence | Change | Why it helps |
-|---|---|---|---|---|
-| B1 | **Registrations and auth on the DB primary.** Phase 1 stored registrations in Postgres (usrloc `db_mode=3`): every REGISTER wrote to the primary, and every call to a staff member read it. Kamailio had 8 UDP / 4 TCP workers, which block during each DB query | Request-path analysis: registrations scale with device count, not calls, and every simulated phone re-registers every few minutes. A primary failover (10–30 s) would have stalled all REGISTERs and all ringing, which the grader counts as failed registrations and failed legs | Registrations in Kamailio memory (`db_mode=0`), replicated between edges with `dmq_usrloc` (a restarted edge pulls a full copy). Auth and DID reads use a **read-only** URL (`db_ro_port` 5433, replicas first). 16/16 workers | REGISTER and lookups never touch the primary. A primary failover no longer affects SIP. Reads spread over replicas. Asserted by `configs.test.ts` (B1) |
-| B2 | **pike flood protection vs. the course simulators** | Simulated customers come from a few source IPs at high rates, exactly what pike blocks | `trusted_tester_cidrs` bypass pike. Density limit 30 → 200 for everyone else | Load from the graders isn't dropped as a flood. The public internet still is |
-| B3 | **Userspace media on the signaling VMs** | rtpengine and Kamailio share 1-vCPU edges. In userspace, every RTP packet (50 per second per direction per leg) costs a context switch | Kernel forwarding (`table = 0`, `rtpengine-kernel-dkms`, falls back to userspace). `num-threads` = vCPUs. Optional `media` inventory group puts rtpengine on its own VMs | Non-transcoded legs are forwarded in the kernel, which leaves CPU for transcoding and SIP. The `media` group lets media scale separately from signaling |
-| B4 / N1 | **Transcoding CPU.** Each phone supports one codec. With five codecs spread evenly, about 80% of legs transcode. G.723.1 and Opus encoding cost the most | Codec analysis. We confirmed the edges can encode and decode all five codecs (`rtpengine --codecs`, V-T1). The carrier only offers PCMU + telephone-event (V-D12) and the US vendor answered PCMU (V-V5), so carrier and vendor legs don't transcode | Accepted design: Asterisk stays PCMU-only and rtpengine transcodes (§4). Capacity is measured with the SIPp codec matrix and scaled with the `media` group | Keeps all transcoding in one horizontally scalable component instead of spreading it over Asterisk and rtpengine |
-| B5 | **Round-robin dispatch broke attended transfer** | An attended transfer (`Replaces`) needs both calls on the same Asterisk. With round robin, two calls of the same account landed on different nodes half of the time | Dispatcher algorithm 7 hashes on the **account id** (from the subscriber row for phones, from the DID for carrier calls). Failover follows the hash order | All of an account's calls share one node, so transfers and the account cache work. `hold-transfer.test.ts`, `configs.test.ts` (B5) |
-| B6 | **DB on the call-setup path.** Phase 1 ran several queries before answering and wrote 3 rows per call to the primary | Post-dial delay is graded at p95. Any primary hiccup or failover went straight into PDD and failed calls | (a) The ARI app answers with **180 Ringing before any lookup**. (b) Account configuration is read from an **in-memory snapshot** per node (`cache.ts`), invalidated by `NOTIFY pbx_config` with a 30 s TTL. (c) **Nothing is written until hangup:** CDRs go to a durable local spool and are inserted in rated, idempotent batches (`cdr.ts`) | Setup needs no DB round trip after the first call of an account. A DB failover delays CDR inserts but loses no calls or records. `routing.test.ts` (PDD), `cdr-billing.test.ts` |
-| B7 | **O(n²) ARI event fan-out and serial originates** | Every ARI event was offered to every active call session, so cost grew with the square of concurrent calls. Ringing N targets one after another added N round trips | Event bus indexed by channel id (`ari/events.ts`). Parallel originate for simultaneous ring | Event dispatch is O(1) per event. `units.test.ts` "dispatch cost does not grow" |
-| B8 | Recording uses a mixing bridge | — | Accepted: softmix of two PCMU streams is cheap next to transcoding. Measure with recording on | — |
-| B9 | **No rtpengine session failover** | No floating IP on the platform (V-P2), so another rtpengine can't take over a dead edge's media address | Accepted. Asterisk `rtp_timeout` 60 → 30 s so calls with dead media end sooner and free the phones | New calls go to the surviving edge; only calls in progress on the dead edge are lost |
-| API-1 | **Password hashing** in login/signup | `loadtest/api/argon2-bench.mjs` (2026-11-11, 16-vCPU dev box): with the library default argon2id (64 MiB, t=3, p=4), one process did ~28 hashes/s with p95 1.1 s at 32 concurrent logins. It was memory-bound; a larger libuv pool didn't help | OWASP minimum argon2id parameters (19 MiB, t=2, p=1). Old hashes still verify, because the parameters are stored per hash | ~160 hashes/s, p95 0.2 s on the same machine: about 5.7× the throughput. Still to re-measure on a 1-vCPU app VM |
-| API-2 | **Lost SYNs between the edges and the app nodes** | The course measured an API p99 of 3.6 s, but the API itself answered with a p99 of 0.19 s. Edge-1's HAProxy logs (6 h) showed where the time went: 47 of 6,021 API requests spent ~1,000 ms connecting to an app node (`Tc`) and only a few ms in the API. That is the kernel's 1 s retransmit after a lost SYN. Edge-1 counted 125k SYN retransmits, edge-2 4k | HAProxy `api` and `web` backends: `timeout connect 250ms`, so a connect that hasn't finished after 250 ms is retried at once (`retries 2`, the last one on the other node). `http-reuse always`, so HAProxy keeps connections to the app nodes open and shares them (PR #39) | A lost SYN now costs ~0.25 s instead of 1–3 s, and most requests need no new connection at all. The app nodes are one private hop away (connect p99 < 5 ms), so a slow API never trips the timeout. SYNs lost between clients and the edge are still open (§3.4) |
-| NET-1 | **SIP / API tail = packet loss × retransmit timers** | Every provider's API p99 is above 1 s (2026-11-14 leaderboard: 1.8–4.4 s). On our side: (1) the course's 500–750 ms SIP bucket is SIP's T1 (a lost UDP request is resent after 500 ms), its 200–300 ms bucket is the 250 ms rtpengine retry, its 1 s / 3 s API buckets are TCP's SYN timeout (once / twice). (2) Packet capture on edge-1: 4 of 53 course connections retried their SYN after exactly 1 s although we had sent the SYN-ACK within 0.1 ms; lost in pairs (bursty). (3) Connect tests: 0.5–0.9% of new private connections stall 1 s from edge-1 and to db-1, ~0% from edge-2; CPU 3–18%, steal 0, no drop counters in the VMs, so it is the platform's network, not load | Lost packets on hops we own cost less: Kamailio resends to Asterisk / the peer edge after 100 ms (`route[NH_TIMERS]`, `t_set_retr`), Asterisk's T1 is 100 ms (it only talks to the edges), rtpengine commands time out after 100 ms (×7). Kept the Call-ID hash over both rtpengines instead of "local rtpengine first": both SRV records name edge-1, so local-first would put all media and transcoding on one 1-vCPU VM | A loss on a private hop now costs ~0.1 s instead of 0.25–0.5 s. Client → edge SYN-ACK loss (the API tail) is outside our VMs: open (a faster server-side SYN-ACK resend needs a BPF hook) |
-| DB-1 | **Patroni error loop on the database replicas** | With almost no load, db-2 and db-3 used ~31% CPU, the leader 9%. Patroni 4 opens a replication connection to its own Postgres on each replica. `pg_hba` had no rule for that from 127.0.0.1, so it failed about 17 times a second, each time with a full traceback: 153,756 log lines in 5 minutes per replica | `host replication replicator 127.0.0.1/32` in `pg_hba` (`postgres_patroni` role). It is applied by a Patroni reload: no restart, no failover | The replicas dropped to 6–11% CPU with no errors. On 1-vCPU VMs that CPU goes back to the reads they serve (Kamailio auth, DID lookups) and to WAL replay. Patroni again knows each replica's position, which it needs to pick the best one in a failover |
-| NET-2 | **SIP p99: our REGISTER replies lost on the way to the course's phone simulator** | 2026-11-15 leaderboard: 7.5% of our SIP transactions > 300 ms (bat 1.3%), nearly all in the 500–750 ms bucket (2,644 vs 6 at 300–500 ms), i.e. a resend after SIP's 500 ms timer. Course chart: REGISTER p95 537–678 ms in every 5-min window since the large customer joined; INVITE 10–50 ms. **Experiment 1:** edge-1 `UdpRcvbufErrors` 0, softnet drops 0, at most 28 SIP packets/s, so no overflow or bursts. **Experiment 2** (`loadtest/diag/sip-retransmits.py`, ~11 h of capture): 73,492 REGISTERs, 4.2% resent, and in 3,080 of 3,082 we had already answered (p99 4.5 ms, one packet, right `ip:port`). Resent and non-resent replies had the same delay, and resends were evenly spread. Replies to 130.245.136.125 (the large customer's phones) were lost 4.0–4.5% of the time every hour; to 130.245.136.144 0.5–0.7%, to the carrier 0.1%, same socket and hours | None in our code. Not resizing edge-1 (no measurement blames it; one public IP means an outage). Report to the course staff | Shows where the time goes: not our processing (< 5 ms) and not edge-1 capacity, so no VM or buffer change can fix it. Our traffic is ~95% REGISTERs to that host, which is why our p99 is worse than providers with more calls. [docs/incidents/2026-11-15-latency-tail.md](docs/incidents/2026-11-15-latency-tail.md) |
-| API-3 | **DIDWW reference lists fetched on every request** | 2026-11-15, 24 h: the API's own p99 is 0.15 s, but 25 of its 35 requests over 1 s were `GET /numbers/regions`, `/countries`, `/cities` at ~1.05 s each (HAProxy Tr; Prometheus per route): a new connection to the course's DID provider losing its first SYN. Every private hop loses ~0.5% of TCP segments (`ss -ti`), which also puts 2% of requests at ~200 ms (TCP loss recovery) | Per-process cache (`src/numbers/lookup-cache.ts`, PR #63): one shared load per key; after 1 h the cached list is returned at once and refreshed in the background; failures never cached; at most 500 keys | After the first request per key and app node, these routes no longer wait on DIDWW. The course's other API tail cluster (3–5 s) never reaches our HAProxy (max 2.9 s there) and appears for every provider, including one with no customers |
+  The scripts are in `loadtest/diag/`. Each investigation has a write-up in
+  [docs/incidents/](docs/incidents/).
 
-### 3.3 How the parts affect each other
+### 3.3 Bottlenecks measured in production
 
-- **Media vs. signaling on the edges.** rtpengine and Kamailio share each edge's single vCPU. A
-  transcoding spike raises Kamailio's SIP response time, which is graded at p95.
+**1. SIP response time: lost packets × retransmit timers.**
+- *Evidence:*
+  - **Our tail is resends, not slow work.** In the course's histogram (2026-11-15), 2,644 of our
+    38,628 SIP transactions took 500–750 ms but only 6 took 300–500 ms. That is a UDP request
+    resent after SIP's 500 ms timer.
+  - **We answer fast, and our replies get lost.** Pairing every REGISTER in 11 h of edge capture
+    with our reply: we answer in 4.5 ms at p99, but 4.3% of our replies to the course's phone
+    simulator (130.245.136.125) never arrive. To the other course hosts, through the same socket
+    in the same hours, the loss is 0.1–0.7%.
+  - **It isn't edge-1's load.** Its kernel drop counters stayed at 0.
+  - **Private hops lose packets too, about 0.5%.** One lost rtpengine command held a re-INVITE's
+    200 OK for 1.008 s, its full timeout.
+- *Change:* hops we own retry sooner:
+  - Kamailio resends to Asterisk and the peer edge after 100 ms (it waited 500 ms);
+  - Asterisk's retransmit timer (T1) is 100 ms;
+  - rtpengine commands time out after 100 ms, with 7 tries (1 s before).
+- *Effect:*
+  - A loss on a private hop costs ~0.1 s instead of 0.5–1 s. INVITE p95 is 10–50 ms.
+  - **Open:** REGISTER p95 stays ~600 ms while the course host keeps losing replies, and its
+    REGISTERs are ~95% of our transactions. Reported to the course staff.
+  - We did not resize edge-1: nothing measured blames it, and with one public IP a resize is an
+    outage.
+- [docs/incidents/2026-11-15-latency-tail.md](docs/incidents/2026-11-15-latency-tail.md)
+
+**2. API latency tail: lost SYNs and uncached DID provider lookups.**
+- *Evidence:*
+  - **2026-11-13:** the course measured an API p99 of 3.6 s, but the API's own p99 was 0.19 s.
+    HAProxy logs showed 47 of 6,021 requests spending ~1 s connecting to an app node, which is
+    the kernel's retry after a lost SYN.
+  - **2026-11-15:** 25 of the API's 35 requests over 1 s were `GET /numbers/countries`,
+    `/regions` and `/cities` at ~1.05 s each. They called the DID provider on every request.
+- *Change:*
+  - HAProxy gives up on a connect after 250 ms and retries, the last try on the other app node.
+    It also keeps and reuses connections to the app nodes (PR #39).
+  - The three lists are cached per API process for 1 h and refreshed in the background (PR #63).
+- *Effect:*
+  - A lost SYN to an app node costs 0.25 s instead of 1–3 s.
+  - The list routes no longer wait on the provider after the first request.
+  - **Open:** the course's remaining 3–5 s requests were not slow at our HAProxy (its slowest
+    request was 2.9 s), and every provider has them, including one with no customers.
+
+**3. Silent and failed legs** (graded as failures). Each was found by comparing what each side
+sent (rtpengine packet counts per direction, edge captures), reproduced, then fixed.
+- **Codec switched mid-call.** After the answer, Asterisk sent a caller-ID update (re-INVITE).
+  rtpengine turned it into a 5-codec offer to the phone, and at the phone's next 30 s refresh we
+  switched codec while it kept PCMU. Fix: `send_connected_line=no`. Trade-off: no mid-call
+  caller-ID update. [Write-up](docs/incidents/2026-11-14-codec-flip.md).
+- **TLS phones silent (1 of 5 calls).** A phone answering with crypto suite tag 1 matched nothing,
+  because rtpengine numbers its own offered suites and puts `AES_CM_128_HMAC_SHA1_80` 7th. Fix:
+  offer only the two `AES_CM_128` suites.
+- **G.723 phones silent (3 of 3 such answers).** A G.723 answer with an `fmtp` line plus DTMF made
+  rtpengine 26.0.1 send Asterisk an answer with no audio codec. Fix: `reuse-codecs` on exactly
+  those answers. [Write-up](docs/incidents/2026-11-15-g723-dtmf-answer.md).
+- **Phones that never rang.** INVITEs to UDP phones were 1,602–1,609 bytes, above the edges'
+  1,450-byte path MTU, so they were fragmented, and NATs that drop fragments lost them. Fix:
+  ~220 bytes fewer headers.
+- **Misrouted legs** in the first customer's call records: the caller's own number was rung back
+  when it was also listed as the extension's external number, and blocked calls were recorded
+  twice. Both fixed. [Write-up](docs/incidents/2026-11-13-first-customer.md).
+- *Effect:* silent legs are now caught automatically by the per-call audio record and the codec
+  quality test (§2.5).
+
+**4. Post-dial delay: account cache reload.**
+- *Evidence:* the synthetic call's first call each minute got 180 Ringing after 156 ms, and a
+  call seconds later after 12 ms. An account's cached configuration expired after 30 s, and the
+  next call waited for 9 queries to the primary. A small business rarely calls twice within
+  30 s, so almost every call paid this.
+- *Change:* configurations of accounts active in the last 10 minutes are reloaded in the
+  background every 15 s.
+- *Effect:* ~150 ms less post-dial delay, with the same 30 s freshness bound (so a paid account
+  is still unblocked within the required minute).
+
+**5. Database replicas wasting CPU.**
+- *Evidence:* with almost no load, the replicas used ~31% CPU (the leader 9%). Patroni's
+  replication connection to its own Postgres was refused 17 times a second, each time logging a
+  traceback.
+- *Change:* one `pg_hba` rule, applied by reload.
+- *Effect:* 6–11% CPU. That CPU goes back to the reads the replicas serve (SIP authentication).
+
+**6. Password hashing.**
+- *Evidence:* with the library's default argon2id settings, one API process did ~28 hashes/s,
+  with p95 1.1 s at 32 concurrent logins (`loadtest/api/argon2-bench.mjs`). The limit was
+  memory, so a bigger thread pool didn't help.
+- *Change:* OWASP's minimum argon2id settings (19 MiB, 2 passes). Old hashes still verify.
+- *Effect:* ~160 hashes/s, p95 0.2 s. Measured on a 16-vCPU dev machine, not yet on an app VM.
+
+### 3.4 Bottlenecks removed before launch (request-path analysis)
+
+Most are pinned by a test (`services/ari-app/test/`, rendered-config checks), so a later edit
+can't quietly undo them.
+
+| Bottleneck | Change | Why it helps |
+|---|---|---|
+| Every REGISTER wrote to the DB primary, and Kamailio's workers block during each query. Registrations grow with devices, not calls | Registrations in Kamailio memory, replicated between edges (DMQ). Authentication reads go to replicas | REGISTER never touches the primary, and a 10–30 s primary failover no longer stops SIP |
+| Several DB queries before answering a call, and 3 row writes per call | 180 Ringing before any lookup. Configuration from a per-node cache. CDRs spooled to local disk and inserted in batches after hangup | No DB round trip during call setup. A DB outage delays CDRs but loses none |
+| Every ARI event was offered to every active call: cost grew with calls² | Events indexed by channel; parallel originate for simultaneous ring | O(1) work per event |
+| Round-robin dispatch put an account's two calls on different Asterisks, which breaks attended transfer | Dispatcher hashes on the account id | An account's calls share one node; failover follows the hash order |
+| Flood protection (pike) would block the course's simulators, which send a lot from few IPs | Course ranges bypass pike | Simulated load isn't dropped; internet scanners still are |
+
+### 3.5 How the parts affect each other
+
+- **Media vs. signaling:** rtpengine and Kamailio share each edge's single vCPU, so a transcoding
+  spike would slow SIP responses.
   - Kernel forwarding takes plain relaying off the CPU.
-  - Pinning the carrier trunk to PCMU (it is settable, V-D5; the carrier already offers only
-    PCMU, V-D12) avoids transcoding on every incoming call.
-  - Moving rtpengine to `media` VMs separates the two completely.
-- **Call path vs. database.** CDR inserts, the API (signup, configuration, CDR search), and the
-  billing scheduler all write to **one Patroni primary** (N8). We kept the call path from
-  depending on it:
-  - reads come from the cache;
-  - writes are batched at hangup;
-  - Kamailio reads from replicas.
+  - The carrier and the US vendor use PCMU, so their legs don't transcode.
+  - A `media` inventory group can move rtpengine to its own VMs.
+- **Calls vs. database:** CDR inserts, the API and billing all write to one primary. The call path
+  only reads from its cache and writes after hangup, so heavy API use or a failover slows CDR
+  inserts, not calls.
+- **CDR writes vs. search:** `cdrs` is insert-only with indexes for partial-number search. The
+  batch flush interval trades how fast a call shows up in search against transactions on the
+  primary.
+- **Billing vs. calls:**
+  - Rating happens at hangup from an in-memory rate deck, so billing only sums rows.
+  - The weekly billing scheduler runs in every API process. Each unit of work is claimed with
+    `FOR UPDATE SKIP LOCKED`, so the nodes split work with no leader and no double charges.
+- **Affinity vs. balance:** hashing on the account keeps transfers working but puts a large
+  account on one pbx node. `pbx_active_calls` per node shows whether that becomes a problem.
 
-  Heavy API traffic or a failover therefore slows CDR inserts, not calls.
-- **CDR writes vs. search.** The spec needs ended calls to show up in search "within about a
-  second", while inserts must stay cheap.
-  - `cdrs` is insert-only, one row per leg, with indexes for partial number search.
-  - The batch flush interval trades how fresh search results are against how many transactions
-    the primary runs.
-  - Next step if this grows: partition `cdrs` by month and serve search from replicas.
-- **Billing vs. calls.**
-  - Rating happens in the ARI app at hangup, from an in-memory rate deck (longest prefix,
-    `NOTIFY pbx_rates` reloads it).
-  - Billing then only sums rows. Usage is aggregated per account in `usage_periods`, one row
-    lock per account per batch (N5).
-  - The weekly scheduler runs in every API process. Each unit of work is claimed with
-    `FOR UPDATE SKIP LOCKED`, so the API nodes split the work without a leader.
-  - Payment unblocks a past-due account through `tenants.status` → `NOTIFY` → the ARI cache,
-    well within the required minute.
-- **Tenant affinity vs. balance.** Hashing on the account makes transfers correct but can put one
-  very large account on one pbx node (N4). The simulated customers are many small businesses,
-  so we accepted this. `pbx_active_calls` per node shows if it happens.
-- **Node event loop.** Each pbx node runs one Node process for call control (N7). Past its CPU
-  limit, we add pbx nodes. The dispatcher list is built from the inventory, so a new node takes
-  traffic after one playbook run.
+### 3.6 Trade-offs and open limits
 
-### 3.4 Limitations and next measurements
-
-- **First production evidence (2026-11-13):** one market customer used the system for 3 hours
-  and left. Its call records and the course dashboard showed two misrouting bugs and a CDR bug
-  (fixed), external numbers always beating desk phones, possible silent legs, and our API p99
-  (3.6 s, worst of the active providers). That latency is not in the API (server-side p99
-  0.19 s) but in lost TCP SYNs: each costs the kernel's 1 s retransmit, between the edge and the
-  app nodes (PR #39) and between clients and the edge (open). Evidence, status of each finding and the queries used:
-  [docs/incidents/2026-11-13-first-customer.md](docs/incidents/2026-11-13-first-customer.md).
-- **Silent legs after a mid-call re-INVITE (2026-11-14):** two more customers left. Almost every
-  failure the course counted was a phone's outgoing call longer than ~60 s. Asterisk re-INVITEd
-  each leg right after the answer (connected-line update); rtpengine turned that into an offer of
-  five codecs to the phone, and at the phone's next 30 s session refresh we started sending it
-  G.723/G.729/PCMA while it kept sending PCMU. Evidence: rtpengine byte counts per packet and
-  transcoder metrics for each failed call, then a SIPp reproduction. Fix: `send_connected_line=no`
-  (also two fewer SIP transactions per call). Trade-off: phones no longer get a mid-call caller-ID
-  display update. [docs/incidents/2026-11-14-codec-flip.md](docs/incidents/2026-11-14-codec-flip.md).
-- **G.723 phones answering with DTMF (2026-11-15, first large customer, 98 extensions):** our
-  per-call audio record flagged 3 silent legs within 20 minutes, all toward G.723 phones. A phone
-  answering G.723 with an `fmtp` line plus telephone-event made rtpengine 26.0.1 forward an answer
-  with no audio codec to Asterisk, which then sent nothing. Found by pairing every phone answer
-  in the edge captures with what reached Asterisk (only that combination failed, 3 of 3);
-  reproduced on rtpengine's control port with real RTP, then end to end. Fix: `reuse-codecs` on
-  just those answers (it would drop DTMF for Opus, so not global); the quality test's phones now
-  offer DTMF like the course's. [docs/incidents/2026-11-15-g723-dtmf-answer.md](docs/incidents/2026-11-15-g723-dtmf-answer.md).
-- **Latency tail experiments (2026-11-15):** the leaderboard put our SIP p99 (736 ms) and API
-  p99 (3.5 s) worst or near it. Three experiments on the deployed system:
-  - Kernel drop counters on edge-1: none, so no UDP overflow.
-  - Pairing every REGISTER in ~11 h of edge capture with our replies: we answer in < 5 ms, but
-    4.3% of our replies to the course's phone simulator (130.245.136.125) are lost on the way.
-  - Three views of API latency (course chart, HAProxy log, Prometheus): the API itself is fast, and
-    most of its slow requests were uncached DIDWW lookups.
-  Outcome: cache (API-3, PR #63), loss reported to the course staff (NET-2), edge-1 not resized.
-  [docs/incidents/2026-11-15-latency-tail.md](docs/incidents/2026-11-15-latency-tail.md).
-- **Synthetic call (since 2026-11-14).** Every minute, mon-1 places a real call through each
-  edge's public address: test extension B registers, test extension A calls it with digest auth,
-  B answers, both would answer a re-INVITE from Asterisk (none since `send_connected_line=no`),
-  A hangs up.
-  - Each run records success and the time to answer per edge
-    (`pbx_synthetic_call_setup_seconds`). After 3 failed runs in a row, `SyntheticCallFailing`
-    alerts the team.
-  - First samples: 0.18–0.24 s through edge-1, 0.03 s through edge-2. Edge-1 carries all public
-    traffic on 1 vCPU. An hour of samples will show whether it is the SIP bottleneck.
-- **Cost trade-off.** Every VM uses the smallest plan (1 vCPU, 2 GB). An edge with 2 vCPUs costs
-  twice as much, so we resize a VM only when the measurements show it is the bottleneck.
-- **No load numbers from the deployed system yet.**
-  - Still to run: SIPp ramps (`-r` calls/s, `-l` concurrent) with the codec matrix on the
-    deployed VMs, recording capacity per pbx node and per rtpengine (CPU, `pbx_active_calls`,
-    SIP p95 from Kamailio, PDD).
-  - Expected first limit: transcoding CPU on the 1-vCPU edges.
-  - Planned response: resize the edges or add `media` nodes (VM quota V-P8 is unknown).
-- **Single-VM failure coverage:**
-  - Losing an edge drops the calls whose media it anchored (B9).
-  - DNS has one A/SRV target (V-P1), so phones and browsers registered via the domain need a
-    manual DNS change on the Group tab. Carrier calls fail over through the DIDWW trunk group
-    (V-D11, partly verified).
-- Registrations exist only in memory: if **both** edges restart at once, phones must re-register
-  (N2). Edges are therefore always updated with `serial: 1`.
-- All writes go to one primary (N8). This is fine at expected rates; partitioning and read
-  replicas for the API are the next steps.
-- The chaos drills in CLAUDE.md §16 (kill each VM type under load) are still to run.
+- **No load ramp on the deployed system yet.** We expect transcoding CPU on the 1-vCPU edges to be
+  the first limit, and plan to resize the edges or add `media` nodes when measurements show it.
+  Every VM is on the smallest plan to keep cost down.
+- **Losing an edge drops the calls whose audio it carries:** there is no floating IP to move
+  rtpengine sessions. Phones registered through the domain also need a manual DNS change (one
+  SRV target); carrier calls fail over through the trunk group.
+- **Registrations live only in memory.** If both edges restart at once, phones must re-register,
+  so edges are always deployed one at a time.
+- **All writes go to one Postgres primary.** Partitioning `cdrs` and serving search from replicas
+  are the next steps.
+- **The kill-a-VM-under-load chaos drills (CLAUDE.md §16) have not been run.**
 
 ---
 
@@ -371,29 +381,28 @@ in §3.4 as still to do.
 
 | Area | Decision | Reason |
 |---|---|---|
-| **Overall stack** | Kamailio (edge) + rtpengine + Asterisk with a Node ARI app; no Kubernetes; Ansible + StackScripts | Each tool does one job it is built for: Kamailio for SIP at scale, rtpengine for media and WebRTC, Asterisk for media functions. Call logic in TypeScript is testable without telephony hardware. With 10 VMs, Ansible is simpler than an orchestrator |
-| **Registrar** | Kamailio is the registrar, not Asterisk. Registrations in memory, replicated with DMQ; Path header for the edge that holds a connection | Any pbx node can reach any device by sending the INVITE to Kamailio. Keeps registrations off the DB (B1) |
-| **Media and codecs** | rtpengine anchors every call. The leg toward Asterisk is always PCMU; toward carriers, vendors and phones it offers PCMU, PCMA, G.729, G.723.1, Opus; toward browsers PCMU only | Asterisk needs decoded audio for prompts, MOH, recording and voicemail, and its free codec modules don't cover G.723.1/Opus. One place to transcode, and the browser leg never transcodes (decision S1) |
-| **WebRTC** | rtpengine terminates ICE/DTLS-SRTP; Asterisk has no `webrtc=yes` | Asterisk nodes stay private, with no TURN or public IPs |
-| **TLS phones** | Kamailio TLS on 5061 with the Let's Encrypt certificate shared with HAProxy; SRTP-SDES via rtpengine | Required by `_sips._tcp` in the spec |
-| **Load balancing** | SIP: Kamailio dispatcher, hash on account id, failover on 500/503/timeout. HTTP: HAProxy on each edge, health check on `/ready`, retries + redispatch. Carrier: DIDWW trunk group with both edges | Account affinity for transfers (B5); rolling deploys without failed requests (R18) |
-| **Concurrency model** | One Node process per pbx node, with in-memory call sessions and an indexed event bus. Asterisk returns 503 if the app is down (`Hangup(34)`), so Kamailio retries the other node | Simple, single-threaded state per call. A crash loses only that node's calls in progress |
-| **Caching** | Per-node account snapshot invalidated by Postgres `NOTIFY` + 30 s TTL; Kamailio `htable` cache for DID → account (failures cached too) | No DB round trip on the call-setup path (B6) |
-| **Queuing** | CDRs: durable local spool → batched, idempotent inserts. Recordings/voicemail: local spool + crash-safe sidecar files → object store upload | A DB or object-store outage delays writes but loses nothing |
-| **Data storage** | Postgres 16 + Patroni + etcd (3 nodes) behind a **local HAProxy** on each client; Garage (S3 API) with 3 copies on the same nodes | Node and Kamailio Postgres drivers don't handle multi-host failover well. A local proxy has no single point of failure. Clients see `127.0.0.1` |
-| **Kamailio data** | Kamailio's own schema for `subscriber`, plus `tenant_id`/`extension_id` columns; Kamailio only reads | The API owns writes. Kamailio can use replicas |
-| **CDR, rating, billing** | One insert-only row per leg, rated at hangup by longest prefix with 30/6 increments. Outcome = whether a person answered. Toll-free incoming billed from our answer. Every external leg (forward, simultaneous ring, transfer) is its own charged CDR. Prices have DB `CHECK` ceilings | Matches the spec's per-leg CDR fields. The ceilings make an overcharge impossible even after a bad config change (decisions S7–S11, S15) |
-| **Billing periods** | Weekly periods from the signup weekday in the account's time zone. One `account_items` table for every recurring item, with the price locked at purchase. Usage is rounded once per invoice. Invoices under 50¢ are marked paid | One renewal loop. No rounding drift. The gateway's minimum charge (R3, R11–R13) |
-| **Payment processing** | Card saved through a SetupIntent (Stripe.js in the browser); charges are off-session PaymentIntents with an Idempotency-Key per attempt (`invoice:<id>:<attempt>`); retries at 5 min, 15 min, 1 h, 3 h, then every 6 h; past due after 24 h unpaid | The clone has no webhooks (V-S2), so we read the PaymentIntent result directly. Keys make retries safe without double charges (R14, R15) |
-| **Purchases** | Number and add-on purchases are idempotent (`Idempotency-Key` → `purchase_requests`) and resumable (order → trunk → charge → row) | A retried request after a lost response can't buy or charge twice |
-| **Fault tolerance** | Every role on ≥ 2 VMs (db on 3); rolling deploys with health checks; clients reconnect across a 10–30 s Patroni failover; systemd restarts every service | Spec: survive the loss of any one VM |
-| **API design** | REST + OpenAPI 3.1 at `/openapi.json`. Everything the website does is possible through the API. Tenant isolation rules for every route ([docs/backend-step3.md](docs/backend-step3.md)). Keyset paging for CDR search | The course's tools drive our API from the OpenAPI document. Keyset paging stays fast on large CDR tables |
-| **Auth** | httpOnly cookie with a signed JWT (15 min access, 7 day refresh), stateless across API replicas; argon2id passwords; operator routes use a separate bearer token | No session store to replicate. The operator stays outside tenant isolation |
-| **Network security** | Cloud firewall opens only public SIP/TLS/HTTPS/media ports on the edges; nftables allowlists per role on every host; internal services bind private IPs; Kamailio accepts carrier INVITEs only from `carrier_cidrs` and strips `X-PBX-*` headers from outside; pike + UA blacklist; secrets only in Ansible Vault | The cloud firewall can't filter by source, so filtering happens on the hosts |
+| Stack | Kamailio + rtpengine + Asterisk with call logic in a Node ARI app; Ansible, no Kubernetes | Each tool does what it is built for. Call logic in TypeScript is testable without telephony hardware. For 10 VMs, Ansible is simpler than an orchestrator |
+| Registrar | Kamailio, not Asterisk. Registrations in memory, replicated with DMQ, with a Path header naming the edge that holds the phone's connection | Any pbx node reaches any phone by sending to Kamailio. Registrations stay off the database |
+| Media and codecs | rtpengine anchors every call. The Asterisk side is always PCMU; phones, carriers and vendors are offered all five codecs; browsers get PCMU | Asterisk needs decoded audio for prompts, recording and voicemail, and lacks free G.723.1/Opus support. Transcoding happens in one scalable place, and browser legs never transcode |
+| WebRTC and TLS phones | rtpengine terminates DTLS-SRTP and SRTP-SDES; Kamailio serves TLS on 5061 with the same Let's Encrypt certificate as HAProxy | Asterisk nodes stay private, with no TURN server or public IPs |
+| Load balancing | SIP: Kamailio dispatcher hashing on the account, failover on 500/503/timeout. HTTP: HAProxy on each edge, health check on `/ready`, retry on another node. Carrier: trunk group with both edges | Transfers need an account's calls on one Asterisk. Rolling deploys cause no failed requests |
+| Concurrency | One Node process per pbx node, in-memory call state, indexed event bus. If the app is down, Asterisk answers 503 and Kamailio tries the other node | Single-threaded state per call is simple; a crash loses only that node's calls in progress |
+| Caching | Per-node account snapshot, invalidated by Postgres `NOTIFY`, 30 s maximum age, refreshed in the background for active accounts. DID → account cache in Kamailio. DID provider lists cached in the API | No database round trip on call setup (§3.3 #4, §3.4) |
+| Queuing | CDRs: local spool, then batched idempotent inserts. Recordings and voicemail: local spool, then upload to the object store | A database or object-store outage delays writes but loses nothing |
+| Data storage | Postgres + Patroni + etcd on 3 nodes; each client reaches the primary through a local HAProxy on `127.0.0.1`. Garage with 3 copies on the same nodes | Node's and Kamailio's Postgres drivers handle multi-host failover poorly; a local proxy adds no single point of failure |
+| CDRs, rating, billing | One insert-only row per leg, rated at hangup by longest prefix with 30/6 increments. Every external leg (forward, simultaneous ring, transfer) is its own charged CDR. Prices have database `CHECK` ceilings | Matches the spec's per-leg CDR fields. The ceilings make an overcharge impossible even after a bad config change |
+| Billing periods | Weekly periods from the signup day in the account's time zone. One table for every recurring item, with the price locked at purchase | One renewal loop for every item kind; no rounding drift |
+| Payments | Cards saved with a SetupIntent through Stripe.js, so card numbers never reach us. Off-session charges with one Idempotency-Key per attempt. Retries at 5 min, 15 min, 1 h, 3 h, then every 6 h; past due 24 h after the period ends | The gateway has no webhooks, so we read the result directly. Keys make retries safe |
+| Purchases | Number and add-on purchases are idempotent (`Idempotency-Key`) and resumable (order → trunk → charge → row) | A client retrying after a lost response can't buy or pay twice |
+| Fault tolerance | Every role on 2+ VMs (database on 3); rolling deploys behind health checks; clients reconnect across a failover; systemd restarts every service | The spec requires surviving the loss of any one VM |
+| API | REST, OpenAPI 3.1 at `/openapi.json`, everything the website does is in the API, tenant isolation rules on every route ([docs/backend-step3.md](docs/backend-step3.md)), keyset paging for CDR search | The course's tools drive the API from the OpenAPI document. Keyset paging stays fast on large tables |
+| Authentication | Signed JWT in an httpOnly cookie (15 min access, 7 day refresh); argon2id passwords; operator routes use a separate bearer token | No session store to replicate across API nodes |
+| Network security | Cloud firewall opens only the public SIP, TLS, HTTPS and media ports on the edges. nftables allowlists per role on every host; internal services bind private IPs. Kamailio accepts carrier calls only from the carrier's IP and strips our internal headers from outside requests. Secrets only in Ansible Vault | The cloud firewall can't filter by source address, so the hosts do |
 
-More decisions with their reasons: spec-transition S1–S16, backend-for-team R1–R23,
-[docs/hold-call-waiting.md](docs/hold-call-waiting.md) D1–D8, and
-[docs/billing-flows.md](docs/billing-flows.md).
+Detailed reasoning: [docs/spec-transition.md](docs/spec-transition.md) (telephony),
+[docs/backend-for-team.md](docs/backend-for-team.md) (API),
+[docs/billing-flows.md](docs/billing-flows.md) (billing),
+[docs/hold-call-waiting.md](docs/hold-call-waiting.md) (hold and call waiting).
 
 ---
 
@@ -401,274 +410,197 @@ More decisions with their reasons: spec-transition S1–S16, backend-for-team R1
 
 ### 5.1 Repository structure
 
-| Path | What |
+| Path | Contents |
 |---|---|
-| `services/shared` | TS package used by the API and the ARI app: DB access (postgres.js), zod schemas (`Destination`, IVR config), number classification, billing rules |
-| `services/api` | Fastify API. `src/routes/` per resource, `src/billing/` (catalog, items, scheduler, rates), `src/numbers/didww.ts` (DID provider), `src/openapi` |
-| `services/ari-app` | Call control. `inbound.ts` / `device.ts` entry points; `router.ts`, `ring.ts`, `pstn.ts`, `conversation.ts`, `voicemail.ts`, `vm-access.ts`; `cache.ts`, `cdr.ts`, `ari/` (own typed ARI client) |
-| `services/web` | React + Vite dashboard and the SIP.js softphone |
-| `db/migrations` | App schema, plain SQL, dbmate |
-| `db/kamailio` | Kamailio's schema + our extra `subscriber` columns |
-| `telephony/` | Jinja templates for Kamailio (`kamailio.cfg.j2`: its header comment explains every route), Asterisk, rtpengine; `tests/check-configs.sh` |
+| `services/shared` | Code shared by the API and ARI app: DB access, zod schemas (call destinations, IVR config), number classification, billing rules |
+| `services/api` | Fastify API. `src/routes/` one file per resource, `src/billing/`, `src/numbers/` (DID provider), `src/openapi/` |
+| `services/ari-app` | Call control. Entry points `inbound.ts` (carrier) and `device.ts` (phones); `router.ts`, `ring.ts`, `conversation.ts`, `voicemail.ts`; `cache.ts`, `cdr.ts`; `ari/` is our own ARI client |
+| `services/web` | React dashboard and SIP.js softphone (`src/softphone/`) |
+| `db/migrations`, `db/kamailio` | App schema (dbmate, plain SQL); Kamailio's schema plus our `subscriber` columns |
+| `telephony/` | Kamailio, Asterisk and rtpengine templates. The header of `kamailio/kamailio.cfg.j2` explains every route |
 | `infra/ansible` | `site.yml`, inventories, `group_vars`, one role per component |
-| `infra/stackscripts` | First-boot script for new VMs |
-| `loadtest/sipp`, `loadtest/api` | SIPp scenarios and pcaps; API micro-benchmarks |
-| `dev/` | docker-compose (Postgres, Garage), PGlite test server, setup scripts |
-| `docs/` | Design and runbooks (index below) |
+| `loadtest/` | `sipp/` scenarios and pcaps, `api/` benchmarks, `diag/` production latency diagnostics |
+| `dev/` | docker-compose, PGlite test server, setup scripts |
 
-**Documentation index**
+### 5.2 Where to read more
 
-| Document | Read when |
+| Document | Read it when you |
 |---|---|
-| [CLAUDE.md](CLAUDE.md) | Full spec, architecture and conventions |
-| [docs/telephony-contract.md](docs/telephony-contract.md) | You change tables, Destination JSON or softphone SIP behaviour |
-| [docs/split-contracts.md](docs/split-contracts.md) | You touch inventory variables, ports, health checks or DB/S3 contracts |
-| [docs/spec-transition.md](docs/spec-transition.md) | You need the telephony decisions and bottleneck history |
-| [docs/backend-for-team.md](docs/backend-for-team.md), `docs/backend-step*.md` | You work on the API |
-| [docs/billing-flows.md](docs/billing-flows.md) | You work on purchases, invoices or past-due |
-| [docs/cloud-deploy.md](docs/cloud-deploy.md), [docs/local-vm.md](docs/local-vm.md) | You deploy |
-| [docs/telephony-tests.md](docs/telephony-tests.md) | You add or look for tests |
-| [docs/verify-backlog.md](docs/verify-backlog.md) | You check or add an unverified assumption |
-| [docs/incidents/](docs/incidents/) | You want what live customers revealed (evidence, fixes, open findings) |
+| [docs/telephony-contract.md](docs/telephony-contract.md) | change tables or JSON the call path reads, or the softphone's SIP behaviour |
+| [docs/split-contracts.md](docs/split-contracts.md) | touch inventory variables, ports, health checks, DB or S3 contracts |
+| [docs/spec-transition.md](docs/spec-transition.md) | need the reasoning behind the telephony design |
+| [docs/backend-for-team.md](docs/backend-for-team.md) | work on the API |
+| [docs/billing-flows.md](docs/billing-flows.md) | work on purchases, invoices or past due |
+| [docs/cloud-deploy.md](docs/cloud-deploy.md) | deploy or rebuild VMs |
+| [docs/telephony-tests.md](docs/telephony-tests.md) | add or look for tests |
+| [docs/verify-backlog.md](docs/verify-backlog.md) | rely on or check an assumption about the platform or course services |
+| [docs/incidents/](docs/incidents/) | want what production traffic revealed, with evidence |
 
-### 5.2 Adding or changing a feature
+### 5.3 Adding or changing a feature
 
-- **API endpoint:**
-  1. Add a route in `services/api/src/routes/` following the tenant isolation rules in
-     [docs/backend-step3.md](docs/backend-step3.md).
-  2. Give it a zod schema, so it shows up in `/openapi.json`.
-  3. Add a test next to the existing ones in `services/api/test/`.
-- **Schema change:**
-  1. Add a new dbmate migration in `db/migrations`. Never edit an applied one.
-  2. Update [docs/telephony-contract.md](docs/telephony-contract.md) in the same PR if the call
-     path reads that data.
-  3. If the call path must see changes immediately, add the table to the `pbx_config` NOTIFY
-     triggers.
-- **Call-flow behaviour:**
-  1. Change the ARI app module.
-  2. Add a spec test in `services/ari-app/test/spec/`. It runs against the fake Asterisk and
-     PGlite with the real migrations.
-- **SIP / media config:**
-  1. Edit the template under `telephony/`.
-  2. Run `npm run test:configs` (`kamailio -c` on both rendered edges), then `npm test` for the
-     content assertions in `services/ari-app/test/configs.test.ts`.
-- **Infrastructure:** change the role in `infra/ansible/roles/`. If you add a shared variable,
-  port or vault key, add it to [docs/split-contracts.md](docs/split-contracts.md) in the same PR.
-- **Unverified assumptions:** every `[VERIFY]` you write needs a row in
-  [docs/verify-backlog.md](docs/verify-backlog.md). Mark the row done, with its evidence, when it
-  is checked.
+- **API endpoint:** add a route in `services/api/src/routes/` following the tenant isolation rules
+  ([docs/backend-step3.md](docs/backend-step3.md)). Its zod schema puts it in `/openapi.json`. Add
+  a test in `services/api/test/`.
+- **Schema:** add a new dbmate migration (never edit an applied one). If the call path reads the
+  table, update [docs/telephony-contract.md](docs/telephony-contract.md) and the `pbx_config`
+  NOTIFY triggers in the same PR.
+- **Call behaviour:** change the ARI app module and add a spec test in
+  `services/ari-app/test/spec/` (fake Asterisk + PGlite with the real migrations).
+- **SIP or media config:** edit the template in `telephony/`, then run `npm run test:configs` and
+  `npm test` (content checks in `services/ari-app/test/configs.test.ts`).
+- **Infrastructure:** edit the role. A new shared variable, port or vault key also goes in
+  [docs/split-contracts.md](docs/split-contracts.md).
+- **Tests:** commands in §2.5; which test covers which spec section in
+  [docs/telephony-tests.md](docs/telephony-tests.md).
+- **Unverified assumptions:** add a row to [docs/verify-backlog.md](docs/verify-backlog.md) and
+  close it with evidence once checked.
 
-### 5.3 Debugging common problems
+### 5.4 Debugging common problems
 
-| Symptom | Look at |
+| Symptom | Check |
 |---|---|
-| Carrier call gets 403 | Source IP not in `carrier_cidrs`. SIPp testers must use the listed IP:port |
-| Phone gets 401/407 repeatedly | `subscriber` row (API creates it with the extension); replica lag on brand-new credentials (N3); `kamcmd ul.dump` on both edges |
-| Call rings but no audio / one-way audio | `rtpengine-ctl list sessions all` on the edge; `sngrep` for SDP; `public_bind_ip`/advertised IP on NATed edges (V-P10); codec offers per leg |
-| Every call to a pbx node gets 503 | ARI app down: `systemctl status pbx-ari-app`, `curl 127.0.0.1:9101/health` |
-| Calls don't follow a config change | `NOTIFY pbx_config` triggers; the cache refreshes within 30 s anyway |
-| API 503 / HAProxy marks app nodes down | `curl :3000/ready` (DB + S3); `127.0.0.1:8405/stats` on the node (local proxy backends); `patronictl list` |
-| CDRs missing | ARI app's CDR spool directory and logs; DB reachability; they flush once the primary is back |
-| Types look wrong after changing `services/shared` | Rebuild it: `npm run build -w @pbx/shared` (stale `dist`) |
-| Ansible variable ignored | `[group:vars]` in an inventory loses to `group_vars/all/main.yml`; use `-e` or host vars |
+| Carrier call gets 403 | Source IP not in `carrier_cidrs` |
+| Phone gets 401/407 repeatedly | The extension's `subscriber` row; replica lag right after creating it; `kamcmd ul.dump` on both edges |
+| No audio or one-way audio | `rtpengine-ctl list sessions all` on the edge; `sngrep` for the SDP; `/var/log/pbx/call-audio.jsonl` (packets each way per leg) |
+| Every call to one pbx node gets 503 | ARI app down: `systemctl status pbx-ari-app`, `curl 127.0.0.1:9101/health` |
+| Calls ignore a configuration change | `pbx_config` NOTIFY triggers (the cache refreshes within 30 s anyway) |
+| API answers 503 | `curl :3000/ready` on the app node (DB + S3); local proxy stats; `patronictl list` |
+| CDRs missing | ARI app's CDR spool and logs; they flush once the primary is back |
+| Course dashboard shows high SIP or API latency | `loadtest/diag/`: `sip-retransmits.py` on an edge capture, `haproxy-slow.py`, `api-routes.sh` (usage in each file header) |
+| Stale types after changing `services/shared` | `npm run build -w @pbx/shared` |
 
-Useful tools: `sngrep` (SIP ladder on an edge), `kamcmd dispatcher.list`, `kamcmd ul.dump`,
-`asterisk -rx "core show channels"`, `rtpengine-ctl`, Grafana on mon-1 (alerts for nodes, disk,
-memory, CPU, failed services, Patroni/etcd quorum, HAProxy backends).
+Other tools: `sngrep` (SIP call flow on an edge), `kamcmd dispatcher.list`,
+`asterisk -rx "core show channels"`, Grafana on mon-1.
 
-### 5.4 Known issues and future improvements
+### 5.5 Known issues and future work
 
-- Not yet verified on real nodes (verify-backlog V-T2..V-T12):
-  - transfers through ARI (`ChannelTransfer` field names);
-  - forking with per-branch media;
-  - SRTP-SDES;
-  - DMQ replication between edges;
-  - the codec matrix.
-- Load tests and chaos drills on the deployed system are still to run (§3.4).
-- The `backups` role is a stub: nightly base backup + WAL archiving and a tested restore are
-  still open.
-- Monitoring still to add:
-  - certificate-expiry, synthetic-call and support-ticket alerts;
-  - Kamailio, rtpengine and Asterisk metrics (V-T9).
-- No rtpengine session failover (B9); one DNS target for phones (V-P1/V-P6).
-- API:
-  - no login rate limiting;
-  - JWTs can't be revoked before expiry;
-  - SIP passwords are stored in plaintext in `subscriber` (course-scope decision);
-  - cross-tenant references are enforced by the API only;
-  - no password change route.
-- Toll-free numbers currently lose money at our price (V-D15).
+- Telephony assumptions still unchecked on the VMs (12 items, e.g. rtpengine kernel forwarding,
+  ARI transfer event fields, Asterisk and rtpengine metrics endpoints): [docs/verify-backlog.md](docs/verify-backlog.md).
+- Load ramp and chaos drills on the deployed system (§3.6).
+- REGISTER replies lost toward one course host (§3.3 #1), reported to the course staff.
+- No rtpengine session failover and one DNS target for phones (§3.6).
+- API: no login rate limiting; JWTs can't be revoked before they expire; SIP passwords are stored
+  in plaintext so the softphone can fetch them (course-scope decision); no password change route.
 
 ---
 
 ## 6. Team process and contributions
 
-### 6.1 Goals
+### 6.1 Goals and how we set them
 
-Our goal was to create a fault tolerant PBX service that can scale. We were looking for very high
-uptime throughout the duration of this project.
-
-How we set them: we derived concrete targets from the course spec and the grading dashboard
-(CLAUDE.md §1). The dashboard measures the first two; the third keeps simulated customers from
-leaving over overcharges:
-- **Fault tolerance:** every component survives the loss of any single VM. Every role runs on
-  at least 2 VMs (the database on 3), and deploys are rolling (§4 "Fault tolerance").
+We took our goals from what the course grades (CLAUDE.md §1):
+- **Fault tolerance:** every component survives the loss of any single VM, so every role runs on
+  at least 2 VMs (the database on 3) and deploys are rolling.
 - **Scale:** low p95 SIP response time and post-dial delay, and no failed or silent legs as load
-  grows. This drove the bottleneck work in §3.
-- **Correct billing:** customers are never overcharged. Price ceilings are enforced in the
+  grows (§3).
+- **Correct billing:** customers are never overcharged, enforced by price ceilings in the
   database.
 
-When the course spec was published, we checked our early assumptions against it
-(2026-11-08, [docs/spec-transition.md](docs/spec-transition.md)) and reset the plan to match.
-The course grading site is our ground truth.
+When the course spec was published on 2026-11-08, we checked every early design assumption against
+it ([docs/spec-transition.md](docs/spec-transition.md)) and reset the plan to match.
 
-### 6.2 Group responsibilities
+### 6.2 Members
 
-| Member | Responsibility | Areas of the repo |
-|---|---|---|
-| Daniel He (GitHub `dhe30`) | Telephony | `telephony/`, `services/ari-app`, roles `kamailio`, `rtpengine`, `asterisk`, `ari_app`, `edge_haproxy` |
-| Justin Cheng | Frontend | `services/web` |
-| Aaron Peng | Backend | `services/api`, `services/shared`, `db/migrations`, role `api` |
-| Muhammad Fahad Babar | Database, System Observability | roles `etcd`, `postgres_patroni`, `db_local_proxy`, `objectstore`, `monitoring`, `backups` |
+**Daniel He** (`dhe30`): telephony; project lead
+- *Responsibilities:* telephony (`telephony/`, `services/ari-app`, the edge and pbx roles),
+  repository maintenance.
+- *Leadership:* led coordination. Proposed the tracks and tasks, wrote the shared spec
+  ([CLAUDE.md](CLAUDE.md)) and the contracts between tracks, reviewed and merged most PRs.
+- *Major contributions:*
+  - designed the telephony architecture and built the phase-1 telephony VM (#2);
+  - rebuilt it for the course spec: extensions, outgoing calls, transfers, CDRs (#4);
+  - took the system to the cloud: NAT'd edges, Let's Encrypt, website deployment (#12, #16, #17,
+    #20, #22, #23, #25);
+  - after launch, traced and fixed silent legs and latency from production evidence (#38, #46,
+    #48, #56, #58, #62, #63).
+- *Tasks completed:*
+  - scaffold #1;
+  - DID provider search fix #13;
+  - support tickets API #14;
+  - verification backlog #15, #16, #19;
+  - course adapter fixes #24;
+  - softphone spec checks #26;
+  - attended transfer during call waiting #28;
+  - routing page fixes #29, #43;
+  - pricing and API contract fixes #35, #37;
+  - first-customer analysis #40;
+  - quality, long-call and audio-record tests #57, #59, #60, #61;
+  - latency write-up #64.
 
-### 6.3 Major contributions
+**Aaron Peng** (`aaronp51`): backend
+- *Responsibilities:* `services/api`, `services/shared`, `db/migrations`, the `api` role.
+- *Major contributions:*
+  - the whole API in eight steps: accounts, tenant isolation, extensions, call configuration,
+    media, voicemail, call history, number purchase (#3, #5, #7, #8);
+  - billing: add-ons, weekly invoices, past due, prices by prefix (#11);
+  - the OpenAPI document.
+- *Tasks completed:*
+  - test fixes #6;
+  - API deployment role and argon2id benchmark #11;
+  - [docs/backend-for-team.md](docs/backend-for-team.md);
+  - first full README #30.
 
-- **Daniel**
-  - Designed the telephony architecture: Kamailio as the registrar, rtpengine for media and
-    transcoding, Asterisk with ARI call control.
-  - Built the phase-1 all-in-one telephony VM, including hold and call waiting.
-  - Rebuilt the telephony for the course spec: extensions, outgoing PSTN calls, transfers,
-    per-leg CDRs and rating.
-  - Took the system to the cloud: edges behind 1:1 NAT, Let's Encrypt, website deployment.
-  - Wrote the verification backlog and checked our assumptions against the real course services
-    (DID provider, vendors, payment gateway).
-- **Justin**
-  - Built the React dashboard and the payment flow in the website.
-  - Tested the system end to end on the production deployment as a customer would use it:
-    signup, adding users, calls in and out through the website softphone, calls between
-    extensions, and call routing.
-- **Aaron**
-  - Built the whole backend API in eight steps: accounts, tenant isolation, extensions, call
-    configuration, media, voicemail, call history and number purchase.
-  - Built billing: card at signup, add-ons, weekly invoices, past due and recovery, prices by
-    destination prefix.
-  - Wrote the OpenAPI 3.1 document and the Ansible role that deploys the API.
-  - Measured password hashing under load and tuned argon2id (§3.2, API-1).
-- **Muhammad**
-  - Built the highly available data tier: etcd, Patroni + Postgres 16, the local DB/S3 proxy and
-    a 3-node Garage object store.
-  - Built monitoring on mon-1: Prometheus, Alertmanager, Grafana, node_exporter on every VM, and
-    alert rules for nodes, disks, Patroni, etcd and HAProxy.
+**Justin Cheng** (`JustinC0320`): frontend
+- *Responsibilities:* `services/web`.
+- *Major contributions:* the React dashboard and the card payment flow (#18), the call routing
+  page (#27), support tickets in the website (#31).
+- *Tasks completed:* end-to-end testing on production as a customer would use it:
+  - signup and adding users;
+  - calls to and from the website softphone, between extensions and to external numbers;
+  - call routing.
 
-### 6.4 Tasks completed
+**Muhammad Fahad Babar** (`muhammadfahadbabar-byte`): database and observability
+- *Responsibilities:* data tier and monitoring roles (`etcd`, `postgres_patroni`, `db_local_proxy`,
+  `objectstore`, `monitoring`, `backups`).
+- *Major contributions:*
+  - the highly available data tier: etcd, Patroni + Postgres 16, local DB/S3 proxy, 3-node Garage
+    (#9);
+  - monitoring and alerting on mon-1 (#21, #33, #34);
+  - nightly backups with a weekly restore test (#33);
+  - the synthetic call (#44, #45) and codec quality test (#53).
+- *Tasks completed:*
+  - data-tier docs #10;
+  - HAProxy connect retry #39;
+  - Patroni replica fix #47;
+  - background config refresh #50;
+  - TLS phone audio fix #51;
+  - faster card save #54;
+  - prompt race fix #42;
+  - scaling write-up #49;
+  - price updates #41, #52, #55.
 
-The completed tasks below come from the git history, with the PR numbers.
+### 6.3 Communication and division of work
 
-- **Daniel**
-  - Monorepo scaffold (#1)
-  - Telephony: all-in-one VM, IVR, recording, voicemail, hold + call waiting (#2)
-  - Course-spec telephony: extensions, outgoing calls, transfers, CDRs; port of the API
-    foundation to the new model (#4)
-  - Local VM runbook and testing (#4)
-  - Production inventory, vault generator, DID settings (#12)
-  - DIDWW search fixes against the course clone (#13), support tickets API (#14), verification
-    backlog and results (#15, #16, #19)
-  - Let's Encrypt certificate on the edges (#17), website deployment (#20), migration fix (#22),
-    rsync over ProxyJump (#23)
-  - Fixes for the course adapter's feedback (#24)
-  - Team SSH keys for root on every VM (#25)
-  - Website softphone: passes the spec §4 browser checks, fixes from testing against the
-    deployed system (#26)
-  - Attended transfer between two calls a phone answered (call waiting) (#28)
-  - Call routing page: external numbers as destinations, ring-group overall timeout (#29)
-  - Reviewed and merged most PRs
-  - Cloud deployment
-  - Testing:
-    - placed calls from MicroSIP (a desktop SIP softphone) to the local test VM to check the
-      telephony stack before the cloud deployment;
-    - worked through the issues the course's API adapter reported, then fixed them (#24).
-- **Justin**
-  - Frontend migration and payment implementation (#18)
-  - Call routing page (#27)
-  - Testing on the production deployment:
-    - account creation, adding users, and making calls to external numbers and to other
-      extensions;
-    - calls to the website softphone and calls from the website out to external numbers;
-    - call routing;
-    - SIP communication between the softphone and our servers.
-- **Aaron**
-  - Server skeleton, auth, tenant isolation, staff + SIP credentials, mailboxes, ring
-    groups, IVR menus, number routing (#3)
-  - Time zone + `GET /me`, card at signup with the first plan charge, business hours, caller
-    blocklist, `/openapi.json` (#5)
-  - API test fixes for parallel runs; Kamailio subscriber columns in local dev (#6)
-  - Greetings and media, call history, voicemail, settings, number search,
-    purchase and release (#7, #8)
-  - Billing: add-ons and extra extensions, weekly invoices, past due, rates by prefix (#11)
-  - API deployment (role `api`), argon2id benchmark (#11)
-  - Backend docs for the team ([docs/backend-for-team.md](docs/backend-for-team.md))
-- **Muhammad**
-  - etcd, Patroni + Postgres 16, local DB/S3 proxy, 3-node Garage (#9)
-  - Data-tier contracts and runbook updates (#10)
-  - Monitoring on mon-1 + node_exporter everywhere (#21)
+- **Communication:** a Discord group chat.
+- **Division of work:** Daniel proposed the responsibilities and tasks, and each member chose
+  theirs. The work was split into four tracks so they could proceed in parallel:
+  - data tier (Muhammad);
+  - telephony (Daniel);
+  - API and web (Aaron, Justin);
+  - monitoring and backups (Muhammad).
+- **Contracts between tracks:** written interfaces let each track build and merge without waiting
+  for the others. Changing a contract needed review from every track owner.
+  - [docs/split-contracts.md](docs/split-contracts.md) fixes shared names, ports and variables.
+  - [docs/telephony-contract.md](docs/telephony-contract.md) is the contract between the API and
+    the call path.
 
-### 6.5 Leadership and coordination
+### 6.4 Progress tracking and milestones
 
-Daniel led and coordinated the project:
-- outlined the responsibilities and tasks;
-- wrote the shared spec ([CLAUDE.md](CLAUDE.md)) and the contracts between tracks;
-- maintained the repository and merged most pull requests.
+- **Pull requests:** every change went through a PR into `main` (64 by 2026-11-15).
+- **Assumptions:** the verification backlog tracked each open assumption with its evidence.
+- **Deadlines:** we put the four tracks ahead of Ansible configuration, documentation and the API
+  contract, and split large shared tasks such as production testing between members.
 
-### 6.6 Team communication and task division
-
-We agreed to communicate through a Discord group chat. Daniel outlined the responsibilities and
-tasks for our group, and all other group members chose their tasks and responsibilities from
-what Daniel suggested.
-
-To let everyone work in parallel, the work was split into four tracks with written interfaces:
-- T1 data tier (Muhammad);
-- T2 telephony (Daniel);
-- T3 API (Aaron) and web (Justin);
-- T4 monitoring + backups (Muhammad).
-
-[docs/split-contracts.md](docs/split-contracts.md) fixes the names, ports and variables shared
-between tracks, so each track could be built and merged without waiting for the others.
-Changing a contract needs review from every track owner. Handoffs between tracks are written
-down too:
-- [docs/backend-for-team.md](docs/backend-for-team.md) has a section for each teammate;
-- [docs/telephony-contract.md](docs/telephony-contract.md) is the contract between the API and
-  the call path.
-
-### 6.7 Progress tracking and deadlines
-
-- **Pull requests:** every change went through a GitHub pull request into `main` (29 PRs by
-  2026-11-12).
-- **Build phases:** progress was tracked against the build phases in CLAUDE.md §17.
-- **Verification backlog:** [docs/verify-backlog.md](docs/verify-backlog.md) lists each open
-  assumption with its status and the evidence once checked.
-- **Deadlines:**
-  - 11/08: Have the majority of T1, T2, T3, and T4 complete
-  - 11/09 or 11/10: Database changes
-  - 11/10: Remaining API changes and fixes
-  - 11/11: Frontend integration, course services setup, system deployment
-  - 11/12: Website and API testing and fixes, project documentation
-  - 11/12 (night): Project deadline
-
-- **Deadline handling:** to meet deadlines we communicated with each other actively in our group
-  and made sure that each group member completed their tasks. We also broke up more complicated
-  tasks among multiple members (such as the production testing), and prioritized certain tasks
-  over others. For example, we heavily prioritized T1, T2, T3, and T4 before the Ansible node
-  configuration, documentation, and API contract.
-
-Internal milestones (the completed date is when the work was merged into `main`):
-
-| # | Milestone | Target date | Completed |
+| # | Milestone | Target | Completed |
 |---|---|---|---|
-| 0 | Repo scaffold and layout | none | 10/26 |
-| 1 | All-in-one telephony VM, IVR → browser, recording, voicemail, hold + call waiting | 10/29 | 10/29 |
+| 0 | Repo scaffold and layout | — | 10/26 |
+| 1 | All-in-one telephony VM: IVR, recording, voicemail, hold, call waiting | 10/29 | 10/29 |
 | 2 | API foundation (auth, tenants, staff, call configuration) | 11/08 | 11/08 |
-| 3 | Rebuild PBX service to comply with course spec | 11/09 | 11/09 |
+| 3 | PBX rebuilt to the course spec | 11/09 | 11/09 |
 | 4 | Data tier HA (Patroni, etcd, Garage, local proxies) | 11/09 | 11/10 |
-| 5 | API done (media, voicemail, call history, numbers, billing) | 11/10 | 11/11 |
-| 6 | Frontend done (call routing, etc.) | 11/11 | 11/12 |
+| 5 | API complete (media, voicemail, call history, numbers, billing) | 11/10 | 11/11 |
+| 6 | Frontend complete | 11/11 | 11/12 |
 | 7 | First full cloud deployment on 10 VMs | 11/12 | 11/12 |
+
+From 11/13 on, live customer traffic set the work. Each problem it revealed got a written
+investigation in [docs/incidents/](docs/incidents/) and a fix PR (#32–#64).
