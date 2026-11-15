@@ -192,8 +192,9 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
      `[media]` group in `inventory/production.ini` (same variables as the edges).
   2. `--limit media`: rtpengine + firewall on the new nodes. Check `rtpengine --codecs` and
      `systemctl status rtpengine-daemon` there.
-  3. `--limit 'pbx:app:db:mon'`: only the host firewalls change (the media IPs join `@cluster`),
-     nothing restarts. **Before step 4**, or the pbx nodes drop the media nodes' RTP.
+  3. `ansible-playbook firewall.yml --ask-vault-pass --limit 'pbx:app:db:mon:edge'`: only the
+     host firewalls change (the media IPs join `@cluster`), nothing restarts. **Before step 4**, or
+     the pbx nodes drop the media nodes' RTP. (Not `site.yml`: it would also deploy the pbx roles.)
   4. `--limit edge`: Kamailio with both sets, switch OFF, restarted one edge at a time (TLS and
      browser phones reconnect and re-register; calls in progress keep their media).
   5. Switch on, on both edges within a second: `kamcmd cfg.set_now_int pbx media_rtp 1` (check:
