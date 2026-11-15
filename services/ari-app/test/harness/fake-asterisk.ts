@@ -58,6 +58,7 @@ export class FakeAsterisk implements Ari {
   readonly bridges = new Map<string, Set<string>>();
   readonly recordings = new Map<string, { target: string; kind: 'channel' | 'bridge' }>();
   readonly finishedRecordings: string[] = [];
+  private nextSipCallId = 1;
   /** Every channel recording started, with the options that matter to tests (in order). */
   readonly channelRecordStarts: { name: string; channelId: string; beep?: boolean; ifExists?: string }[] = [];
   readonly originates: (OriginateOptions & { target: Target })[] = [];
@@ -120,16 +121,17 @@ export class FakeAsterisk implements Ari {
   // ---- test-side actions -------------------------------------------------------------------
 
   /** The carrier delivers a PSTN call to `did` (R-URI user, digits as the carrier sends them). */
-  carrierCall(did: string, caller: string): string {
+  carrierCall(did: string, caller: string, sipCallId: string | null = `carrier-${this.nextSipCallId++}@130.245.136.142`): string {
     const c = this.newChannel({ exten: did, callerNumber: caller, inStasis: true, name: 'PJSIP/edge-a-carrier' });
-    this.emit({ type: 'StasisStart', args: ['carrier', ''], channel: this.chan(c) });
+    // Stasis(pbx-app,<src>,<user>,<SIP Call-ID>); null = an older dialplan without the Call-ID.
+    this.emit({ type: 'StasisStart', args: sipCallId === null ? ['carrier', ''] : ['carrier', '', sipCallId], channel: this.chan(c) });
     return c.id;
   }
 
   /** One of the account's phones (SIP user `sipUser`) dials `dialed`. */
   deviceCall(sipUser: string, dialed: string): string {
     const c = this.newChannel({ exten: dialed, callerNumber: sipUser, inStasis: true, name: `PJSIP/edge-a-${sipUser}` });
-    this.emit({ type: 'StasisStart', args: ['device', sipUser], channel: this.chan(c) });
+    this.emit({ type: 'StasisStart', args: ['device', sipUser, `device-${this.nextSipCallId++}@phone`], channel: this.chan(c) });
     return c.id;
   }
 

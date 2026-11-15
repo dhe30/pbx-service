@@ -21,6 +21,7 @@ export async function routeTo(ctx: Ctx, s: CallSession, dest: Destination | null
       s.log.warn({ dest: d }, 'route: too many hops (loop?); hanging up');
       return;
     }
+    s.step('route', { to: d });
     switch (d.type) {
       case 'hangup':
         return;
@@ -62,8 +63,11 @@ export async function routeTo(ctx: Ctx, s: CallSession, dest: Destination | null
       case 'business_hours': {
         const h = t.businessHours.get(d.id);
         if (!h) return missing(s, d);
-        const open = isOpen(h.schedule, t.timezone, new Date());
-        s.log.info({ open }, 'business hours');
+        const now = new Date();
+        const open = isOpen(h.schedule, t.timezone, now);
+        // The local time the decision used, so "why voicemail at 9 am?" is answerable from the log.
+        const local = new Intl.DateTimeFormat('en-US', { timeZone: t.timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+        s.log.info({ open, local, tz: t.timezone }, 'business hours');
         d = open ? h.open : h.closed;
         break;
       }

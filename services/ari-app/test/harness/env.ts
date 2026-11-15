@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
+import { pino } from 'pino';
 import { createDb, type Destination, type ForwardDestination, type Sql } from '@pbx/shared';
 import { PbxApp } from '../../src/app.js';
 import { EventBus } from '../../src/ari/events.js';
@@ -59,6 +60,8 @@ export interface Harness {
   uploads: { begun: (Omit<SpoolMeta, 'createdAt' | 'ready'> & { name: string })[]; finished: string[] };
   /** Run until every call flow ended and every CDR is in Postgres. */
   settle(): Promise<void>;
+  /** Every JSON line the call-control app logged (info and up), in order. */
+  logs: Record<string, unknown>[];
 }
 
 export function makeHarness(sql: Sql, env: Record<string, string> = {}): Harness {
@@ -104,7 +107,10 @@ export function makeHarness(sql: Sql, env: Record<string, string> = {}): Harness
     legs: new LegTracker(),
     conversations: new Map(),
   };
-  const app = new PbxApp(ctx, log);
+  // The app's own logger writes into `logs` so tests can assert on log lines (call trace).
+  const logs: Record<string, unknown>[] = [];
+  const appLog = pino({ level: 'info', base: { svc: 'ari-app' } }, { write: (line: string) => void logs.push(JSON.parse(line)) });
+  const app = new PbxApp(ctx, appLog);
   ari.onEvent = (ev) => app.onEvent(ev);
   return {
     ctx,
@@ -112,6 +118,7 @@ export function makeHarness(sql: Sql, env: Record<string, string> = {}): Harness
     ari,
     sql,
     uploads,
+    logs,
     async settle() {
       await app.idle();
       await cdr.drain();
