@@ -82,6 +82,26 @@ one replay window across SSRCs (half the time: the new sequence numbers are rand
 audio after the switch. That fits a "bad codec" verdict and the phone hanging up 2 s after it
 started sending. We cannot see the grader's phone, so this is the most likely cause, not a proof.
 
+## Second case: attended transfer, 14:21 (`transfer_attended`: "extension 101 did not hear the caller")
+
+Zhang's ticket at 14:24:43, 3.8 s after the call ended. Call app (pbx-1) and Asterisk's log:
+
+| Time | |
+|---|---|
+| 14:21:21 | carrier call (plain RTP, PCMU) -> IVR, digit 2 -> ext 102 (TLS, PCMU), answered 14:21:28 |
+| 14:21:34.9 | 102 holds (MOH to the caller) and calls ext 101, the simulator's **Opus SRTP** TLS phone (`xb6bc95c9b06ff913`), answered 14:21:38.8; the consult bridge goes `native_rtp` |
+| 14:21:41.79 | attended transfer: 101 leaves the consult bridge, joins the caller's bridge (3 members: `softmix`), 102 leaves; the bridge ends up **`native_rtp`** with caller + 101 until the caller hangs up at 14:24:39 |
+
+rtpengine (edge-1) on 101's leg: **SSRC changed** twice on the stream from Asterisk (14:21:41.838 and
+.849, `in_e 2`), then 8,951 packets from Asterisk -> 8,951 Opus packets to the phone. Media flowed;
+after the switch it carried the caller's own SSRC and sequence numbers (native passthrough), which
+rtpengine keeps on its transcoded Opus output too. Same mechanism as 3bf2b8eb, on a different phone.
+
+SRTP calls on 2026-11-15 where an SRTP phone received a native-bridge SSRC switch: 3bf2b8eb (ticket
+bad_codec), 9df929d9 (this, ticket "did not hear the caller"), ce669814 (12:28, same Opus phone, also an
+attended transfer, no ticket). Two of three with a ticket fits "one replay window for all SSRCs": a new
+random sequence start is lower than the old one about half the time.
+
 ## Fix
 
 The ARI app now creates its bridges as `mixing,proxy_media` (`services/ari-app/src/ari/client.ts`).
