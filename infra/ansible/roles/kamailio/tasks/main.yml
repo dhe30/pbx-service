@@ -67,6 +67,26 @@
     mode: "0640"
   notify: Restart kamailio
 
+# SIP history (kamailio.cfg sipdump): every SIP message the edge receives or sends, TLS and WebSocket
+# included (written after decryption), as hourly pcap files. Kamailio removes files older than
+# kamailio_sipdump_keep_hours itself (fage); the tmpfiles rule creates the folder at boot and
+# removes anything 12 h older than that, in case fage doesn't. Search: loadtest/diag/sip-history.py.
+- name: SIP history folder
+  ansible.builtin.file:
+    path: "{{ kamailio_sipdump_dir | default('/var/log/pbx/sipdump') }}"
+    state: directory
+    owner: kamailio
+    group: kamailio
+    mode: "0750"
+
+- name: SIP history cleanup (systemd-tmpfiles)
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/pbx-sipdump.conf
+    content: |
+      # Managed by Ansible (role kamailio): SIP history pcaps, see kamailio.cfg sipdump.
+      d {{ kamailio_sipdump_dir | default('/var/log/pbx/sipdump') }} 0750 kamailio kamailio {{ (kamailio_sipdump_keep_hours | default(24)) + 12 }}h
+    mode: "0644"
+
 - name: Kamailio config (contains the DB password)
   ansible.builtin.template:
     src: "{{ repo_root }}/telephony/kamailio/kamailio.cfg.j2"

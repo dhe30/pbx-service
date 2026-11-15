@@ -474,6 +474,7 @@ Detailed reasoning: [docs/spec-transition.md](docs/spec-transition.md) (telephon
 | API answers 503 | `curl :3000/ready` on the app node (DB + S3); local proxy stats; `patronictl list` |
 | CDRs missing | ARI app's CDR spool and logs; they flush once the primary is back |
 | Course dashboard shows high SIP or API latency | `loadtest/diag/`: `sip-retransmits.py` on an edge capture, `haproxy-slow.py`, `api-routes.sh` (usage in each file header) |
+| What SIP did a phone, the carrier or a vendor exchange with us (any transport, TLS and browsers included)? | Each edge keeps 24 h of SIP history in `/var/log/pbx/sipdump` (hourly pcaps, decrypted). `loadtest/diag/remote.sh edge-1 py loadtest/diag/sip-history.py --dir /var/log/pbx/sipdump --since 10:55 --until 11:00 --match <number or SIP user>` (also `--call-id`, `--method`, `--failed`, `--full`; usage in its header) |
 | Stale types after changing `services/shared` | `npm run build -w @pbx/shared` |
 
 Other tools: `sngrep` (SIP call flow on an edge), `kamcmd dispatcher.list`,
