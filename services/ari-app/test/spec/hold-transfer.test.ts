@@ -396,6 +396,25 @@ describe('§5 CDRs of transferred calls', () => {
     expect((await searchExtension(a, '108')).map((r) => r.id)).toEqual([rows[0]!.id]);
   });
 
+  it('internal call 105 -> 108, 108 transfers the caller to 109: the record has 108 and 109 (from PR #81)', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    for (const n of ['105', '108', '109']) await a.extension({ number: n });
+    for (const n of ['108', '109']) h.ari.sip.set(a.ext[n]!.sip, { answerAfterMs: 5 });
+    const ph105 = h.ari.deviceCall(a.ext['105']!.sip, '108');
+    const leg108 = await until(() => h.ari.peerOf(ph105), 3000, '108 answered');
+    h.ari.referBlind(leg108, '109');
+    const leg109 = await until(() => h.ari.legsTo(a.ext['109']!.sip)[0], 2000, 'rings 109');
+    await until(() => h.ari.peerOf(ph105) === leg109.id, 2000, '105 bridged to 109');
+    h.ari.remoteHangup(ph105);
+    await h.settle();
+    const [main, leg] = await a.cdrs();
+    expect(main).toMatchObject({ direction: 'internal', fromExtension: '105', toExtension: '108', outcome: 'answered', parentId: null });
+    // The child row is between the parties left talking: 105 (still on the call) and 109.
+    expect(leg).toMatchObject({ direction: 'internal', fromExtension: '105', toExtension: '109', outcome: 'answered', parentId: main!.id, charge: '0.000000' });
+    expect((await searchExtension(a, '109')).map((r) => r.id)).toEqual([leg!.id]);
+  });
+
   it('the caller transfers: the child row is from the party left on the call (108) to the target', async () => {
     const h = makeHarness(db.sql);
     const a = await new Account(db.sql).create();
