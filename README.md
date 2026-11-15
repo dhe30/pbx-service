@@ -51,7 +51,7 @@ in-memory cache, so calls don't wait on the database.
 | SIP proxy, registrar | Kamailio 6.0 | edge-1, edge-2 (public) | Registers phones and browsers, authenticates them, routes every SIP request, picks a pbx node |
 | Media relay | rtpengine 26.0 | edge-1, edge-2 | Relays all audio; transcodes; terminates WebRTC (ICE, DTLS-SRTP) and SRTP-SDES |
 | TLS front end | HAProxy 3.0 | edge-1, edge-2 | HTTPS for the website and API, WSS for the softphone |
-| Media server | Asterisk 22 | pbx-1, pbx-2 (private) | Bridges, prompts, music on hold, recording, DTMF. No call logic in its dialplan |
+| Media server | Asterisk 22 | pbx-1..pbx-3 (private) | Bridges, prompts, music on hold, recording, DTMF. No call logic in its dialplan |
 | Call control | Node/TypeScript ARI app (`services/ari-app`) | pbx-1, pbx-2 | IVR, ringing, forwarding, voicemail, transfers, CDRs and rating |
 | API | Node/TypeScript, Fastify (`services/api`) | app-1, app-2 | Accounts, numbers, configuration, billing, CDR search, audio files. OpenAPI 3.1 at `/openapi.json` |
 | Website, softphone | React, Vite, SIP.js (`services/web`) | app-1, app-2 (nginx) | Dashboard and browser phone |
@@ -185,6 +185,12 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   re-run drains and restarts it even though nothing "changed" any more. The rollout also refuses
   to drain a node while the other pbx node is out of service (that would leave no pbx node): put
   the other one back first.
+- **Adding a pbx node:** add it to `[pbx]`, then `firewall.yml` (every node's `@cluster`),
+  `--limit db` (Patroni's `pg_hba`, reloaded live), `--limit <new node>` (installs and starts it;
+  the edges don't route to it yet, so the rollout skips the drain), `--limit edge` (dispatcher
+  list and Kamailio's internal hops: Kamailio restarts, one edge at a time) and `--limit mon`.
+  Adding a node re-hashes which node each account's calls go to (dispatcher algorithm 7): for a
+  few minutes an attended transfer between a call from before and one from after may cross nodes.
 - **Adding media nodes** (rtpengine off the edges; the edges' CPU is mostly rtpengine). Kamailio
   then has two rtpengine sets: set 0 = the edges (where calls in progress live), set 1 = the media
   nodes, and a live switch decides which set NEW calls use. In this order:

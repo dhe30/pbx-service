@@ -43,6 +43,30 @@
     pbx_ds_uri: "sip:{{ private_ip }}:{{ asterisk_sip_port | default(5060) }}"
     pbx_drain_enabled: "{{ pbx_drain | default(true) | bool }}"
   block:
+    # A node added to the inventory isn't in the edges' dispatcher list until the next edge deploy:
+    # no call can reach it, and kamcmd dispatcher.set_state would fail for it. Then skip the guard,
+    # the drain and the put-back (the edge deploy adds it as active).
+    - name: Is this node in the dispatcher list of every edge?
+      ansible.builtin.shell: |
+        kamcmd dispatcher.list | grep -cF 'URI: {{ pbx_ds_uri }}' || true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['edge'] }}"
+      register: pbx_known
+      changed_when: false
+
+    - name: Drain only a node the edges route calls to
+      ansible.builtin.set_fact:
+        pbx_ds_known: "{{ (pbx_known.results | map(attribute='stdout') | map('int') | select('gt', 0) | list | length) == (groups['edge'] | length) }}"
+
+    - name: Drain this run?
+      ansible.builtin.set_fact:
+        pbx_drain_active: "{{ pbx_drain_enabled | bool and pbx_ds_known | bool }}"
+
+    - name: New node (not in the edges' dispatcher list yet)
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} isn't in the edges' dispatcher list: no calls can reach it, restarting without a drain. The next `--limit edge` deploy adds it."
+      when: not (pbx_ds_known | bool)
+
     # Never take the last node out of service: with every pbx node disabled, Kamailio answers new
     # calls "no pbx node available". Counts the OTHER set-1 destinations whose flags start with A.
     - name: Other pbx nodes in service, per edge
@@ -55,7 +79,7 @@
       loop: "{{ groups['edge'] }}"
       register: pbx_others
       changed_when: false
-      when: pbx_drain_enabled
+      when: pbx_drain_active | bool
 
     - name: Refuse to drain the last pbx node in service
       ansible.builtin.fail:
@@ -65,7 +89,7 @@
           Draining it would leave no pbx node. Put the other node back first
           (kamcmd dispatcher.set_state a 1 sip:<its ip>:5060 on every edge), then re-run.
       when:
-        - pbx_drain_enabled
+        - pbx_drain_active | bool
         - pbx_others.results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', '0') | list | length > 0
 
     - name: "Drain {{ inventory_hostname }} on every edge (dispatcher state d)"
@@ -73,7 +97,7 @@
       delegate_to: "{{ item }}"
       loop: "{{ groups['edge'] }}"
       changed_when: true
-      when: pbx_drain_enabled
+      when: pbx_drain_active | bool
 
     - name: Calls on this node when the drain started
       ansible.builtin.shell: |
@@ -81,7 +105,7 @@
         asterisk -rx 'core show channels concise' | awk -F'!' '$12 > max {max = $12} END {printf "longest call so far: %d min\n", max / 60}'
       register: pbx_drain_start
       changed_when: false
-      when: pbx_drain_enabled
+      when: pbx_drain_active | bool
 
     - name: "Waiting for 0 calls (up to {{ pbx_drain_wait_min | default(45) }} min; started with: {{ pbx_drain_start.stdout_lines | default([]) | join(', ') }})"
       ansible.builtin.command: asterisk -rx 'core show channels count'
@@ -92,7 +116,7 @@
       delay: 15
       changed_when: false
       failed_when: false
-      when: pbx_drain_enabled
+      when: pbx_drain_active | bool
 
     - name: Drain timed out
       ansible.builtin.fail:
@@ -101,7 +125,7 @@
           ({{ pbx_calls.stdout_lines | default([]) | join(', ') }}). Putting it back in service, nothing restarted.
           Re-run later, or with -e pbx_drain_on_timeout=deploy to restart anyway (drops those calls).
       when:
-        - pbx_drain_enabled
+        - pbx_drain_active | bool
         - (((pbx_calls.stdout | default('') | regex_search('[0-9]+(?= active call)')) or '1') | int) > 0
         - (pbx_drain_on_timeout | default('abort')) != 'deploy'
 
@@ -142,6 +166,7 @@
       delegate_to: "{{ item }}"
       loop: "{{ groups['edge'] }}"
       changed_when: true
+      when: pbx_ds_known | bool
 
     - name: Restarts done
       ansible.builtin.set_fact:
@@ -156,13 +181,15 @@
       delegate_to: "{{ item }}"
       loop: "{{ groups['edge'] }}"
       changed_when: true
-      when: not (pbx_rollout_restarting | default(false))
+      when:
+        - not (pbx_rollout_restarting | default(false))
+        - pbx_ds_known | default(false) | bool
 
     - name: Stop the rollout
       ansible.builtin.fail:
         msg: >-
           {{ inventory_hostname }}: rollout failed at "{{ ansible_failed_task.name }}".
           {% if not (pbx_rollout_restarting | default(false)) %}It is back in service; nothing was restarted.
-          {% elif pbx_drain_enabled %}The node is LEFT DRAINED (dispatcher state d on every edge). Fix it,
+          {% elif pbx_drain_active | default(false) | bool %}The node is LEFT DRAINED (dispatcher state d on every edge). Fix it,
           check `curl -s 127.0.0.1:9101/health`, then on both edges: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
-          {% else %}It was not drained (pbx_drain=false); fix it and check `curl -s 127.0.0.1:9101/health`.{% endif %}
+          {% else %}It was not drained (pbx_drain=false, or a node the edges don't route to yet); fix it and check `curl -s 127.0.0.1:9101/health`.{% endif %}
