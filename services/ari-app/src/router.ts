@@ -118,6 +118,22 @@ function forwardUnlessCaller(s: CallSession, f: ForwardDestination | null | unde
  * after the transfer (REFER 202)". Direct calls to those extensions follow the forward with no
  * complaint, so only transfers skip it.
  */
+/**
+ * The consult call of an attended transfer: a phone calls an extension while it holds another
+ * call. The transfer target is reached through this call, so, like a blind transfer, it rings the
+ * extension itself rather than its "forward always" (seen live 2026-11-15: 103 held a caller and
+ * called 111, which forwards always to an outside number; the transfer joined the caller with that
+ * number and 111 never rang). Ordinary calls between extensions still follow the forward.
+ */
+function isConsultCall(ctx: Ctx, s: CallSession): boolean {
+  const from = s.main?.direction === 'internal' ? s.main.fromExtension : null;
+  if (!from) return false;
+  for (const conv of new Set(ctx.conversations.values())) {
+    if (conv.holdingExtensions().includes(from)) return true;
+  }
+  return false;
+}
+
 export async function ringExtension(
   ctx: Ctx,
   s: CallSession,
@@ -126,10 +142,11 @@ export async function ringExtension(
 ): Promise<Destination | null> {
   const leg = s.routingLeg;
   if (leg && !leg.toExtension) leg.toExtension = ext.number;
-  if (opts.blindTransfer && ext.forwardAlways) {
-    s.log.info({ ext: ext.number, to: ext.forwardAlways }, 'forward always not applied to a blind transfer');
+  const skipAlways = opts.blindTransfer ? 'blind transfer' : isConsultCall(ctx, s) ? 'consult call' : null;
+  if (skipAlways && ext.forwardAlways) {
+    s.log.info({ ext: ext.number, to: ext.forwardAlways, why: skipAlways }, 'forward always not applied to a transfer');
   }
-  const always = opts.blindTransfer ? null : forwardUnlessCaller(s, ext.forwardAlways, 'always');
+  const always = skipAlways ? null : forwardUnlessCaller(s, ext.forwardAlways, 'always');
   if (always) {
     s.log.info({ ext: ext.number, to: always }, 'forward always');
     return always;
