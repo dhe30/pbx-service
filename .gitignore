@@ -164,3 +164,4 @@ dev/data/
 infra/ansible/group_vars/all/vault.yml
 telephony/tests/.rendered/
 infra/ansible/tests/.rendered-monitoring/
+telephony/tests/.rendered-media/

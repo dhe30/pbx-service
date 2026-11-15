@@ -401,3 +401,65 @@ describe.skipIf(!rendered)('rendered configs', () => {
     });
   });
 });
+
+// Dedicated media nodes (inventory group `media`, tests/render-inventory-media.ini): rtpengine set 0
+// stays the edges (calls already anchored there), set 1 = media nodes, a live switch decides which
+// set NEW calls use, and each call's set rides in its Record-Route (;rs=1). README 2.4, V-T18.
+const RM = join(import.meta.dirname, '../../../telephony/tests/.rendered-media');
+const renderedMedia = existsSync(join(RM, 'edge-1', 'kamailio.cfg'));
+
+describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes', () => {
+  const kam = renderedMedia ? readFileSync(join(RM, 'edge-1', 'kamailio.cfg'), 'utf8') : '';
+  const today = rendered ? read('edge-1', 'kamailio.cfg') : '';
+
+  it('kamailio -c passed on both edges', () => {
+    const results = readFileSync(join(RM, 'results.txt'), 'utf8');
+    expect(results).toMatch(/PASS kamailio -c edge-1/);
+    expect(results).toMatch(/PASS kamailio -c edge-2/);
+  });
+
+  it('set 0 is exactly the edges list of today (calls in progress keep hashing to the same node); set 1 = media', () => {
+    const set0 = today.match(/modparam\("rtpengine", "rtpengine_sock", "([^"]+)"\)/)![1];
+    expect(set0).toBe('udp:127.0.0.11:2223 udp:127.0.0.12:2223');
+    expect(kam).toContain(`modparam("rtpengine", "rtpengine_sock", "${set0}")`);
+    expect(kam).toContain('modparam("rtpengine", "rtpengine_sock", "1 == udp:127.0.0.51:2223 udp:127.0.0.52:2223")');
+    expect(kam).toContain('modparam("rtpengine", "setid_avp", "$avp(rtpset)")');
+  });
+
+  it('a live switch, off after a restart unless group_vars says otherwise', () => {
+    expect(kam).toMatch(/^loadmodule "cfg_rpc\.so"$/m);
+    expect(kam).toMatch(/^pbx\.media_rtp = 0 desc /m);
+    expect(block(kam, 'route[RTP_SET_NEW]')).toContain('if ($sel(cfg_get.pbx.media_rtp) == 1) $avp(rtpset) = 1;');
+  });
+
+  it('every NEW call picks its set before its first rtpengine command and tags its Record-Route', () => {
+    for (const r of ['route[FROM_CARRIER]', 'route[FROM_DEVICE]', 'route[TO_VENDOR]']) {
+      const b = block(kam, r);
+      expect(b.indexOf('route(RTP_SET_NEW)'), r).toBeGreaterThan(-1);
+      expect(b.indexOf('route(RTP_SET_NEW)'), r).toBeLessThan(b.indexOf('rtpengine_offer'));
+      expect(b.indexOf('route(RTP_SET_RR)'), r).toBeLessThan(b.indexOf('record_route()'));
+    }
+    // A fork: one set for all branches (TO_DEVICES), the tag on each branch's Record-Route.
+    expect(block(kam, 'route[TO_DEVICES]')).toContain('route(RTP_SET_NEW)');
+    const br = block(kam, 'branch_route[DEV_BRANCH]');
+    expect(br.indexOf('route(RTP_SET_RR)')).toBeLessThan(br.indexOf('record_route()'));
+    expect(block(kam, 'route[RTP_SET_RR]')).toContain('if ($avp(rtpset) == 1) add_rr_param(";rs=1");');
+  });
+
+  it('in-dialog requests use the call\'s own set; a relaying edge copies the tag; CANCEL uses the switch', () => {
+    const wd = block(kam, 'route[WITHINDLG]');
+    expect(wd).toContain('if (check_route_param("rs=1")) $avp(rtpset) = 1;');
+    expect(wd.indexOf('check_route_param("rs=1")')).toBeLessThan(wd.indexOf('rtpengine_delete'));
+    expect(wd.indexOf('check_route_param("rs=1")')).toBeLessThan(wd.indexOf('route(INDLG_SDP)'));
+    const peer = block(kam, 'route[FROM_PEER]');
+    expect(peer.indexOf('add_rr_param(";rs=1")')).toBeLessThan(peer.indexOf('record_route()'));
+    const req = block(kam, 'request_route');
+    expect(req.indexOf('route(RTP_SET_NEW)')).toBeLessThan(req.indexOf('rtpengine_delete'));
+  });
+
+  it('media nodes get an rtpengine config with their own internal/external interfaces', () => {
+    const conf = readFileSync(join(RM, 'media-2', 'rtpengine.conf'), 'utf8');
+    expect(conf).toMatch(/^interface = internal\/127\.0\.0\.52;external\/127\.0\.0\.52!127\.0\.1\.52$/m);
+    expect(conf).toMatch(/^listen-ng = 127\.0\.0\.52:2223$/m);
+  });
+});

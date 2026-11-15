@@ -1,0 +1,10 @@
+# Base setup + host firewall only (role common): nftables `@cluster` set, team SSH keys,
+# node_exporter. Restarts nothing (no Asterisk, call app or Kamailio). Use it after adding a node so
+# the OTHER nodes accept its private traffic, e.g. before switching calls to new media nodes
+# (README 2.4 "Adding media nodes"):
+#   ansible-playbook firewall.yml --ask-vault-pass --limit 'pbx:app:db:mon:edge'
+# (site.yml would also deploy the pbx roles, and a pending pbx restart would drain a node.)
+- name: Base setup and host firewall
+  hosts: all
+  become: true
+  roles: [common]

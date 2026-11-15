@@ -4,7 +4,7 @@
 #   ansible-playbook -i tests/render-inventory.ini render-telephony.yml -e @tests/render-vars.yml \
 #     -e render_dir=/tmp/pbx-render
 - name: Render telephony configs
-  hosts: edge:pbx
+  hosts: edge:pbx:media
   gather_facts: false
   connection: local
   vars:
@@ -27,6 +27,13 @@
         mode: "0644"
       loop: [kamailio/kamailio.cfg, kamailio/tls.cfg, kamailio/dispatcher.list, rtpengine/rtpengine.conf]
       when: "'edge' in group_names"
+
+    - name: Media node config (rtpengine only)
+      ansible.builtin.template:
+        src: "{{ repo_root }}/telephony/rtpengine/rtpengine.conf.j2"
+        dest: "{{ render_dir }}/{{ inventory_hostname }}/rtpengine.conf"
+        mode: "0644"
+      when: "'media' in group_names"
 
     - name: Edge HAProxy config + certificate install script
       ansible.builtin.template:
