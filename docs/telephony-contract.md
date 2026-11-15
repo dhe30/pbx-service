@@ -143,10 +143,16 @@ updated:
 - **Every extra leg we placed to an external number** (simultaneous ring, forwarding, IVR →
   external, transfer to a number) is its own row: `direction='outgoing'`, `parent_id` = main
   row, same `call_id`, with its own vendor, cost and charge.
-- **A blind transfer to an extension** is its own row too: `direction='internal'` (free),
-  `parent_id` = main row, same `call_id`, `from_extension` = the extension that transferred,
-  `to_extension` = the target. The main row keeps the extension that answered first, so a search
-  by either extension finds the call.
+- **Every transfer to an extension** (blind or attended, from a desk phone or the softphone) adds a
+  row too (2026-11-15): `direction='internal'`, `parent_id` = main row, same `call_id`,
+  `from_*` = the party left on the call (the caller, or the answerer if the caller transferred),
+  `to_extension` = the transfer target, `started_at` = the transfer, `ended_at` = the next transfer
+  or the end of the call. Free (`charge = 0`, no vendor). The main row keeps the extension that
+  answered **first** and still spans the whole call, so its billing (incoming toll-free, the vendor
+  leg of an outgoing call) is the same as without a transfer and nothing is billed twice. So
+  `GET /calls?extension=` finds a transferred call for the extension that answered and for the
+  target (each matches its own row). The consult call of an attended transfer is its own call
+  (own `call_id`), ending at the transfer.
 - Columns: `from_number`, `to_number`, `did` (incoming DID, or caller ID used outgoing),
   `from_extension`, `to_extension` (who answered or was rung), `started_at`, `answered_at`,
   `ended_at`, `billable_sec` (30/6), `outcome` (`answered|busy|no_answer|failed|blocked`),

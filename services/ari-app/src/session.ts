@@ -36,6 +36,12 @@ export interface LegDraft {
   hangupCause: number | null;
 }
 
+/** Who a channel of a conversation is: an extension (desk phone, softphone) or an outside number. */
+export interface Party {
+  number: string | null;
+  extension: string | null;
+}
+
 export function newLeg(fields: Partial<LegDraft> & Pick<LegDraft, 'direction' | 'chargeClass'>): LegDraft {
   return {
     id: randomUUID(),
@@ -69,14 +75,19 @@ export class CallSession {
   readonly abort = new AbortController();
   tenant: TenantConfig | null = null;
   main: LegDraft | null = null;
-  /** Extra legs we placed to external numbers, by channel id. */
+  /** Extra legs: those we placed to external numbers, and transfer legs (below), by leg id. */
   readonly children = new Map<string, LegDraft>();
   /**
-   * The leg of the latest blind transfer to an extension, while it is being rung and after: the
-   * extension that answers it goes here, not on the main row, so the main row keeps the extension
-   * that answered first (call history must still find the call by that extension).
+   * The leg of the extension the call was transferred to, while it lasts (null before any
+   * transfer). The main row keeps the extension that answered first and spans the whole call
+   * (its billing is unchanged); each transfer to an extension adds one free `internal` child row
+   * (parent = main) from the transfer until the next transfer or the end of the call. Seen live
+   * 2026-11-15 (Pioneer Accounting, Zhang Animal Hospital): with only the main row, a transfer
+   * overwrote its to_extension and the answering extension vanished from call history.
    */
   transferLeg: LegDraft | null = null;
+  /** Who the primary channel is, once a transfer changed it (null: the main row's caller). */
+  primaryParty: Party | null = null;
   /** Channels of legs this session owns whose end we must wait for before writing CDRs. */
   readonly liveLegs = new Map<string, Promise<void>>();
   answered = false;
@@ -151,6 +162,51 @@ export class CallSession {
     await ari.hangupQuietly(this.primary, reason);
   }
 
+  /** The row the current routing step fills in (to_extension, answer): the transfer leg if any. */
+  get routingLeg(): LegDraft | null {
+    return this.transferLeg ?? this.main;
+  }
+
+  /** Who the primary channel is (the caller, until a transfer leaves another party on the call). */
+  get primaryIs(): Party {
+    if (this.primaryParty) return this.primaryParty;
+    const m = this.main;
+    return { extension: m?.fromExtension ?? null, number: m?.fromExtension ?? m?.fromNumber ?? null };
+  }
+
+  /**
+   * A transfer happened at `at`: the previous transfer leg ends, and (for a transfer to an
+   * extension) a new one starts. `answered` = the target is already on the call (attended).
+   */
+  beginTransferLeg(at: Date, to: Party | null, answered = false): void {
+    this.endTransferLeg(at);
+    if (!this.main || !to?.extension) return;
+    const from = this.primaryIs;
+    const leg = newLeg({
+      direction: 'internal',
+      chargeClass: 'internal',
+      parentId: this.main.id,
+      fromNumber: from.number,
+      fromExtension: from.extension,
+      toNumber: to.number ?? to.extension,
+      toExtension: to.extension,
+      did: this.main.did,
+      startedAt: at,
+      answeredAt: answered ? at : null,
+    });
+    this.children.set(leg.id, leg);
+    this.transferLeg = leg;
+  }
+
+  /** The current transfer leg (if any) ends at `at`. */
+  endTransferLeg(at: Date): void {
+    const leg = this.transferLeg;
+    if (!leg) return;
+    this.transferLeg = null;
+    leg.endedAt ??= at;
+    leg.outcome ??= leg.answeredAt ? 'answered' : (this.ringOutcome ?? 'no_answer');
+  }
+
   /** Answer the primary channel once (before playing media or bridging). */
   async ensureAnswered(ari: Ari): Promise<void> {
     if (this.answered) return;
@@ -170,6 +226,7 @@ export class CallSession {
     if (!this.main || !this.tenant) return [];
     const t = this.tenant;
     const main = this.main;
+    this.endTransferLeg(endedAt);
     main.endedAt ??= endedAt;
     if (!main.outcome) {
       main.outcome = this.connected ? 'answered' : (this.ringOutcome ?? 'no_answer');

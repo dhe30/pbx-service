@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Account, makeHarness, nextDid, startDb, until, type Db } from '../harness/env.js';
+import { Account, makeHarness, nextDid, startDb, until, type CdrRow, type Db } from '../harness/env.js';
 
 // Course spec §3 "Hold and transfer (blind and attended) from desk phones and the softphone."
 // §4 softphone: softphone-hold (toggle), softphone-transfer-blind, softphone-transfer-attended
@@ -77,31 +77,10 @@ describe('§3 Blind transfer', () => {
     expect(h.ari.channels.has(agent)).toBe(false);
     h.ari.remoteHangup(caller);
     await h.settle();
-    // The call's row keeps 101 (who answered); the transfer is its own free leg 101 -> 102, so
-    // the call history finds the call by either extension.
-    const [main, leg] = await a.cdrs();
-    expect(main).toMatchObject({ direction: 'incoming', outcome: 'answered', toExtension: '101', parentId: null });
-    expect(leg).toMatchObject({ direction: 'internal', outcome: 'answered', fromExtension: '101', toExtension: '102', parentId: main!.id, charge: '0.000000' });
-    expect(leg!.answeredAt).not.toBeNull();
-  });
-
-  it('internal call: the answering extension transfers the caller on; the record keeps both', async () => {
-    // Live 2026-11-15: 105 called 108, 108 answered and blind-transferred the caller; the call
-    // history searched by extension 108 found nothing (the row said 105 -> 105).
-    const h = makeHarness(db.sql);
-    const a = await new Account(db.sql).create();
-    for (const n of ['105', '108', '109']) await a.extension({ number: n });
-    for (const n of ['108', '109']) h.ari.sip.set(a.ext[n]!.sip, { answerAfterMs: 5 });
-    const ph105 = h.ari.deviceCall(a.ext['105']!.sip, '108');
-    const leg108 = await until(() => h.ari.peerOf(ph105), 3000, '108 answered');
-    h.ari.referBlind(leg108, '109');
-    const leg109 = await until(() => h.ari.legsTo(a.ext['109']!.sip)[0], 2000, 'rings 109');
-    await until(() => h.ari.peerOf(ph105) === leg109.id, 2000, '105 bridged to 109');
-    h.ari.remoteHangup(ph105);
-    await h.settle();
-    const [main, leg] = await a.cdrs();
-    expect(main).toMatchObject({ direction: 'internal', fromExtension: '105', toExtension: '108', outcome: 'answered' });
-    expect(leg).toMatchObject({ direction: 'internal', fromExtension: '108', toExtension: '109', outcome: 'answered', parentId: main!.id });
+    // The main row keeps who answered first; 102 has its own row from the transfer (§5 below).
+    const rows = await a.cdrs();
+    expect(rows[0]).toMatchObject({ outcome: 'answered', toExtension: '101', parentId: null });
+    expect(rows[1]).toMatchObject({ outcome: 'answered', toExtension: '102', parentId: rows[0]!.id });
   });
 
   it('to an external number: charged as its own outgoing leg', async () => {
@@ -161,10 +140,10 @@ describe('§3 Blind transfer', () => {
     h.ari.remoteHangup(caller);
     await h.settle();
     const rows = await a.cdrs();
-    // No charged leg to the forward number: the call (answered by 103) + the free transfer leg to 109.
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(2); // main + transfer leg; no charged leg to the forward number
+    expect(rows.filter((r) => r.direction === 'outgoing')).toHaveLength(0);
     expect(rows[0]).toMatchObject({ outcome: 'answered', toExtension: '103' });
-    expect(rows[1]).toMatchObject({ direction: 'internal', fromExtension: '103', toExtension: '109', outcome: 'answered', charge: '0.000000' });
+    expect(rows[1]).toMatchObject({ outcome: 'answered', toExtension: '109', charge: '0.000000' });
   });
 
   it('target does not answer -> the caller goes to the target extension’s voicemail', async () => {
@@ -217,7 +196,8 @@ describe('§3 Attended transfer', () => {
     await h.settle();
     const rows = await a.cdrs();
     expect(rows.filter((r) => r.direction === 'incoming')).toHaveLength(1);
-    expect(rows.filter((r) => r.direction === 'internal')).toHaveLength(1);
+    // The consult call (101 -> 102, its own call) + the incoming call's transfer leg to 102.
+    expect(rows.filter((r) => r.direction === 'internal')).toHaveLength(2);
     expect(h.ctx.conversations.size).toBe(0);
     expect(h.ctx.bus.size).toBe(0); // no leaked subscriptions
   });
@@ -312,5 +292,272 @@ describe('§3 Attended transfer', () => {
     const out = (await a.cdrs()).find((r) => r.direction === 'outgoing')!;
     expect(out).toMatchObject({ toNumber: '+12015552222', outcome: 'answered' });
     expect(out.endedAt.getTime()).toBeGreaterThanOrEqual(out.answeredAt!.getTime() + 25);
+  });
+});
+
+// Spec §5: "CDRs per leg (direction, numbers, DID/extensions, start/answer/end, billable duration,
+// outcome ...)". Live 2026-11-15 (course grader tickets, call_records): a transfer overwrote the
+// main row's to_extension, so the extension that answered first was missing from call history
+// ("no record of the internal call ... involving 108", "the incoming call's record lacks
+// extension 102"). Now the main row keeps the first answerer and spans the whole call (billing
+// unchanged); each transfer to an extension adds a free internal row (parent = main row).
+describe('§5 CDRs of transferred calls', () => {
+  /** The API's extension filter (services/api/src/routes/calls.ts, GET /calls?extension=). */
+  async function searchExtension(a: Account, ext: string) {
+    return db.sql<{ id: string; callId: string }[]>`
+      select id, call_id from cdrs
+       where tenant_id = ${a.id} and (from_extension = ${ext} or to_extension = ${ext})`;
+  }
+
+  it('blind transfer of an incoming call: main row = first answerer, child row = target', async () => {
+    const { h, a, did, caller, agent } = await connectedCall();
+    await new Promise((r) => setTimeout(r, 20));
+    h.ari.referBlind(agent, '102');
+    const leg102 = await until(() => h.ari.legsTo(a.ext['102']!.sip)[0], 2000, 'rings 102');
+    await until(() => h.ari.peerOf(caller) === leg102.id, 2000, 'caller bridged to 102');
+    await new Promise((r) => setTimeout(r, 20));
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows).toHaveLength(2);
+    const [main, child] = rows as [CdrRow, CdrRow];
+    expect(main).toMatchObject({ parentId: null, direction: 'incoming', fromNumber: '+16315550000', toNumber: did, did, toExtension: '101', outcome: 'answered' });
+    expect(child).toMatchObject({
+      parentId: main.id,
+      callId: main.callId,
+      direction: 'internal',
+      fromNumber: '+16315550000',
+      fromExtension: null,
+      toNumber: '102',
+      toExtension: '102',
+      did,
+      outcome: 'answered',
+      voicemail: false,
+      charge: '0.000000',
+      cost: '0.000000',
+    });
+    // The child starts at the transfer and ends with the call; the main row spans the whole call.
+    expect(child.startedAt.getTime()).toBeGreaterThanOrEqual(main.answeredAt!.getTime() + 15);
+    expect(child.answeredAt!.getTime()).toBeGreaterThanOrEqual(child.startedAt.getTime());
+    expect(child.endedAt.getTime()).toBe(main.endedAt.getTime());
+    // History search finds the call for either extension.
+    expect((await searchExtension(a, '101')).map((r) => r.id)).toEqual([main.id]);
+    expect((await searchExtension(a, '102')).map((r) => r.id)).toEqual([child.id]);
+  });
+
+  it('IVR -> 102 answers -> blind transfer to 108 (Zhang Animal Hospital ticket)', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '102' });
+    await a.extension({ number: '108' });
+    const menu = await a.ivr({ options: { '2': { type: 'extension', id: a.ext['102']!.id } } });
+    const did = nextDid();
+    await a.number(did, { type: 'ivr_menu', id: menu });
+    h.ari.sip.set(a.ext['102']!.sip, { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['108']!.sip, { answerAfterMs: 5 });
+    const caller = h.ari.carrierCall(did, '+16315550144');
+    await until(() => h.ari.channels.get(caller)?.answered, 2000, 'IVR answered');
+    h.ari.dtmf(caller, '2');
+    const agent = await until(() => h.ari.peerOf(caller), 3000, '102 connected');
+    h.ari.referBlind(agent, '108');
+    const leg108 = await until(() => h.ari.legsTo(a.ext['108']!.sip)[0], 2000, 'rings 108');
+    await until(() => h.ari.peerOf(caller) === leg108.id);
+    h.ari.remoteHangup(leg108.id);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows.map((r) => [r.parentId === null, r.toExtension, r.outcome])).toEqual([
+      [true, '102', 'answered'],
+      [false, '108', 'answered'],
+    ]);
+    expect(new Set(rows.map((r) => r.callId)).size).toBe(1);
+    expect(await searchExtension(a, '102')).toHaveLength(1);
+    expect(await searchExtension(a, '108')).toHaveLength(1);
+  });
+
+  it("internal call 105 -> 108, 108 transfers the caller back to 105's own extension (Pioneer ticket)", async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '105' });
+    await a.extension({ number: '108' });
+    h.ari.sip.set(a.ext['105']!.sip, { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['108']!.sip, { answerAfterMs: 5 });
+    const ph105 = h.ari.deviceCall(a.ext['105']!.sip, '108');
+    const leg108 = await until(() => h.ari.peerOf(ph105), 2000, '108 answered');
+    h.ari.referBlind(leg108, '105');
+    const leg105 = await until(() => h.ari.legsTo(a.ext['105']!.sip)[0], 2000, 'rings 105');
+    await until(() => h.ari.peerOf(ph105) === leg105.id);
+    h.ari.remoteHangup(ph105);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ parentId: null, direction: 'internal', fromExtension: '105', toNumber: '108', toExtension: '108', outcome: 'answered' });
+    expect(rows[1]).toMatchObject({ parentId: rows[0]!.id, direction: 'internal', fromExtension: '105', toExtension: '105', outcome: 'answered' });
+    // GET /calls?extension=108 finds the call (it didn't before the fix).
+    expect((await searchExtension(a, '108')).map((r) => r.id)).toEqual([rows[0]!.id]);
+  });
+
+  it('internal call 105 -> 108, 108 transfers the caller to 109: the record has 108 and 109 (from PR #81)', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    for (const n of ['105', '108', '109']) await a.extension({ number: n });
+    for (const n of ['108', '109']) h.ari.sip.set(a.ext[n]!.sip, { answerAfterMs: 5 });
+    const ph105 = h.ari.deviceCall(a.ext['105']!.sip, '108');
+    const leg108 = await until(() => h.ari.peerOf(ph105), 3000, '108 answered');
+    h.ari.referBlind(leg108, '109');
+    const leg109 = await until(() => h.ari.legsTo(a.ext['109']!.sip)[0], 2000, 'rings 109');
+    await until(() => h.ari.peerOf(ph105) === leg109.id, 2000, '105 bridged to 109');
+    h.ari.remoteHangup(ph105);
+    await h.settle();
+    const [main, leg] = await a.cdrs();
+    expect(main).toMatchObject({ direction: 'internal', fromExtension: '105', toExtension: '108', outcome: 'answered', parentId: null });
+    // The child row is between the parties left talking: 105 (still on the call) and 109.
+    expect(leg).toMatchObject({ direction: 'internal', fromExtension: '105', toExtension: '109', outcome: 'answered', parentId: main!.id, charge: '0.000000' });
+    expect((await searchExtension(a, '109')).map((r) => r.id)).toEqual([leg!.id]);
+  });
+
+  it('the caller transfers: the child row is from the party left on the call (108) to the target', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    for (const n of ['105', '108', '110']) {
+      await a.extension({ number: n });
+      h.ari.sip.set(a.ext[n]!.sip, { answerAfterMs: 5 });
+    }
+    const ph105 = h.ari.deviceCall(a.ext['105']!.sip, '108');
+    const leg108 = await until(() => h.ari.peerOf(ph105), 2000, '108 answered');
+    h.ari.referBlind(ph105, '110');
+    const leg110 = await until(() => h.ari.legsTo(a.ext['110']!.sip)[0], 2000, 'rings 110');
+    await until(() => h.ari.peerOf(leg108) === leg110.id);
+    h.ari.remoteHangup(leg110.id);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows[0]).toMatchObject({ fromExtension: '105', toExtension: '108' });
+    expect(rows[1]).toMatchObject({ fromExtension: '108', fromNumber: '108', toExtension: '110', outcome: 'answered' });
+  });
+
+  it('transferred twice: one child row per target, the first ends at the second transfer', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    for (const n of ['101', '102', '103']) {
+      await a.extension({ number: n });
+      h.ari.sip.set(a.ext[n]!.sip, { answerAfterMs: 5 });
+    }
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['101']!.id });
+    const caller = h.ari.carrierCall(did, '+16315550000');
+    const agent = await until(() => h.ari.peerOf(caller), 3000, 'connected');
+    h.ari.referBlind(agent, '102');
+    const leg102 = await until(() => h.ari.legsTo(a.ext['102']!.sip)[0]);
+    await until(() => h.ari.peerOf(caller) === leg102.id);
+    await new Promise((r) => setTimeout(r, 20));
+    h.ari.referBlind(leg102.id, '103');
+    const leg103 = await until(() => h.ari.legsTo(a.ext['103']!.sip)[0]);
+    await until(() => h.ari.peerOf(caller) === leg103.id);
+    await new Promise((r) => setTimeout(r, 20));
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows.map((r) => r.toExtension)).toEqual(['101', '102', '103']);
+    const [main, to102, to103] = rows as [CdrRow, CdrRow, CdrRow];
+    expect(to102.parentId).toBe(main.id);
+    expect(to103.parentId).toBe(main.id);
+    expect(to102.endedAt.getTime()).toBeLessThanOrEqual(to103.startedAt.getTime());
+    expect(to103.endedAt.getTime()).toBe(main.endedAt.getTime());
+  });
+
+  it('target does not answer -> its row is no_answer + voicemail; the main row stays answered', async () => {
+    const { h, a, caller, agent } = await connectedCall();
+    h.ari.sip.set(a.ext['102']!.sip, { failCause: 20 });
+    h.ari.referBlind(agent, '102');
+    await until(() => h.uploads.begun.find((u) => u.mailboxId === a.ext['102']!.mailboxId));
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows[0]).toMatchObject({ toExtension: '101', outcome: 'answered' });
+    expect(rows[1]).toMatchObject({ toExtension: '102', outcome: 'no_answer', voicemail: true, answeredAt: null, billableSec: 0 });
+  });
+
+  it('attended transfer: the incoming call gets a child row for the target; the consult call keeps its own', async () => {
+    const { h, a, caller, agent } = await connectedCall();
+    h.ari.hold(agent);
+    await until(() => h.ari.channels.get(caller)!.moh);
+    const consult = h.ari.deviceCall(a.ext['101']!.sip, '102');
+    const target = await until(() => h.ari.peerOf(consult), 2000, 'consult connected');
+    h.ari.referAttended(agent, consult);
+    await until(() => h.ari.peerOf(caller) === target);
+    await new Promise((r) => setTimeout(r, 20));
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    const rows = await a.cdrs();
+    const main = rows.find((r) => r.direction === 'incoming')!;
+    const child = rows.find((r) => r.parentId === main.id)!;
+    const consultRow = rows.find((r) => r.callId !== main.callId)!;
+    expect(rows).toHaveLength(3);
+    expect(main).toMatchObject({ toExtension: '101', outcome: 'answered' });
+    expect(child).toMatchObject({ direction: 'internal', fromNumber: '+16315550000', toExtension: '102', outcome: 'answered', charge: '0.000000' });
+    expect(child.answeredAt!.getTime()).toBe(child.startedAt.getTime()); // 102 was already on the line
+    expect(child.endedAt.getTime()).toBe(main.endedAt.getTime());
+    expect(consultRow).toMatchObject({ direction: 'internal', fromExtension: '101', toExtension: '102', outcome: 'answered' });
+    // The consult call ends at the transfer, the joined call later.
+    expect(consultRow.endedAt.getTime()).toBeLessThanOrEqual(child.startedAt.getTime() + 5);
+  });
+
+  it('call waiting attended transfer between two callers: no extension child row', async () => {
+    const { h, a, did, caller: b, agent: a1 } = await connectedCall();
+    const c = h.ari.carrierCall(did, '+16315551111');
+    const a2 = await until(() => h.ari.peerOf(c), 3000, 'call 2 connected');
+    h.ari.hold(a1);
+    h.ari.referAttended(a1, a2);
+    await until(() => h.ari.peerOf(b) === c);
+    h.ari.remoteHangup(c);
+    await h.settle();
+    const rows = await a.cdrs();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.parentId === null && r.toExtension === '101')).toBe(true);
+  });
+
+  it('toll-free incoming call transferred: charged once, on the main row, for the whole call', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '101' });
+    await a.extension({ number: '102' });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['101']!.id }, 'toll_free', 0.025);
+    h.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['102']!.sip, { answerAfterMs: 5 });
+    const caller = h.ari.carrierCall(did, '+16315550000');
+    const agent = await until(() => h.ari.peerOf(caller), 3000);
+    h.ari.referBlind(agent, '102');
+    const leg102 = await until(() => h.ari.legsTo(a.ext['102']!.sip)[0]);
+    await until(() => h.ari.peerOf(caller) === leg102.id);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    const [main, child] = (await a.cdrs()) as [CdrRow, CdrRow];
+    expect(main).toMatchObject({ billableSec: 30, toExtension: '101' });
+    const [p] = await db.sql<{ tollFreeInPerMin: string }[]>`select toll_free_in_per_min from call_pricing limit 1`;
+    expect(Number(main.charge)).toBeCloseTo((30 * Number(p!.tollFreeInPerMin)) / 60, 6);
+    expect(Number(main.cost)).toBeGreaterThan(0);
+    expect(child).toMatchObject({ toExtension: '102', charge: '0.000000', cost: '0.000000', includedSec: 0 });
+    const [sum] = await db.sql<{ charge: string }[]>`select sum(charge) as charge from cdrs where call_id = ${main.callId}`;
+    expect(Number(sum!.charge)).toBeCloseTo(Number(main.charge), 6);
+  });
+
+  it('outgoing call the phone transfers to 102: vendor leg billed once, 102 on a free child row', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.number(nextDid(), null);
+    await a.extension({ number: '101' });
+    await a.extension({ number: '102' });
+    h.ari.external.set('+12015550123', { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['102']!.sip, { answerAfterMs: 5 });
+    const ph = h.ari.deviceCall(a.ext['101']!.sip, '2015550123');
+    const vendor = await until(() => h.ari.peerOf(ph));
+    h.ari.referBlind(ph, '102');
+    const leg = await until(() => h.ari.legsTo(a.ext['102']!.sip)[0]);
+    await until(() => h.ari.peerOf(vendor) === leg.id);
+    h.ari.remoteHangup(vendor);
+    await h.settle();
+    const [main, child] = (await a.cdrs()) as [CdrRow, CdrRow];
+    expect(main).toMatchObject({ direction: 'outgoing', fromExtension: '101', toNumber: '+12015550123', toExtension: null, vendor: 'us' });
+    expect(child).toMatchObject({ direction: 'internal', fromNumber: '+12015550123', fromExtension: null, toExtension: '102', vendor: null, charge: '0.000000', includedSec: 0 });
   });
 });

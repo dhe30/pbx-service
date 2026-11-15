@@ -26,7 +26,9 @@ Code: `services/api/src/routes/{calls,voicemails,settings}.ts`, `src/paging.ts`,
 
 Rows are the CDRs the ARI app writes: **one per leg** (docs/telephony-contract.md §6). The main
 leg has `parentId: null`; each extra leg we placed to an external number (simultaneous ring,
-forwarding, transfer to a number) has the same `callId` and `parentId` = the main leg.
+forwarding, transfer to a number) has the same `callId` and `parentId` = the main leg. So does
+each transfer to another extension (an `internal`, free leg from the transfer to the end; the main
+leg keeps the extension that answered first).
 
 leg = `{ id, callId, parentId, direction, fromNumber, toNumber, did, fromExtension, toExtension,
 startedAt, answeredAt, endedAt, billableSec, outcome, voicemail, vendor, cost, charge, includedSec,

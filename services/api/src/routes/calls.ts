@@ -58,7 +58,14 @@ const LegSchema = z
   .object({
     id: z.string().uuid().describe('Leg id.'),
     callId: z.string().uuid().describe('The call this leg belongs to; every leg of one call has the same callId.'),
-    parentId: z.string().uuid().nullable().describe('null for the main leg; else the main leg of the call (an extra leg we placed to an external number).'),
+    parentId: z
+      .string()
+      .uuid()
+      .nullable()
+      .describe(
+        'null for the main leg; else the main leg of the call: an extra leg we placed to an external number, or the leg of ' +
+          'the extension the call was transferred to (the main leg keeps the extension that answered first).',
+      ),
     direction: z.enum(DIRECTIONS).describe('incoming, outgoing or internal.'),
     fromNumber: z.string().nullable().describe('Calling number (E.164 for the PSTN, extension number for internal calls).'),
     toNumber: z.string().nullable().describe('Called number, normalized.'),
@@ -194,7 +201,7 @@ export const callRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore }> = a
       summary: 'Search call history',
       description:
         'Call legs, newest first, filtered by any combination of time range, direction, outcome, extension and ' +
-        'partial number. One row per leg: a call that also rang or was forwarded to external numbers has extra ' +
+        'partial number. One row per leg: a call that also rang or was forwarded to external numbers, or was transferred to another extension, has extra ' +
         'legs with the same `callId` and `parentId` set. Staff see only calls of their own extensions. Paged with ' +
         '`cursor` / `nextCursor`.',
       query: SearchQuery.innerType(),

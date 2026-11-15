@@ -3,7 +3,7 @@ import { chKey, onRecordingDone, onWatched, type Subscription } from './ari/even
 import type { AriEvent, ChannelTransfer } from './ari/types.js';
 import type { Ctx } from './ctx.js';
 import { metrics } from './metrics.js';
-import type { CallSession } from './session.js';
+import type { CallSession, Party } from './session.js';
 
 // A connected call: two parties in one Asterisk bridge, driven until it ends.
 //
@@ -52,6 +52,8 @@ export class Conversation {
   private readonly released = new Set<string>();
   private sub: Subscription<AriEvent> | null = null;
   private recording: string | null = null;
+  /** Who each party is (for the CDR row a transfer starts). */
+  private readonly who = new Map<string, Party>();
 
   constructor(
     private readonly ctx: Ctx,
@@ -69,6 +71,14 @@ export class Conversation {
 
   has(channelId: string): boolean {
     return this.parties.includes(channelId);
+  }
+
+  identify(channelId: string, party: Party): void {
+    this.who.set(channelId, party);
+  }
+
+  whoIs(channelId: string): Party | null {
+    return this.who.get(channelId) ?? null;
   }
 
   /** Bridge both parties and drive the call until it ends. */
@@ -212,8 +222,16 @@ export class Conversation {
       await consult.releaseParty(target); // consult conversation ends, hangs up the phone's consult leg
       this.clearHoldOf(transferer);
       // Rebind first so the transferring phone hanging up doesn't end this call flow.
-      if (s.primary === transferer) s.rebind(remaining);
+      if (s.primary === transferer) {
+        s.rebind(remaining);
+        s.primaryParty = this.whoIs(remaining) ?? s.primaryIs;
+      }
       this.parties = [remaining, target];
+      const targetIs = consult.whoIs(target);
+      if (targetIs) this.who.set(target, targetIs);
+      // The target's own CDR row from now on (main row: who answered before the transfer). The
+      // consult call keeps its own rows (the phone's call to the target, ended now).
+      s.beginTransferLeg(new Date(), targetIs, true);
       ctx.conversations.set(target, this);
       if (ctx.conversations.get(transferer) === this) ctx.conversations.delete(transferer);
       this.sub?.unwatch(chKey(transferer));
