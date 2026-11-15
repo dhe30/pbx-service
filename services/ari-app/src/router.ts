@@ -85,16 +85,32 @@ function missing(s: CallSession, d: Destination): void {
 const forwardDest = (f: ForwardDestination): Destination => f;
 
 /**
+ * A forward to the caller's own number would only call the caller back (the same rule as an
+ * extension's external numbers in extensionTargets). Seen live 2026-11-15: a caller was blind-
+ * transferred to an extension whose "forward always" was that caller's number; we called the
+ * caller back and the extension never rang, which the course counted as a failed transfer.
+ */
+function usableForward(s: CallSession, ext: ExtensionCfg, kind: string, f: ForwardDestination | null): ForwardDestination | null {
+  if (!f) return null;
+  if (f.type === 'external' && f.number === callerNumberOf(s)) {
+    s.log.info({ ext: ext.number, kind, to: f }, 'forward skipped: target is the caller');
+    return null;
+  }
+  return f;
+}
+
+/**
  * Ring an extension with its forwarding rules: always -> straight to the forward target;
  * otherwise ring all devices + external numbers; then busy -> forward_busy, no answer ->
  * forward_no_answer, else its voicemail box. Returns the next destination (or connects and
- * returns null).
+ * returns null). A forward to the caller's own number is ignored (usableForward).
  */
 export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg): Promise<Destination | null> {
   if (s.main && !s.main.toExtension) s.main.toExtension = ext.number;
-  if (ext.forwardAlways) {
-    s.log.info({ ext: ext.number, to: ext.forwardAlways }, 'forward always');
-    return forwardDest(ext.forwardAlways);
+  const always = usableForward(s, ext, 'always', ext.forwardAlways);
+  if (always) {
+    s.log.info({ ext: ext.number, to: always }, 'forward always');
+    return forwardDest(always);
   }
   const r: RingResult = await ringTargets(ctx, s, extensionTargets(ext, callerNumberOf(s)), ext.ringTimeoutSec);
   if (r.winner) {
@@ -102,8 +118,10 @@ export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg)
     return null;
   }
   s.ringOutcome = r.outcome;
-  if (r.outcome === 'busy' && ext.forwardBusy) return forwardDest(ext.forwardBusy);
-  if (r.outcome !== 'busy' && ext.forwardNoAnswer) return forwardDest(ext.forwardNoAnswer);
+  const busy = r.outcome === 'busy' ? usableForward(s, ext, 'busy', ext.forwardBusy) : null;
+  if (busy) return forwardDest(busy);
+  const noAnswer = r.outcome !== 'busy' ? usableForward(s, ext, 'no_answer', ext.forwardNoAnswer) : null;
+  if (noAnswer) return forwardDest(noAnswer);
   if (ext.mailboxId) return { type: 'voicemail', id: ext.mailboxId };
   return null;
 }

@@ -140,6 +140,37 @@ describe('§3 Extensions: forwarding', () => {
     expect(rows[1]!.billableSec).toBe(30); // minimum increment (30/6)
   });
 
+  it("forward always to the caller's own number is ignored: the extension rings", async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    const e101 = await a.extension({ number: '101', forwardAlways: { type: 'external', number: '+16315550643' } });
+    await a.number('+12015550118', { type: 'extension', id: e101 });
+    h.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 5 });
+    h.ari.external.set('+16315550643', { answerAfterMs: 5 });
+    const caller = h.ari.carrierCall('+12015550118', '+16315550643');
+    const leg = await until(() => h.ari.legsTo(a.ext['101']!.sip)[0], 2000, 'rings 101');
+    await until(() => h.ari.peerOf(caller) === leg.id, 2000, 'caller bridged to 101');
+    expect(h.ari.legsTo('+16315550643')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    expect(await a.cdrs()).toHaveLength(1);
+  });
+
+  it("forward no answer to the caller's own number is ignored: the extension's voicemail", async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    const e101 = await a.extension({ number: '101', ringTimeoutSec: 5, forwardNoAnswer: { type: 'external', number: '+16315550643' } });
+    await a.number('+12015550119', { type: 'extension', id: e101 });
+    h.ari.sip.set(a.ext['101']!.sip, { failCause: 19 });
+    h.ari.external.set('+16315550643', { answerAfterMs: 5 });
+    const caller = h.ari.carrierCall('+12015550119', '+16315550643');
+    await until(() => h.uploads.begun.find((u) => u.kind === 'voicemail'), 2000, 'voicemail recording');
+    expect(h.uploads.begun[0]).toMatchObject({ mailboxId: a.ext['101']!.mailboxId });
+    expect(h.ari.legsTo('+16315550643')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('forward busy applies only when the devices are busy (486)', async () => {
     const h = makeHarness(db.sql);
     const a = await new Account(db.sql).create();
