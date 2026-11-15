@@ -197,13 +197,17 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
      the pbx nodes drop the media nodes' RTP. (Not `site.yml`: it would also deploy the pbx roles.)
   4. `--limit edge`: Kamailio with both sets, switch OFF, restarted one edge at a time (TLS and
      browser phones reconnect and re-register; calls in progress keep their media).
-  5. Switch on, on both edges within a second: `kamcmd cfg.set_now_int pbx media_rtp 1` (check:
-     `kamcmd cfg.get pbx media_rtp`). Back: the same with `0`. New calls only; calls in progress
-     stay where they are.
+  5. **First** check that every set-1 node is up on both edges: `kamcmd rtpengine.show all` must
+     show `disabled: 0` for each media node (otherwise new calls get 503 "Media Unavailable": on
+     2026-11-15 ~180 failed in the minute after edge-1's restart, and media-2 stayed `disabled`
+     until its cloud firewall allowed UDP 2223 from the edges). Then switch on, on both edges
+     within a second: `kamcmd cfg.set_now_int pbx media_rtp 1` (check: `kamcmd cfg.get pbx
+     media_rtp`). Back: the same with `0`. New calls only; calls in progress stay where they are.
   6. Watch ~40 min: the edges' rtpengine sessions drain to 0 (`rtpengine-ctl list numsessions`),
      media-node CPU, `/var/log/pbx/call-audio.jsonl` on the media nodes, SIP p95.
-  7. Then set `rtpengine_media_new_calls: 1` in group_vars (what a Kamailio restart starts with)
-     at the next edge deploy. The edges' rtpengine stays as the fallback (switch back to 0).
+  7. Then set `rtpengine_media_new_calls: 1` in group_vars (what a Kamailio restart starts with;
+     done 2026-11-15). It takes effect at the next edge deploy, which is a Kamailio restart; until
+     then the live value holds. The edges' rtpengine stays as the fallback (switch back to 0).
 
 ### 2.5 Testing
 
