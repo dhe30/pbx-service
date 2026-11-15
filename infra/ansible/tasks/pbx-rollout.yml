@@ -3,7 +3,11 @@
 # serial: 1). The roles only record what needs a restart (pbx_pending_restarts, handlers with
 # pbx_defer_restarts); config changes Asterisk can reload were already applied live.
 #
+# Pending = recorded in this run, or left in /var/lib/pbx-restart-pending by a run that stopped
+# before the restart finished (a re-run sees nothing "changed" but still restarts). Cleared only
+# after a healthy restart.
 # Nothing pending -> nothing happens (no drain). Otherwise:
+#   0. refuse if no OTHER pbx node is in service on some edge (draining would leave none).
 #   1. dispatcher state d (disabled) for this node on every edge: no new calls. `d`, not `i`:
 #      the edges' OPTIONS pings switch an inactive node back on (ds_probing_mode=1).
 #   2. wait until Asterisk has 0 active calls, up to pbx_drain_wait_min (calls last up to ~35 min).
@@ -13,9 +17,20 @@
 # -e pbx_drain_on_timeout=deploy (restart anyway: the remaining calls are dropped).
 # -e pbx_drain=false skips 1-2 (emergency: restart now, calls dropped).
 
+# The handlers also write what is pending to a file on the node, so a run that was stopped (Ctrl+C,
+# drain timeout, failed restart) leaves it behind and the next run restarts even though nothing
+# "changed" any more. Cleared only after a successful restart.
+- name: Restarts recorded on the node by an earlier, unfinished run
+  ansible.builtin.command: cat {{ pbx_restart_marker | default('/var/lib/pbx-restart-pending') }}
+  register: pbx_marker
+  changed_when: false
+  failed_when: false
+
 - name: Restarts pending on this node
   ansible.builtin.set_fact:
-    pbx_restarts: "{{ pbx_pending_restarts | default([]) | unique | list }}"
+    pbx_restarts: >-
+      {{ ((pbx_pending_restarts | default([])) + (pbx_marker.stdout_lines | default([])))
+         | map('trim') | select | unique | list }}
 
 - name: Nothing to restart (configs were reloaded live, or nothing changed)
   ansible.builtin.debug:
@@ -28,6 +43,31 @@
     pbx_ds_uri: "sip:{{ private_ip }}:{{ asterisk_sip_port | default(5060) }}"
     pbx_drain_enabled: "{{ pbx_drain | default(true) | bool }}"
   block:
+    # Never take the last node out of service: with every pbx node disabled, Kamailio answers new
+    # calls "no pbx node available". Counts the OTHER set-1 destinations whose flags start with A.
+    - name: Other pbx nodes in service, per edge
+      ansible.builtin.shell: |
+        set -o pipefail
+        kamcmd dispatcher.list | grep -E 'URI|FLAGS' | paste - - | grep -v '{{ pbx_ds_uri }}' | grep -c 'FLAGS: A' || true
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['edge'] }}"
+      register: pbx_others
+      changed_when: false
+      when: pbx_drain_enabled
+
+    - name: Refuse to drain the last pbx node in service
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} is the only pbx node in service on
+          {{ pbx_others.results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', '0') | map(attribute='item') | join(', ') }}.
+          Draining it would leave no pbx node. Put the other node back first
+          (kamcmd dispatcher.set_state a 1 sip:<its ip>:5060 on every edge), then re-run.
+      when:
+        - pbx_drain_enabled
+        - pbx_others.results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', '0') | list | length > 0
+
     - name: "Drain {{ inventory_hostname }} on every edge (dispatcher state d)"
       ansible.builtin.command: kamcmd dispatcher.set_state d 1 {{ pbx_ds_uri }}
       delegate_to: "{{ item }}"
@@ -91,6 +131,11 @@
       retries: 45
       delay: 2
       until: pbx_health.status == 200
+
+    - name: Clear the restarts recorded on the node
+      ansible.builtin.file:
+        path: "{{ pbx_restart_marker | default('/var/lib/pbx-restart-pending') }}"
+        state: absent
 
     - name: "Put {{ inventory_hostname }} back on every edge (dispatcher state a)"
       ansible.builtin.command: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
