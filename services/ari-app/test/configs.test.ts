@@ -225,6 +225,11 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('no connected-line re-INVITEs: a mid-call re-offer let the codec flip (2026-11-14 incident)', () => {
       expect(pjsip).toMatch(/\[edge-common\]\(!\)[\s\S]*\nsend_connected_line=no\n/);
     });
+    it('load limit scales with vCPUs (2 x): 0.95 refused calls on 1-vCPU nodes in normal spikes', () => {
+      // render-telephony.yml renders with ansible_processor_vcpus=4.
+      const conf = read('pbx-1', 'asterisk.conf');
+      expect(conf).toMatch(/^maxload = 8$/m);
+    });
     it('dialplan hands every call to Stasis with the source and SIP user from Kamailio', () => {
       const ext = read('pbx-1', 'extensions.conf');
       expect(ext).toMatch(/exten => _\[\+\*#0-9\]!,1/); // *98 and extension numbers too
