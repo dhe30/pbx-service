@@ -50,9 +50,14 @@ the audio records. In `/var/log/pbx/call-audio.jsonl` of both edges on 2026-11-1
 | plain RTP calls | 1,766 | 130 (~7 %) |
 | SRTP calls | 55 | 3 |
 
-Of the 3 SRTP ones, ce669814 (12:29) was an Opus phone: rtpengine transcodes it, so the phone gets
-rtpengine's own SSRC and never sees the switch; 7719aa69 (09:22) predates our SIP history.
-**3bf2b8eb is the only call that day where an SRTP phone received the switch.**
+Of the 3 SRTP ones, 7719aa69 (09:22) predates our SIP history. ce669814 (12:28, an Opus phone, so
+rtpengine transcodes) is **different from 3bf2b8eb**: two switches 3 s after answer (12:28:08.83 and
+.86, right as the phone's first RTP arrived), not 15 ms; 48 s call, ended by Asterisk, no ticket.
+Transcoding does not hide a switch: rtpengine passes the input SSRC and sequence numbers through to
+the transcoded output too (replay below, phone on PCMA). So an SRTP phone of the simulator did
+receive SSRC switches there and apparently coped. We don't know that call's sequence numbers (no
+capture then); it rules out "the phone keeps only the first SSRC", and is consistent with "one replay
+window for all SSRCs", which only fails when the new sequence numbers are lower.
 
 ## Reproduction: rtpengine is fine, some receivers are not
 
@@ -70,6 +75,8 @@ judged by three receiver models. 250 packets from Asterisk per case:
 | switch after 2 s, new seq lower | 250/250 | 100/250 | 100/250 |
 
 Every case with a switch reproduced the `errors 1` on the stream from Asterisk; the control had 0.
+The same switch with the phone answering **PCMA** (rtpengine transcodes PCMU -> PCMA) reached the
+phone unchanged too: SSRC A for 1 packet, then SSRC B with B's sequence numbers (12000, 12001, ...).
 So rtpengine re-encrypts the new SSRC correctly, but a phone whose SRTP receiver keeps one SSRC, or
 one replay window across SSRCs (half the time: the new sequence numbers are random), discards all
 audio after the switch. That fits a "bad codec" verdict and the phone hanging up 2 s after it
@@ -84,9 +91,14 @@ sequence numbers. Cost: Asterisk handles every frame of a 2-party call (no trans
 sides) instead of forwarding raw packets; to be measured under traffic (V-T16).
 
 Not covered: a channel still gets a new SSRC when it joins or leaves a non-mixing bridge
-(`bridge_channel.c` -> `AST_CONTROL_SRCCHANGE` -> chan_pjsip picks a new SSRC). At the first join no
-media has flowed yet; after a transfer the remaining party is moved to another bridge and its
-stream does switch. If transfer tickets mention audio on TLS phones, look there next.
+(`bridge_channel.c` -> `AST_CONTROL_SRCCHANGE` -> chan_pjsip -> `ast_rtp_change_source`). At the
+first join no media has flowed yet. Transfers do move a party: blind, the remaining party leaves our
+bridge and joins the target's; attended, the consult call's far party leaves its bridge and joins
+ours (~30 blind + ~29 attended transfers on 2026-11-15). That switch is milder than the native one:
+`ast_rtp_change_source` changes only the SSRC (and sets the marker bit); the channel's own sequence
+counter keeps counting up. A receiver with one replay window for all SSRCs keeps that audio; only one
+that keeps the first SSRC drops it, and ce669814 suggests the simulator's phones are not like that.
+If transfer tickets mention audio on TLS phones, look there next.
 
 ## Verify after deploying (V-T16)
 
