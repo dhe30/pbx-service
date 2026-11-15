@@ -155,9 +155,11 @@ describe('§3 Extensions: forwarding', () => {
     expect(h.ari.legsTo('+16315550132')).toHaveLength(0);
     h.ari.remoteHangup(caller);
     await h.settle();
-    // Any other caller is still forwarded.
+    // Any other caller is still forwarded. Hang up only once connected: hanging up while the
+    // forwarded leg is still being answered made this test flaky (a fake call left unfinished).
     const other = h.ari.carrierCall(did, '+16315550000');
-    await until(() => h.ari.legsTo('+16315550132')[0], 2000, 'forwarded for another caller');
+    const fwd = await until(() => h.ari.legsTo('+16315550132')[0], 2000, 'forwarded for another caller');
+    await until(() => h.ari.peerOf(other) === fwd.id, 2000, 'other caller bridged to the forward');
     h.ari.remoteHangup(other);
     await h.settle();
   });
