@@ -39,6 +39,17 @@ table inet filter {
 		# Dedicated media node: rtpengine media.
 		udp dport 30000-40000 accept
 {% endif %}
+{% set test_peers = ((groups.get('edge', []) + groups.get('media', [])) | map('extract', hostvars) | selectattr('public_ip', 'defined') | map(attribute='public_ip') | unique | list) %}
+{% if inventory_hostname in groups.get('mon', []) and test_peers %}
+
+		# mon-1's test phones (synthetic call, quality test, long-call test) register and call
+		# through the edges' PUBLIC addresses, so Kamailio's SIP and rtpengine's RTP come back from
+		# those addresses, which are not in @cluster. Without this they only got in while conntrack
+		# still had the flow (UDP: ~2 min after mon-1's last packet on it): a long call's SIP is idle
+		# for 15 min, and Asterisk's session refresh at 900 s was dropped here (2026-11-15,
+		# docs/incidents/2026-11-14-codec-flip.md follow-up 2). Test SIP ports 5090-5099, media 6100-6499.
+		ip saddr { {{ test_peers | join(', ') }} } udp dport { 5090-5099, 6100-6499 } accept
+{% endif %}
 	}
 
 	chain forward {

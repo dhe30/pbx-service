@@ -110,7 +110,21 @@ Remaining exposure: Asterisk still re-INVITEs if it becomes the session-timer re
    case on both legs (no UPDATE in Allow; caller asks `refresher=uas`, callee does no timers),
    answers Asterisk's re-INVITE with `4 0 8 18 101`, sends one re-INVITE of its own 30 s later,
    and prints PASS / FLIP / INCONCLUSIVE with every refresh Asterisk sent. `ALLOW_UPDATE=1` runs
-   the UPDATE case. Results: not run yet. Still to find out from real traffic: whether the
+   the UPDATE case.
+   **Run 1 (2026-11-15 00:51 UTC, edge-1 → pbx-2): broken by the test setup, no answer yet.**
+   Asterisk's 200 OK to the caller said `Session-Expires: 1800;refresher=uas` (Asterisk was the
+   refresher, as intended). Audio flowed both ways until 910 s, then stopped on both legs; no
+   refresh or BYE ever reached either phone, and the caller's own re-INVITE at 930 s got 408
+   (call already gone). Cause: mon-1's host firewall. Kamailio's SIP reaches the test phones from
+   the edge's *public* IP, which isn't in `@cluster`, so it only got in on conntrack, and a UDP
+   flow's entry expires ~2 min after mon-1's last packet. The test phones' SIP was idle for 15 min
+   (RTP kept its own flows alive), so mon-1 dropped Asterisk's refresh at 900 s, and Asterisk hung
+   up when the refresh failed. Fix: mon-only rule in `roles/common/templates/nftables.conf.j2`
+   accepting UDP from the edges' public IPs to the test-phone ports. Side lesson: a customer phone
+   behind NAT that sends no SIP for 15 min would lose Asterisk's refresh the same way (Kamailio
+   sends no NAT pings, `natping_interval 0`). The course's callers refresh every 30 s; phones
+   that are only rung are the unknown. Check real traffic for legs ending 900-915 s after the
+   answer. Still to find out from real traffic: whether the
    course's phones (as callees) and the vendors include UPDATE in `Allow` and take the refresher
    role themselves. Once `pbx-call-audio` (3.) is deployed, a flip on a real customer call longer
    than 15 min would show up there as `format_mismatch` (unless it flips to PCMA).
