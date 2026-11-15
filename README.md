@@ -163,8 +163,15 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
 - **Start / stop:** every service is a systemd unit: `kamailio`, `rtpengine-daemon`, `haproxy`
   (edges); `asterisk`, `pbx-ari-app` (pbx); `pbx-api`, `nginx` (app); `patroni`, `etcd`, `garage`
   (db); `pbx-dbproxy` on every DB client.
-- **Drain a pbx node** before maintenance: `kamcmd dispatcher.set_state i 1 sip:<pbx>:5060` on
-  both edges, then wait for its calls to end.
+- **Drain a pbx node** before deploying it (a pbx deploy restarts Asterisk and the ARI app, which
+  drops that node's calls), one node at a time:
+  1. On both edges: `kamcmd dispatcher.set_state d 1 sip:<pbx-ip>:5060`. Use `d` (disabled): the
+     edges' health pings switch an `i` (inactive) node back on within seconds. `kamcmd
+     dispatcher.list` then shows its `FLAGS` starting with `D`.
+  2. Wait for `asterisk -rx "core show channels count"` on the node to reach 0 active calls.
+  3. Deploy it: `ansible-playbook site.yml --ask-vault-pass --limit pbx-1` (or `pbx-2`).
+  4. On both edges: `kamcmd dispatcher.set_state a 1 sip:<pbx-ip>:5060` (`FLAGS` back to `AP`).
+     Only then drain the other node.
 
 ### 2.5 Testing
 
