@@ -3,7 +3,7 @@ import { Conversation } from './conversation.js';
 import type { Ctx } from './ctx.js';
 import { runIvr } from './ivr.js';
 import { extensionTargets, ringSequential, ringTargets, type RingResult, type Winner } from './ring.js';
-import type { CallSession } from './session.js';
+import type { CallSession, Party } from './session.js';
 import type { ExtensionCfg, TenantConfig } from './tenant.js';
 import { leaveVoicemail } from './voicemail.js';
 
@@ -124,7 +124,8 @@ export async function ringExtension(
   ext: ExtensionCfg,
   opts: { blindTransfer?: boolean } = {},
 ): Promise<Destination | null> {
-  if (s.main && !s.main.toExtension) s.main.toExtension = ext.number;
+  const leg = s.routingLeg;
+  if (leg && !leg.toExtension) leg.toExtension = ext.number;
   if (opts.blindTransfer && ext.forwardAlways) {
     s.log.info({ ext: ext.number, to: ext.forwardAlways }, 'forward always not applied to a blind transfer');
   }
@@ -155,29 +156,47 @@ function callerNumberOf(s: CallSession): string | null {
 export async function connect(ctx: Ctx, s: CallSession, winner: Winner): Promise<void> {
   s.connected = true;
   s.ringOutcome = null;
-  if (s.main) {
-    if (winner.target.extension) s.main.toExtension = winner.target.extension.number;
-    if (s.main.direction === 'internal') s.main.answeredAt ??= new Date();
+  // Before a transfer: the main row (the extension that answered first). After one: the transfer
+  // leg (the extension the call was transferred to); the main row keeps the first answerer.
+  const leg = s.routingLeg;
+  if (leg) {
+    if (winner.target.extension) leg.toExtension = winner.target.extension.number;
+    if (leg !== s.main || leg.direction === 'internal') leg.answeredAt ??= new Date();
   }
   await s.ensureAnswered(ctx.ari);
   const conv = new Conversation(ctx, s, s.primary, winner.channelId, {
     record: !!s.tenant?.recordCalls,
     mohClass: ctx.cfg.HOLD_MOH_CLASS,
   });
+  conv.identify(s.primary, s.primaryIs);
+  conv.identify(winner.channelId, partyOf(winner));
   const end = await conv.run();
   if (end.reason === 'blind_transfer') {
+    const at = new Date();
+    // The party left on the call is the primary now (Conversation.transfer rebinds).
+    s.primaryParty = conv.whoIs(end.remaining) ?? s.primaryIs;
     const dest = resolveDialTarget(s.tenant!, end.target);
     s.log.info({ target: end.target, dest }, 'routing blind transfer');
     if (dest?.type === 'extension') {
       // Ring the target extension itself (no "forward always"), then follow what it returns.
       const ext = s.tenant!.extensions.get(dest.id);
       if (!ext) return missing(s, dest);
+      // Its own CDR row from now on (the main row keeps who answered before the transfer).
+      s.beginTransferLeg(at, { extension: ext.number, number: ext.number });
       const next = await ringExtension(ctx, s, ext, { blindTransfer: true });
       if (next) await routeTo(ctx, s, next);
-    } else if (dest) {
-      await routeTo(ctx, s, dest);
+    } else {
+      // To an outside number (its own charged leg, ring.ts) or nowhere: no transfer leg.
+      s.endTransferLeg(at);
+      if (dest) await routeTo(ctx, s, dest);
     }
   }
+}
+
+/** Who answered: an extension (its phone or one of its external numbers) or an outside number. */
+function partyOf(w: Winner): Party {
+  const ext = w.target.extension?.number ?? null;
+  return { extension: ext, number: w.target.kind === 'external' ? w.target.number : ext };
 }
 
 /** A number typed on a phone (or a REFER target): extension of the account, else a PSTN number. */

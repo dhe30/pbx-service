@@ -32,6 +32,8 @@ export async function leaveVoicemail(ctx: Ctx, s: CallSession, mailboxId: string
   }
   await s.ensureAnswered(ctx.ari);
   if (s.main) s.main.voicemail = true;
+  // Transferred to an extension that didn't answer: its row shows the voicemail too.
+  if (s.transferLeg) s.transferLeg.voicemail = true;
 
   // From before the greeting: a caller may hold while it plays.
   const hold = new HoldState(ctx.bus.subscribe(onChannel(s.primary, 'ChannelHold', 'ChannelUnhold')));
