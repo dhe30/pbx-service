@@ -16,7 +16,10 @@
 #            4 0 8 18 101.
 # Both phones leave UPDATE out of Allow (the risky case). ALLOW_UPDATE=1 puts it in (expect UPDATE
 # refreshes without SDP). tcpdump records what reaches both phones; long_call_check.py prints the
-# refreshes Asterisk sent and judges each phone's codec after them (PASS / FLIP / INCONCLUSIVE).
+# refreshes Asterisk sent, an RTP timeline per phone, and judges each phone's codec after them
+# (PASS / FLIP / BROKEN / INCONCLUSIVE). To re-analyse an old run without placing a new call:
+#   python3 /usr/local/share/pbx-quality/long_call_check.py <run dir>/call.pcap <mon-1 private IP> \
+#     5096 5095 6300 6400 935 990
 #
 # Roles are swapped on purpose: the every-minute synthetic call and the quality test only ring B
 # and only use A as a caller, so ringing A and calling FROM B (unregistered) collides with neither.
@@ -77,6 +80,7 @@ sleep 0.5; kill $TD 2>/dev/null; wait $TD 2>/dev/null
 sipp_l -timeout 10 -sf $REG -s "$A_USER" -key domain "$DOMAIN" -key expires 0 \
   -au "$A_USER" -ap "$A_PASSWORD" -p 5095 "$EDGE:5060" >/dev/null 2>&1
 echo "SIPp exit codes: caller $rc_caller, callee $rc_callee (0 = scenario completed; SIP ladders: caller.sip.log, callee.sip.log)"
-python3 "$SHARE/long_call_check.py" call.pcap "$ME" 5096 5095 6300 6400 "$JUDGE_FROM"; verdict=$?
-[ $rc_caller = 0 ] && [ $rc_callee = 0 ] || [ $verdict = 2 ] || verdict=1
+python3 "$SHARE/long_call_check.py" call.pcap "$ME" 5096 5095 6300 6400 "$JUDGE_FROM" "$HANGUP_AT"; verdict=$?
+# A failed SIPp run is an error unless the report already explains it (FLIP 2, BROKEN 4).
+[ $rc_caller = 0 ] && [ $rc_callee = 0 ] || [ $verdict = 2 ] || [ $verdict = 4 ] || verdict=1
 exit $verdict
