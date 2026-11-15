@@ -6,8 +6,8 @@ import { ACCESS_COOKIE } from '../src/auth.js';
 import { registry } from '../src/metrics.js';
 import { build, connectTestDb } from './helpers.js';
 
-// Support tickets (course spec §3): account users open / list / close; the provider sees the
-// open tickets of every account through the operator token.
+// Support tickets (course spec §3): users open / list / close their own tickets; the provider
+// sees the open tickets of every account through the operator token.
 
 const OPERATOR_TOKEN = 'operator-test-token-0123456789abcdef';
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -165,44 +165,47 @@ describe.skipIf(!db)('support tickets (Postgres)', () => {
     expect(res.json()).not.toHaveProperty('priority');
   });
 
-  it("lists the account's tickets newest first, filtered by status, with keyset paging", async () => {
-    const [t1, t2, t3] = [await open(a.owner, 'one'), await open(a.staff, 'two'), await open(a.owner, 'three')];
-    await open(b.owner, 'other account');
-    await call(a.owner, 'POST', `/tickets/${t2.id}/close`);
+  it("lists only the user's tickets newest first, filtered by status, with keyset paging", async () => {
+    const tenant = await makeTenant();
+    const otherTenant = await makeTenant();
+    const [t1, t2, t3] = [await open(tenant.owner, 'one'), await open(tenant.staff, 'two'), await open(tenant.owner, 'three')];
+    await open(otherTenant.owner, 'other account');
+    await call(tenant.staff, 'POST', `/tickets/${t2.id}/close`);
 
-    const all = await call(a.staff, 'GET', '/tickets?limit=200');
+    const all = await call(tenant.staff, 'GET', '/tickets?limit=200');
     expect(all.statusCode).toBe(200);
     const listed = ids(all);
-    expect(listed.indexOf(t3.id)).toBeLessThan(listed.indexOf(t2.id));
-    expect(listed.indexOf(t2.id)).toBeLessThan(listed.indexOf(t1.id));
-    const [bOnly] = await sql<{ id: string }[]>`select id from support_tickets where tenant_id = ${b.id}`;
+    expect(listed).toEqual([t2.id]);
+    expect(ids(await call(tenant.owner, 'GET', '/tickets?limit=200'))).toEqual([t3.id, t1.id]);
+    const [bOnly] = await sql<{ id: string }[]>`select id from support_tickets where tenant_id = ${otherTenant.id}`;
     expect(listed).not.toContain(bOnly!.id);
     expect(all.json().nextCursor).toBeNull();
 
-    const openOnly = ids(await call(a.owner, 'GET', '/tickets?status=open&limit=200'));
-    expect(openOnly).toEqual(expect.arrayContaining([t1.id, t3.id]));
+    const openOnly = ids(await call(tenant.owner, 'GET', '/tickets?status=open&limit=200'));
+    expect(openOnly).toEqual([t3.id, t1.id]);
     expect(openOnly).not.toContain(t2.id);
-    expect(ids(await call(a.owner, 'GET', '/tickets?status=closed'))).toEqual([t2.id]);
+    expect(ids(await call(tenant.owner, 'GET', '/tickets?status=closed'))).toEqual([]);
+    expect(ids(await call(tenant.staff, 'GET', '/tickets?status=closed'))).toEqual([t2.id]);
 
     // Page through 1 at a time: same order, nothing repeated or skipped.
     const paged: string[] = [];
     let cursor: string | null = null;
     do {
-      const res = await call(a.owner, 'GET', `/tickets?limit=1${cursor ? `&cursor=${cursor}` : ''}`);
+      const res = await call(tenant.owner, 'GET', `/tickets?limit=1${cursor ? `&cursor=${cursor}` : ''}`);
       expect(res.statusCode).toBe(200);
       paged.push(...ids(res));
       cursor = res.json().nextCursor;
     } while (cursor);
-    expect(paged).toEqual(listed);
+    expect(paged).toEqual([t3.id, t1.id]);
 
     expect((await call(a.owner, 'GET', '/tickets?status=pending')).statusCode).toBe(400);
     expect((await call(a.owner, 'GET', '/tickets?cursor=bogus')).statusCode).toBe(400);
   });
 
-  it("returns account-wide open and closed counts regardless of list filters", async () => {
+  it("returns the current user's open and closed counts regardless of list filters", async () => {
     await open(a.owner, 'summary open');
     const closed = await open(a.staff, 'summary closed');
-    await call(a.owner, 'POST', `/tickets/${closed.id}/close`);
+    await call(a.staff, 'POST', `/tickets/${closed.id}/close`);
     await open(b.owner, 'other account summary');
 
     const res = await call(a.staff, 'GET', '/tickets/summary');
@@ -210,32 +213,34 @@ describe.skipIf(!db)('support tickets (Postgres)', () => {
     const [expected] = await sql<{ open: number; closed: number }[]>`
       select count(*) filter (where status = 'open')::int as open,
              count(*) filter (where status = 'closed')::int as closed
-        from support_tickets where tenant_id = ${a.id}`;
+        from support_tickets where tenant_id = ${a.id} and created_by = ${a.staff.id}`;
     expect(res.json()).toEqual(expected);
     expect(res.json().open).toBeGreaterThan(0);
     expect(res.json().closed).toBeGreaterThan(0);
   });
 
-  it('gets one ticket; other accounts and unknown ids are 404', async () => {
+  it("gets only the current user's ticket; other users, accounts and unknown ids are 404", async () => {
     const t = await open(a.owner, 'get me');
-    const res = await call(a.staff, 'GET', `/tickets/${t.id}`);
+    const res = await call(a.owner, 'GET', `/tickets/${t.id}`);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ id: t.id, subject: 'get me', createdBy: a.owner.id });
     expect(res.json()).not.toHaveProperty('tenantId');
+    expect((await call(a.staff, 'GET', `/tickets/${t.id}`)).statusCode).toBe(404);
     expect((await call(b.owner, 'GET', `/tickets/${t.id}`)).statusCode).toBe(404);
     expect((await call(a.owner, 'GET', `/tickets/${randomUUID()}`)).statusCode).toBe(404);
     expect((await call(a.owner, 'GET', '/tickets/not-a-uuid')).statusCode).toBe(400);
   });
 
-  it('closes a ticket, idempotently; another account cannot close it', async () => {
+  it('closes a ticket, idempotently; another user or account cannot close it', async () => {
     const t = await open(a.owner, 'close me');
     expect((await call(b.owner, 'POST', `/tickets/${t.id}/close`)).statusCode).toBe(404);
+    expect((await call(a.staff, 'POST', `/tickets/${t.id}/close`)).statusCode).toBe(404);
     expect((await call(a.owner, 'GET', `/tickets/${t.id}`)).json().status).toBe('open');
 
     const before = await counter('pbx_api_support_tickets_closed_total');
-    const first = await call(a.staff, 'POST', `/tickets/${t.id}/close`);
+    const first = await call(a.owner, 'POST', `/tickets/${t.id}/close`);
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toMatchObject({ id: t.id, status: 'closed', closedAt: expect.any(String), closedBy: a.staff.id });
+    expect(first.json()).toMatchObject({ id: t.id, status: 'closed', closedAt: expect.any(String), closedBy: a.owner.id });
 
     const again = await call(a.owner, 'POST', `/tickets/${t.id}/close`);
     expect(again.statusCode).toBe(200);
@@ -252,11 +257,12 @@ describe.skipIf(!db)('support tickets (Postgres)', () => {
     const gone: User = { id: u!.id, email: '', cookies: { [ACCESS_COOKIE]: app.jwt.sign({ sub: u!.id, tid: a.id, role: 'staff', typ: 'access' }) } };
     const t = await open(gone, 'mine');
     await sql`delete from users where id = ${gone.id}`;
-    expect((await call(a.owner, 'GET', `/tickets/${t.id}`)).json()).toMatchObject({ createdBy: null, createdByEmail: null });
+    expect((await call(a.owner, 'GET', `/tickets/${t.id}`)).statusCode).toBe(404);
 
     const late = await call(gone, 'POST', '/tickets', { subject: 'after delete', description: 'still valid token' });
     expect(late.statusCode).toBe(201);
     expect(late.json().createdBy).toBeNull();
+    expect((await call(gone, 'GET', `/tickets/${late.json().id}`)).statusCode).toBe(404);
   });
 
   it('the operator sees the open tickets of every account, newest first, with the account', async () => {

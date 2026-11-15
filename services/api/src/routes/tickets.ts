@@ -13,10 +13,10 @@ import { parse } from '../validation.js';
 // Support tickets (course spec §3). Simulated customers open a ticket when something fails for
 // them and close it when it works again, so this is graded behaviour.
 //
-// Account side, any logged-in user (owner or staff) of the account:
+// Account side, any logged-in user (owner or staff) of the account; tickets are private to their creator:
 // POST /tickets {subject, description}       201 ticket          400
 // GET  /tickets?status&limit&cursor          200 { items: [ticket], nextCursor }   newest first
-// GET  /tickets/summary                     200 { open, closed } account-wide counts
+// GET  /tickets/summary                     200 { open, closed } creator's counts
 // GET  /tickets/:id                          200 ticket          404
 // POST /tickets/:id/close                    200 ticket          404   (idempotent)
 //
@@ -64,10 +64,10 @@ const TicketSchema = z
 
 const TicketSummarySchema = z
   .object({
-    open: z.number().int().describe("Number of the account's open tickets."),
-    closed: z.number().int().describe("Number of the account's closed tickets."),
+    open: z.number().int().describe("Number of the current user's open tickets."),
+    closed: z.number().int().describe("Number of the current user's closed tickets."),
   })
-  .describe("The account's ticket counts, independent of list filters and pagination.");
+  .describe("The current user's ticket counts, independent of list filters and pagination.");
 
 const OperatorTicketSchema = TicketSchema.extend({
   tenantId: z.string().uuid().describe('Account the ticket belongs to.'),
@@ -82,7 +82,7 @@ const pageSchema = (item: z.ZodTypeAny, what: string) =>
     })
     .describe(`A page of ${what}.`);
 
-const NOT_FOUND_DOC = 'No such ticket in this account (`not_found`).';
+const NOT_FOUND_DOC = "No such ticket created by this user in this account (`not_found`).";
 const OPERATOR_401 = 'Missing or wrong operator token (`unauthorized`).';
 
 const docs = {
@@ -99,16 +99,16 @@ const docs = {
   list: {
     tag: 'Support',
     auth: 'user',
-    summary: "List the account's support tickets",
-    description: 'Every ticket of the account (opened by any of its users), newest first. Paged with `cursor` / `nextCursor`.',
+    summary: "List the current user's support tickets",
+    description: 'Tickets opened by the logged-in user, newest first. Paged with `cursor` / `nextCursor`.',
     query: ListQuery,
     responses: { 200: { description: 'A page of tickets', schema: pageSchema(TicketSchema, 'support tickets') } },
   },
   summary: {
     tag: 'Support',
     auth: 'user',
-    summary: "Count the account's support tickets",
-    description: 'Returns account-wide open and closed counts, independent of list status filters and pagination.',
+    summary: "Count the current user's support tickets",
+    description: "Returns the logged-in user's open and closed counts, independent of list status filters and pagination.",
     responses: { 200: { description: 'Open and closed ticket counts', schema: TicketSummarySchema } },
   },
   get: {
@@ -185,23 +185,26 @@ export const ticketRoutes: FastifyPluginAsync<{ sql: Sql; operatorToken: string 
     left join users u on u.id = t.created_by`;
 
   /** One ticket; tenantId null = any account (operator). */
-  async function getOne(id: string, tenantId: string | null): Promise<TicketRow> {
+  async function getOne(id: string, tenantId: string | null, userId?: string): Promise<TicketRow> {
     const [row] = await withRetry(
       () => sql<TicketRow[]>`
         select ${columns} from ${from}
-         where t.id = ${id} ${tenantId ? sql`and t.tenant_id = ${tenantId}` : sql``}`,
+         where t.id = ${id}
+           ${tenantId ? sql`and t.tenant_id = ${tenantId}` : sql``}
+           ${userId ? sql`and t.created_by = ${userId}` : sql``}`,
     );
     if (!row) throw notFound();
     return row;
   }
 
-  async function list(q: { status?: string; limit: number; cursor?: string }, tenantId: string | null) {
+  async function list(q: { status?: string; limit: number; cursor?: string }, tenantId: string | null, userId?: string) {
     const cursor = q.cursor ? decodeCursor(q.cursor) : null;
     const rows = await withRetry(
       () => sql<TicketRow[]>`
         select ${columns} from ${from}
          where true
            ${tenantId ? sql`and t.tenant_id = ${tenantId}` : sql``}
+           ${userId ? sql`and t.created_by = ${userId}` : sql``}
            ${q.status ? sql`and t.status = ${q.status}` : sql``}
            ${cursor ? sql`and (t.created_at, t.id) < (${cursor.ts}::timestamptz, ${cursor.id}::uuid)` : sql``}
          order by t.created_at desc, t.id desc
@@ -228,7 +231,7 @@ export const ticketRoutes: FastifyPluginAsync<{ sql: Sql; operatorToken: string 
   });
 
   app.get('/tickets', withDoc(anyUser, docs.list), async (req) => {
-    const { rows, nextCursor } = await list(parse(ListQuery, req.query), tenantOf(req));
+    const { rows, nextCursor } = await list(parse(ListQuery, req.query), tenantOf(req), req.auth!.userId);
     return { items: rows.map(view), nextCursor };
   });
 
@@ -238,14 +241,14 @@ export const ticketRoutes: FastifyPluginAsync<{ sql: Sql; operatorToken: string 
         select count(*) filter (where status = 'open')::int as open,
                count(*) filter (where status = 'closed')::int as closed
           from support_tickets
-         where tenant_id = ${tenantOf(req)}`,
+         where tenant_id = ${tenantOf(req)} and created_by = ${req.auth!.userId}`,
     );
     return counts!;
   });
 
   app.get('/tickets/:id', withDoc(anyUser, docs.get), async (req) => {
     const { id } = parse(IdParams, req.params);
-    return view(await getOne(id, tenantOf(req)));
+    return view(await getOne(id, tenantOf(req), req.auth!.userId));
   });
 
   app.post('/tickets/:id/close', withDoc(anyUser, docs.close), async (req) => {
@@ -257,14 +260,14 @@ export const ticketRoutes: FastifyPluginAsync<{ sql: Sql; operatorToken: string 
         update support_tickets
            set status = 'closed', closed_at = now(),
                closed_by = (select id from users where id = ${req.auth!.userId} and tenant_id = ${tenantId})
-         where id = ${id} and tenant_id = ${tenantId} and status = 'open'
+         where id = ${id} and tenant_id = ${tenantId} and created_by = ${req.auth!.userId} and status = 'open'
         returning id`,
     );
     if (closed.length > 0) {
       metrics.supportTicketsClosed.inc();
       req.log.info({ ticketId: id, tenantId }, 'support ticket closed');
     }
-    return view(await getOne(id, tenantId)); // 404 if it isn't this account's ticket
+    return view(await getOne(id, tenantId, req.auth!.userId)); // 404 if it isn't this user's ticket
   });
 
   app.get('/operator/tickets', withDoc(operatorOnly, docs.operatorList), async (req) => {

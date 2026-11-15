@@ -428,22 +428,23 @@ line = `{ kind: recurring|usage, description, itemKind, callId, startedAt, billa
 | Request | Who | Response |
 |---|---|---|
 | `POST /tickets` `{ subject, description }` | any user | `201 ticket` |
-| `GET /tickets?status=open\|closed&limit&cursor` | any user | `{ items: [ticket], nextCursor }`, newest first |
-| `GET /tickets/summary` | any user | `{ open, closed }`, account-wide counts independent of list filters and pagination |
-| `GET /tickets/:id` | any user | `ticket`; 404 |
-| `POST /tickets/:id/close` | any user | `200 ticket` (closed); 404. Idempotent |
+| `GET /tickets?status=open\|closed&limit&cursor` | any user | `{ items: [ticket], nextCursor }`, own tickets newest first |
+| `GET /tickets/summary` | any user | `{ open, closed }`, own-ticket counts independent of list filters and pagination |
+| `GET /tickets/:id` | creator | `ticket`; 404 |
+| `POST /tickets/:id/close` | creator | `200 ticket` (closed); 404. Idempotent |
 
 ticket = `{ id, subject, description, status: open|closed, createdAt, createdBy, createdByEmail,
 closedAt, closedBy }`. `createdBy` / `closedBy` are user ids (null once that user is deleted);
 `closedAt` / `closedBy` are null while open.
-- Every user of the account (owner and staff) sees and can close every ticket of the account.
+- Tickets are private to the user who created them. Users can list, view, count, and close only
+  their own tickets. The provider can still see all tickets through the operator routes below.
 - `subject` 1-200 characters, `description` 1-10000 (both trimmed); other fields are a 400.
 - Tickets only go open -> closed. Closing a closed ticket returns it unchanged; a problem that
   comes back gets a new ticket. There is no delete.
 - Paging is the same as `/calls` and `/voicemails` (`limit` 1-200, default 50; pass `nextCursor`
   back as `cursor`).
 - **Graded behaviour:** simulated customers open a ticket when something fails for them and close
-  it when it works again. Put "Open a ticket" somewhere easy to find (a page listing the account's
+  it when it works again. Put "Open a ticket" somewhere easy to find (a page listing the user's
   tickets with status, a form with subject + description, a Close button per open ticket).
 
 ### Provider (operator) access

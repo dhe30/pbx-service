@@ -85,8 +85,7 @@ export function Support() {
     return tickets.filter((ticket) =>
       ticket.subject.toLowerCase().includes(query)
       || ticket.description.toLowerCase().includes(query)
-      || ticket.id.toLowerCase().includes(query)
-      || ticket.createdByEmail?.toLowerCase().includes(query),
+      || ticket.id.toLowerCase().includes(query),
     );
   }, [search, tickets]);
 
@@ -163,7 +162,7 @@ export function Support() {
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Support</h1>
-          <p className="mt-2 text-gray-500">Submit an issue and track support requests for your business.</p>
+          <p className="mt-2 text-gray-500">Submit an issue and track your support requests.</p>
         </div>
         <button
           type="button"
@@ -187,12 +186,12 @@ export function Support() {
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <p className="text-sm font-medium text-gray-500">Open tickets</p>
           <p className="mt-2 text-3xl font-bold text-blue-600">{ticketSummary?.open ?? "—"}</p>
-          <p className="mt-1 text-xs text-gray-400">All open tickets for this business</p>
+          <p className="mt-1 text-xs text-gray-400">Your open tickets</p>
         </section>
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <p className="text-sm font-medium text-gray-500">Closed tickets</p>
           <p className="mt-2 text-3xl font-bold text-green-600">{ticketSummary?.closed ?? "—"}</p>
-          <p className="mt-1 text-xs text-gray-400">All closed tickets for this business</p>
+          <p className="mt-1 text-xs text-gray-400">Your closed tickets</p>
         </section>
       </div>
 
@@ -200,7 +199,7 @@ export function Support() {
         <section className="rounded-xl border border-gray-200 bg-white p-6">
           <div className="mb-5">
             <h2 className="text-lg font-semibold text-gray-900">Submit a support ticket</h2>
-            <p className="mt-1 text-sm text-gray-500">Describe the issue. Tickets are visible to other users in your business.</p>
+            <p className="mt-1 text-sm text-gray-500">Describe the issue. Only you and the support team can see your ticket.</p>
           </div>
           <form onSubmit={(event) => void submitTicket(event)} className="space-y-5">
             <label className="block">
@@ -243,8 +242,8 @@ export function Support() {
       <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
         <div className="flex flex-col justify-between gap-4 border-b border-gray-200 p-5 lg:flex-row lg:items-center">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Business tickets</h2>
-            <p className="mt-1 text-sm text-gray-500">Ticket history shared by your business users.</p>
+            <h2 className="text-lg font-semibold text-gray-900">My tickets</h2>
+            <p className="mt-1 text-sm text-gray-500">Your support ticket history.</p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
             <input
@@ -276,7 +275,6 @@ export function Support() {
               <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
                   <th className="px-5 py-4 font-medium">Ticket</th>
-                  <th className="px-5 py-4 font-medium">Submitted by</th>
                   <th className="px-5 py-4 font-medium">Date</th>
                   <th className="px-5 py-4 font-medium">Status</th>
                   <th className="px-5 py-4 text-right font-medium">Details</th>
@@ -289,7 +287,6 @@ export function Support() {
                       <p className="font-medium text-gray-900">{ticket.subject}</p>
                       <p className="mt-1 text-xs text-gray-500">{shortId(ticket.id)}</p>
                     </td>
-                    <td className="px-5 py-4 text-gray-600">{ticket.createdByEmail ?? "Account user"}</td>
                     <td className="whitespace-nowrap px-5 py-4 text-gray-600">{formatDate(ticket.createdAt)}</td>
                     <td className="px-5 py-4"><StatusBadge status={ticket.status} /></td>
                     <td className="px-5 py-4 text-right">
@@ -330,7 +327,6 @@ export function Support() {
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <StatusBadge status={selectedTicket.status} />
               <span className="text-sm text-gray-500">Submitted {formatDate(selectedTicket.createdAt)}</span>
-              {selectedTicket.createdByEmail && <span className="text-sm text-gray-500">by {selectedTicket.createdByEmail}</span>}
             </div>
             <div className="mt-6">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400">Description</h3>
