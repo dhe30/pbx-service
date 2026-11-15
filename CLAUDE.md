@@ -416,9 +416,12 @@ node_exporter 9100 and other exporters.
   changing app nodes -> rerun edge (HAProxy reload); changing edge nodes -> rerun pbx (trunk IPs).
 - App images: built in CI (self-hosted runner on mon-1), pushed to a registry (ghcr.io or
   self-hosted registry:2 if outbound internet is restricted), deployed by Ansible.
-- Graceful drain for pbx nodes before deploy: set dispatcher state DISABLED (`d`, not `i`: with
-  ds_probing_mode=1 the OPTIONS pings re-activate an inactive node) on both Kamailios, wait until
-  active calls == 0 (or timeout), deploy, re-enable (`a`). Steps: README §2.4.
+- Graceful drain for pbx nodes, automated (infra/ansible/tasks/pbx-rollout.yml, site.yml pbx play):
+  the roles install everything and only RECORD needed restarts (pbx_defer_restarts); reloadable
+  Asterisk configs are reloaded live (asterisk_reload_commands). If a restart is pending: dispatcher
+  state DISABLED (`d`, not `i`: with ds_probing_mode=1 the OPTIONS pings re-activate an inactive
+  node) on every edge, wait for 0 calls (pbx_drain_wait_min), restart, /health, re-enable (`a`).
+  Options and failure handling: README §2.4. V-T17.
 - Rebuild a dead node: recreate VM with StackScript -> update inventory -> run playbook for that
   node + dependent groups.
 - Cloud deploy (2026-11-11): inventory/production.ini (addresses, ProxyJump via edge-1); API/DID

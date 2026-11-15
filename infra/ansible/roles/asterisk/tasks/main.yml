@@ -127,6 +127,19 @@
     group: asterisk
     mode: "0640"
   loop: "{{ asterisk_config_files }}"
+  register: asterisk_configs
+
+# Changed files Asterisk can reload (asterisk_reload_commands) are applied below without dropping
+# calls; any other changed file needs a restart.
+- name: Changed Asterisk configs that need a restart
+  ansible.builtin.debug:
+    msg: "restart needed for: {{ asterisk_restart_configs | join(', ') }}"
+  vars:
+    asterisk_restart_configs: >-
+      {{ asterisk_configs.results | selectattr('changed') | map(attribute='item')
+         | reject('in', asterisk_reload_commands.keys() | list) | list }}
+  changed_when: true
+  when: asterisk_restart_configs | length > 0
   notify: Restart asterisk
 
 - name: Asterisk systemd unit
@@ -142,3 +155,25 @@
     enabled: true
     state: started
     daemon_reload: true
+
+- name: Wait for the Asterisk CLI
+  ansible.builtin.command: asterisk -rx 'core show version'
+  register: asterisk_cli
+  retries: 15
+  delay: 2
+  until: asterisk_cli.rc == 0
+  changed_when: false
+  when: asterisk_configs.results | selectattr('changed') | list | length > 0
+
+# Calls stay up. If a restart is also pending it re-reads everything anyway; reloading first is
+# harmless.
+- name: Reload changed Asterisk configs (calls stay up)
+  ansible.builtin.command: asterisk -rx '{{ asterisk_reload_commands[item.item] }}'
+  loop: "{{ asterisk_configs.results | selectattr('changed') | selectattr('item', 'in', asterisk_reload_commands.keys() | list) | list }}"
+  loop_control:
+    label: "{{ item.item }}: {{ asterisk_reload_commands[item.item] }}"
+  register: asterisk_reloads
+  changed_when: true
+  failed_when: >-
+    asterisk_reloads.rc != 0 or
+    (asterisk_reloads.stdout is search('(?i)(unable|fail|no such|not found|not loaded|error)'))

@@ -1,6 +1,17 @@
 ---
-- name: Restart ari-app
+# Restarting the call app ends the node's calls (on start it hangs up channels it didn't create).
+# With pbx_defer_restarts (site.yml) the restart is only recorded here and done by
+# tasks/pbx-rollout.yml after draining the node.
+- name: Restart ari-app now
+  listen: Restart ari-app
   ansible.builtin.systemd:
     name: pbx-ari-app
     state: restarted
     daemon_reload: true
+  when: not (pbx_defer_restarts | default(false) | bool)
+
+- name: Record that ari-app needs a restart
+  listen: Restart ari-app
+  ansible.builtin.set_fact:
+    pbx_pending_restarts: "{{ (pbx_pending_restarts | default([])) + ['ari-app'] }}"
+  when: pbx_defer_restarts | default(false) | bool

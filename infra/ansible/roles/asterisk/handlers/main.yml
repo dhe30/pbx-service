@@ -1,8 +1,16 @@
 ---
-# NOTE: restarting Asterisk drops calls in progress on this node. Phase 4 adds a drain step
-# (dispatcher inactive -> wait for 0 calls) before restarts.
-- name: Restart asterisk
+# Restarting Asterisk drops the node's calls. With pbx_defer_restarts (site.yml) the restart is
+# only recorded here and done by tasks/pbx-rollout.yml after draining the node.
+- name: Restart asterisk now
+  listen: Restart asterisk
   ansible.builtin.systemd:
     name: asterisk
     state: restarted
     daemon_reload: true
+  when: not (pbx_defer_restarts | bool)
+
+- name: Record that asterisk needs a restart
+  listen: Restart asterisk
+  ansible.builtin.set_fact:
+    pbx_pending_restarts: "{{ (pbx_pending_restarts | default([])) + ['asterisk'] }}"
+  when: pbx_defer_restarts | bool
