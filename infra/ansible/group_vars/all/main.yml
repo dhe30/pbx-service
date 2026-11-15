@@ -62,7 +62,8 @@ rtpengine_ips: "{{ (groups.get('media') or groups['edge']) | map('extract', host
 # (Record-Route ;rs=1), so flipping the switch never moves a call in progress.
 rtpengine_edge_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
 rtpengine_media_ips: "{{ groups.get('media', []) | map('extract', hostvars, 'private_ip') | list }}"
-rtpengine_media_new_calls: 0
+# 1 since 2026-11-15 (switched live at ~21:35 UTC; media-1 + media-2 carry new calls).
+rtpengine_media_new_calls: 1
 # Other edges, as seen from this host (empty for a single edge).
 edge_peer_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | reject('equalto', private_ip) | list }}"
 # Where the public listeners bind. Same as public_ip unless the provider NATs the public IP

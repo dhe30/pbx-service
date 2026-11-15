@@ -427,9 +427,9 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
     expect(kam).toContain('modparam("rtpengine", "setid_avp", "$avp(rtpset)")');
   });
 
-  it('a live switch, off after a restart unless group_vars says otherwise', () => {
+  it('a live switch; after a restart it starts at group_vars rtpengine_media_new_calls (1 since 2026-11-15)', () => {
     expect(kam).toMatch(/^loadmodule "cfg_rpc\.so"$/m);
-    expect(kam).toMatch(/^pbx\.media_rtp = 0 desc /m);
+    expect(kam).toMatch(/^pbx\.media_rtp = 1 desc /m);
     expect(block(kam, 'route[RTP_SET_NEW]')).toContain('if ($sel(cfg_get.pbx.media_rtp) == 1) $avp(rtpset) = 1;');
   });
 
