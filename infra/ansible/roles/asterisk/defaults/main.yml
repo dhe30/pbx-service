@@ -14,3 +14,23 @@ asterisk_config_files:
   - prometheus.conf
   - musiconhold.conf
   - indications.conf  # ringback/busy tones; ring.ts plays tone:ring;tonezone=us
+
+# A changed config file listed here is applied with this CLI command while Asterisk runs (calls
+# stay up). Any other changed file (asterisk.conf, modules.conf, ari.conf, http.conf), a new
+# Asterisk build or a unit change needs a restart, which drops the node's calls: site.yml then
+# drains the node first (tasks/pbx-rollout.yml). ari.conf / http.conf restart rather than reload:
+# reloading res_ari / http could drop the ARI WebSocket, and the call app then exits and hangs up
+# every call. pjsip: a TRANSPORT change still needs a restart (transports don't reload).
+asterisk_reload_commands:
+  logger.conf: logger reload
+  pjsip.conf: module reload res_pjsip.so
+  extensions.conf: dialplan reload
+  rtp.conf: module reload res_rtp_asterisk.so
+  prometheus.conf: module reload res_prometheus.so
+  musiconhold.conf: moh reload
+  indications.conf: module reload indications
+
+# true (site.yml): "Restart asterisk" / "Restart ari-app" only record that a restart is needed;
+# tasks/pbx-rollout.yml drains the node, restarts, and puts it back. false (phase1 all-in-one):
+# restart right away.
+pbx_defer_restarts: false

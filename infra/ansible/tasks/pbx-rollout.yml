@@ -1,0 +1,123 @@
+---
+# Restart Asterisk / the call app on ONE pbx node without dropping calls (site.yml, pbx play,
+# serial: 1). The roles only record what needs a restart (pbx_pending_restarts, handlers with
+# pbx_defer_restarts); config changes Asterisk can reload were already applied live.
+#
+# Nothing pending -> nothing happens (no drain). Otherwise:
+#   1. dispatcher state d (disabled) for this node on every edge: no new calls. `d`, not `i`:
+#      the edges' OPTIONS pings switch an inactive node back on (ds_probing_mode=1).
+#   2. wait until Asterisk has 0 active calls, up to pbx_drain_wait_min (calls last up to ~35 min).
+#   3. restart what is pending, wait for the call app's /health.
+#   4. dispatcher state a on every edge.
+# On a drain timeout the node is put back (state a) and the play stops, unless
+# -e pbx_drain_on_timeout=deploy (restart anyway: the remaining calls are dropped).
+# -e pbx_drain=false skips 1-2 (emergency: restart now, calls dropped).
+
+- name: Restarts pending on this node
+  ansible.builtin.set_fact:
+    pbx_restarts: "{{ pbx_pending_restarts | default([]) | unique | list }}"
+
+- name: Nothing to restart (configs were reloaded live, or nothing changed)
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: no restart needed, node stays in service"
+  when: pbx_restarts | length == 0
+
+- name: Drain, restart, put back
+  when: pbx_restarts | length > 0
+  vars:
+    pbx_ds_uri: "sip:{{ private_ip }}:{{ asterisk_sip_port | default(5060) }}"
+    pbx_drain_enabled: "{{ pbx_drain | default(true) | bool }}"
+  block:
+    - name: "Drain {{ inventory_hostname }} on every edge (dispatcher state d)"
+      ansible.builtin.command: kamcmd dispatcher.set_state d 1 {{ pbx_ds_uri }}
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['edge'] }}"
+      changed_when: true
+      when: pbx_drain_enabled
+
+    - name: Calls on this node when the drain started
+      ansible.builtin.shell: |
+        asterisk -rx 'core show channels count' | grep 'active call'
+        asterisk -rx 'core show channels concise' | awk -F'!' '$12 > max {max = $12} END {printf "longest call so far: %d min\n", max / 60}'
+      register: pbx_drain_start
+      changed_when: false
+      when: pbx_drain_enabled
+
+    - name: "Waiting for 0 calls (up to {{ pbx_drain_wait_min | default(45) }} min; started with: {{ pbx_drain_start.stdout_lines | default([]) | join(', ') }})"
+      ansible.builtin.command: asterisk -rx 'core show channels count'
+      register: pbx_calls
+      # "N active calls" -> N (no capture group: Jinja turns '\1' into a control character).
+      until: (((pbx_calls.stdout | regex_search('[0-9]+(?= active call)')) or '1') | int) == 0
+      retries: "{{ ((pbx_drain_wait_min | default(45) | int) * 60 / 15) | int }}"
+      delay: 15
+      changed_when: false
+      failed_when: false
+      when: pbx_drain_enabled
+
+    - name: Drain timed out
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} still has calls after {{ pbx_drain_wait_min | default(45) }} min
+          ({{ pbx_calls.stdout_lines | default([]) | join(', ') }}). Putting it back in service, nothing restarted.
+          Re-run later, or with -e pbx_drain_on_timeout=deploy to restart anyway (drops those calls).
+      when:
+        - pbx_drain_enabled
+        - (((pbx_calls.stdout | default('') | regex_search('[0-9]+(?= active call)')) or '1') | int) > 0
+        - (pbx_drain_on_timeout | default('abort')) != 'deploy'
+
+    - name: Mark the restart as started (from here a failure leaves the node drained)
+      ansible.builtin.set_fact:
+        pbx_rollout_restarting: true
+
+    - name: Restart Asterisk
+      ansible.builtin.systemd:
+        name: asterisk
+        state: restarted
+        daemon_reload: true
+      when: "'asterisk' in pbx_restarts"
+
+    # After an Asterisk restart the call app loses its ARI WebSocket and exits anyway; restarting
+    # it here as well keeps the order deterministic.
+    - name: Restart the call app
+      ansible.builtin.systemd:
+        name: pbx-ari-app
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait until the call app is healthy (ARI connected + DB reachable)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9101/health
+      register: pbx_health
+      retries: 45
+      delay: 2
+      until: pbx_health.status == 200
+
+    - name: "Put {{ inventory_hostname }} back on every edge (dispatcher state a)"
+      ansible.builtin.command: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['edge'] }}"
+      changed_when: true
+
+    - name: Restarts done
+      ansible.builtin.set_fact:
+        pbx_pending_restarts: []
+        pbx_rollout_restarting: false
+
+  rescue:
+    # Failed before restarting (e.g. drain timeout): the node still runs the old processes, so it
+    # can take calls again. Failed during/after the restart: leave it drained for a human.
+    - name: Put the node back in service (nothing was restarted)
+      ansible.builtin.command: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['edge'] }}"
+      changed_when: true
+      when: not (pbx_rollout_restarting | default(false))
+
+    - name: Stop the rollout
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }}: rollout failed at "{{ ansible_failed_task.name }}".
+          {% if not (pbx_rollout_restarting | default(false)) %}It is back in service; nothing was restarted.
+          {% elif pbx_drain_enabled %}The node is LEFT DRAINED (dispatcher state d on every edge). Fix it,
+          check `curl -s 127.0.0.1:9101/health`, then on both edges: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
+          {% else %}It was not drained (pbx_drain=false); fix it and check `curl -s 127.0.0.1:9101/health`.{% endif %}

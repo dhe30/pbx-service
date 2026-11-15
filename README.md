@@ -163,15 +163,23 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
 - **Start / stop:** every service is a systemd unit: `kamailio`, `rtpengine-daemon`, `haproxy`
   (edges); `asterisk`, `pbx-ari-app` (pbx); `pbx-api`, `nginx` (app); `patroni`, `etcd`, `garage`
   (db); `pbx-dbproxy` on every DB client.
-- **Drain a pbx node** before deploying it (a pbx deploy restarts Asterisk and the ARI app, which
-  drops that node's calls), one node at a time:
-  1. On both edges: `kamcmd dispatcher.set_state d 1 sip:<pbx-ip>:5060`. Use `d` (disabled): the
-     edges' health pings switch an `i` (inactive) node back on within seconds. `kamcmd
-     dispatcher.list` then shows its `FLAGS` starting with `D`.
-  2. Wait for `asterisk -rx "core show channels count"` on the node to reach 0 active calls.
-  3. Deploy it: `ansible-playbook site.yml --ask-vault-pass --limit pbx-1` (or `pbx-2`).
-  4. On both edges: `kamcmd dispatcher.set_state a 1 sip:<pbx-ip>:5060` (`FLAGS` back to `AP`).
-     Only then drain the other node.
+- **pbx deploys drain by themselves.** Restarting Asterisk or the call app drops that node's
+  calls, so `--limit pbx` installs everything first and then, one node at a time, only if a
+  restart is needed (`infra/ansible/tasks/pbx-rollout.yml`):
+  1. dispatcher state `d` for the node on both edges (no new calls; `d`, not `i`, which the
+     edges' pings switch back on),
+  2. waits for 0 calls (prints the count and the longest call at the start, then "retries left"
+     every 15 s; calls can last ~35 min, so a code deploy can take that long per node),
+  3. restarts, waits for the call app's `/health`, sets state `a` on both edges, next node.
+
+  Changes to `pjsip`, `extensions`, `rtp`, `musiconhold`, `indications`, `logger` or `prometheus`
+  configs are **reloaded live** and need no drain; `asterisk.conf`, `modules.conf`, `ari.conf`,
+  `http.conf`, a new Asterisk version and call-app code need a restart. Options:
+  `-e pbx_drain_wait_min=60` (default 45); on a timeout the node goes back in service and the play
+  stops, or `-e pbx_drain_on_timeout=deploy` restarts anyway (drops the remaining calls);
+  `-e pbx_drain=false` restarts without draining (emergency). If a restart fails the node is left
+  drained, and the message says how to put it back (`kamcmd dispatcher.set_state a 1
+  sip:<pbx-ip>:5060` on both edges).
 
 ### 2.5 Testing
 

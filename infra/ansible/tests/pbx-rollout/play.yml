@@ -1,0 +1,21 @@
+- hosts: pbx
+  gather_facts: false
+  environment:
+    PATH: "{{ playbook_dir }}/bin:{{ ansible_env_path | default('/usr/local/bin:/usr/bin:/bin') }}"
+    ROLLOUT_LOG: "{{ playbook_dir }}/rollout.log"
+    CALLS_FILE: "{{ playbook_dir }}/calls"
+  vars:
+    asterisk_reload_commands: {logger.conf: logger reload, pjsip.conf: module reload res_pjsip.so}
+  tasks:
+    - name: classification (restart vs reload)
+      vars:
+        asterisk_configs: {results: [{item: pjsip.conf, changed: true}, {item: asterisk.conf, changed: false}, {item: ari.conf, changed: true}, {item: logger.conf, changed: false}]}
+        restart_cfgs: >-
+          {{ asterisk_configs.results | selectattr('changed') | map(attribute='item')
+             | reject('in', asterisk_reload_commands.keys() | list) | list }}
+        reload_items: "{{ asterisk_configs.results | selectattr('changed') | selectattr('item', 'in', asterisk_reload_commands.keys() | list) | map(attribute='item') | list }}"
+      ansible.builtin.assert:
+        that:
+          - "restart_cfgs == ['ari.conf']"
+          - "reload_items == ['pjsip.conf']"
+    - ansible.builtin.include_tasks: "{{ rollout }}"

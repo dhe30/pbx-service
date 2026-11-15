@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake Asterisk CLI: "core show channels count" reports the number in $CALLS_FILE, then decrements it.
+case "$2" in
+  'core show channels count')
+    n=$(cat "$CALLS_FILE"); echo "$((n*2)) active channels"; echo "$n active calls"; echo "100 calls processed"
+    [ "$n" -gt 0 ] && echo $((n-1)) > "$CALLS_FILE"; echo "asterisk count -> $n" >> "$ROLLOUT_LOG" ;;
+  'core show channels concise') echo 'PJSIP/x!c!e!1!Up!Stasis!!!!!3!600!b!u' ;;
+  *) echo "asterisk $2" >> "$ROLLOUT_LOG" ;;
+esac

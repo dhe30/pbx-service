@@ -54,7 +54,14 @@
 - hosts: pbx
   become: true
   serial: 1
+  # Restarts that would drop calls are deferred to pbx-rollout.yml, which drains the node first
+  # (and skips the drain when only reloadable configs changed). README 2.4.
+  vars:
+    pbx_defer_restarts: true
   roles: [asterisk, ari_app]
+  post_tasks:
+    - name: Roll out restarts (drain -> restart -> back in service)
+      ansible.builtin.include_tasks: tasks/pbx-rollout.yml
 
 # rtpengine runs on dedicated media nodes when the inventory has a "media" group (B3), else on the edges.
 - hosts: "{{ 'media' if groups.get('media') else 'edge' }}"
