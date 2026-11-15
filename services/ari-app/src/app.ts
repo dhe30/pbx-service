@@ -31,9 +31,11 @@ export class PbxApp {
     const taken = this.ctx.bus.dispatch(ev);
     switch (ev.type) {
       case 'StasisStart': {
-        const [src = '', user = ''] = ev.args;
+        // Stasis(pbx-app,<source>,<SIP user>,<SIP Call-ID>) (extensions.conf). The Call-ID is last
+        // and re-joined in case it contains a comma; older dialplans pass only two arguments.
+        const [src = '', user = '', ...callIdParts] = ev.args;
         if (src === 'carrier' || src === 'inbound' || src === 'device') {
-          this.start(ev.channel, src === 'device' ? 'device' : 'carrier', user);
+          this.start(ev.channel, src === 'device' ? 'device' : 'carrier', user, callIdParts.join(','));
         } else if (src.startsWith('outbound:') && !taken) {
           // A leg answered after we stopped waiting for it (caller left, or someone else won).
           this.log.info({ ch: ev.channel.id }, 'late answer on abandoned leg; hanging up');
@@ -52,11 +54,21 @@ export class PbxApp {
     }
   }
 
-  private start(ch: Channel, kind: 'carrier' | 'device', sipUser: string): void {
-    const s = new CallSession(ch.id, ch.caller.number, ch.dialplan.exten, this.log.child({ ch: ch.id, kind }), (from, to, sess) => {
-      if (this.sessions.get(from) === sess) this.sessions.delete(from);
-      this.sessions.set(to, sess);
-    });
+  private start(ch: Channel, kind: 'carrier' | 'device', sipUser: string, sipCallId: string): void {
+    // `sip` (the SIP Call-ID) is on every line of the call: the same id the edges' SIP captures,
+    // rtpengine and the per-call audio records use, so one call can be followed end to end.
+    const bindings = sipCallId ? { ch: ch.id, kind, sip: sipCallId } : { ch: ch.id, kind };
+    const s = new CallSession(
+      ch.id,
+      ch.caller.number,
+      ch.dialplan.exten,
+      this.log.child(bindings),
+      (from, to, sess) => {
+        if (this.sessions.get(from) === sess) this.sessions.delete(from);
+        this.sessions.set(to, sess);
+      },
+      sipCallId,
+    );
     this.sessions.set(ch.id, s);
     metrics.activeCalls.inc();
     const flow = (kind === 'device' ? handleDeviceCall(this.ctx, s, sipUser) : handleCarrierCall(this.ctx, s))
@@ -76,7 +88,8 @@ export class PbxApp {
       metrics.callsTotal.inc({ direction: c.direction, outcome: c.outcome });
       await this.ctx.cdr.submit(c).catch((err) => s.log.error({ err, cdr: c }, 'could not spool CDR'));
     }
-    s.log.info({ outcome: s.main?.outcome, legs: cdrs.length }, 'call ended');
+    // The whole route trace rides on this one line (src/trace.ts).
+    s.log.info({ outcome: s.main?.outcome, legs: cdrs.length, trace: s.trace.toJSON() }, 'call ended');
   }
 
   /** Wait for every running call flow (tests, graceful shutdown). */

@@ -228,7 +228,8 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('dialplan hands every call to Stasis with the source and SIP user from Kamailio', () => {
       const ext = read('pbx-1', 'extensions.conf');
       expect(ext).toMatch(/exten => _\[\+\*#0-9\]!,1/); // *98 and extension numbers too
-      expect(ext).toMatch(/Stasis\(pbx-app,\$\{PJSIP_HEADER\(read,X-PBX-Src\)\},\$\{PJSIP_HEADER\(read,X-PBX-User\)\}\)/);
+      // 3rd argument: the SIP Call-ID, for matching the app's logs with edge captures (2026-11-15).
+      expect(ext).toMatch(/Stasis\(pbx-app,\$\{PJSIP_HEADER\(read,X-PBX-Src\)\},\$\{PJSIP_HEADER\(read,X-PBX-User\)\},\$\{CHANNEL\(pjsip,call-id\)\}\)/);
       expect(ext).toMatch(/Hangup\(34\)/);
     });
   });

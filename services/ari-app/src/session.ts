@@ -5,6 +5,7 @@ import type { HangupReason } from './ari/types.js';
 import type { Logger } from './log.js';
 import type { PendingCdr } from './repo.js';
 import type { TenantConfig } from './tenant.js';
+import { CallTrace, tracedLogger } from './trace.js';
 
 /** Thrown (via AbortSignal) into a call flow when the caller hangs up. */
 export class HangupError extends Error {
@@ -90,14 +91,26 @@ export class CallSession {
    */
   primaryHandedOver = false;
 
+  /** Ordered steps of this call, logged once on "call ended" (src/trace.ts). */
+  readonly trace = new CallTrace();
+  public log: Logger;
+
   constructor(
     public primary: string,
     readonly callerNumber: string,
     readonly exten: string,
-    public log: Logger,
+    log: Logger,
     private readonly onRebind: (from: string, to: string, s: CallSession) => void = () => {},
+    /** The SIP Call-ID of the call as it reached Asterisk (= the edges' Call-ID); '' if unknown. */
+    readonly sipCallId = '',
   ) {
     this.ringCallerId = callerNumber;
+    this.log = tracedLogger(log, this.trace);
+  }
+
+  /** A routing step for the trace only (no log line of its own). */
+  step(msg: string, fields?: Record<string, unknown>): void {
+    this.trace.add(0, msg, fields);
   }
 
   get signal(): AbortSignal {

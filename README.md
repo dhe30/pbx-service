@@ -474,6 +474,7 @@ Detailed reasoning: [docs/spec-transition.md](docs/spec-transition.md) (telephon
 | API answers 503 | `curl :3000/ready` on the app node (DB + S3); local proxy stats; `patronictl list` |
 | CDRs missing | ARI app's CDR spool and logs; they flush once the primary is back |
 | Course dashboard shows high SIP or API latency | `loadtest/diag/`: `sip-retransmits.py` on an edge capture, `haproxy-slow.py`, `api-routes.sh` (usage in each file header) |
+| A failure or ticket at a known time: what did that call do? | On the pbx node: `journalctl -u pbx-ari-app -o cat \| grep '"msg":"call ended"'`. Each line has the call's SIP Call-ID (`sip`, the same id as in edge captures and `/var/log/pbx/call-audio.jsonl`) and its ordered route trace (`trace.steps`: route targets, business hours with local time, IVR digits, forwarding, ring results, transfers, voicemail) |
 | Stale types after changing `services/shared` | `npm run build -w @pbx/shared` |
 
 Other tools: `sngrep` (SIP call flow on an edge), `kamcmd dispatcher.list`,
