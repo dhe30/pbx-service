@@ -15,3 +15,13 @@
   ansible.builtin.set_fact:
     pbx_pending_restarts: "{{ (pbx_pending_restarts | default([])) + ['ari-app'] }}"
   when: pbx_defer_restarts | default(false) | bool
+
+# Survives an interrupted rollout (see roles/asterisk/handlers).
+- name: Record on the node that ari-app needs a restart
+  listen: Restart ari-app
+  ansible.builtin.lineinfile:
+    path: "{{ pbx_restart_marker | default('/var/lib/pbx-restart-pending') }}"
+    line: ari-app
+    create: true
+    mode: "0644"
+  when: pbx_defer_restarts | default(false) | bool

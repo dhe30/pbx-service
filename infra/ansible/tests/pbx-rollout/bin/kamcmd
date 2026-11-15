@@ -1,2 +1,6 @@
 #!/bin/sh
-echo "kamcmd $*" >> "$ROLLOUT_LOG"
+# Fake kamcmd: dispatcher.list prints $DS_LIST_FILE; everything else is logged.
+case "$1" in
+  dispatcher.list) cat "$DS_LIST_FILE" ;;
+  *) echo "kamcmd $*" >> "$ROLLOUT_LOG" ;;
+esac

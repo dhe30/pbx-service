@@ -421,7 +421,9 @@ node_exporter 9100 and other exporters.
   Asterisk configs are reloaded live (asterisk_reload_commands). If a restart is pending: dispatcher
   state DISABLED (`d`, not `i`: with ds_probing_mode=1 the OPTIONS pings re-activate an inactive
   node) on every edge, wait for 0 calls (pbx_drain_wait_min), restart, /health, re-enable (`a`).
-  Options and failure handling: README §2.4. V-T17.
+  Options and failure handling: README §2.4. V-T17. Pending restarts are also written to
+  /var/lib/pbx-restart-pending on the node (survive an interrupted run; cleared after a healthy
+  restart), and the rollout refuses to drain a node when no other pbx node is in service.
 - Rebuild a dead node: recreate VM with StackScript -> update inventory -> run playbook for that
   node + dependent groups.
 - Cloud deploy (2026-11-11): inventory/production.ini (addresses, ProxyJump via edge-1); API/DID

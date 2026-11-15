@@ -180,6 +180,11 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   `-e pbx_drain=false` restarts without draining (emergency). If a restart fails the node is left
   drained, and the message says how to put it back (`kamcmd dispatcher.set_state a 1
   sip:<pbx-ip>:5060` on both edges).
+- **Stopped a pbx deploy halfway (Ctrl+C, timeout, failed restart)?** Just re-run it. A restart
+  that didn't happen yet is remembered on the node (`/var/lib/pbx-restart-pending`), so the
+  re-run drains and restarts it even though nothing "changed" any more. The rollout also refuses
+  to drain a node while the other pbx node is out of service (that would leave no pbx node): put
+  the other one back first.
 
 ### 2.5 Testing
 

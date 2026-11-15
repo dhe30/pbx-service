@@ -4,7 +4,9 @@
     PATH: "{{ playbook_dir }}/bin:{{ ansible_env_path | default('/usr/local/bin:/usr/bin:/bin') }}"
     ROLLOUT_LOG: "{{ playbook_dir }}/rollout.log"
     CALLS_FILE: "{{ playbook_dir }}/calls"
+    DS_LIST_FILE: "{{ playbook_dir }}/ds.list"
   vars:
+    pbx_restart_marker: "{{ playbook_dir }}/marker"
     asterisk_reload_commands: {logger.conf: logger reload, pjsip.conf: module reload res_pjsip.so}
   tasks:
     - name: classification (restart vs reload)
