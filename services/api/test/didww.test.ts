@@ -243,6 +243,22 @@ describe('HttpDidwwProvider', () => {
     expect(last('/v3/dids/did-9').body).toEqual({ data: { type: 'dids', id: 'did-9', attributes: { billing_cycles_count: 0 } } });
   });
 
+  it('asks DIDWW once for countries, regions and cities, then answers from memory', async () => {
+    const fresh = new HttpDidwwProvider({ baseUrl: (didww as unknown as { o: { baseUrl: string } }).o.baseUrl, apiKey: 'secret-key', trunk: { type: 'voice_in_trunks', id: 't' } });
+    const count = (path: string) => seen.filter((s) => s.url.startsWith(path)).length;
+    const before = { countries: count('/v3/countries'), regions: count('/v3/regions'), cities: count('/v3/cities') };
+    for (let i = 0; i < 3; i++) {
+      expect(await fresh.countries()).toEqual([{ iso: 'US', name: 'United States', prefix: '1' }]);
+      expect(await fresh.regions('us')).toEqual([{ id: 'reg-nj', name: 'New Jersey' }]);
+      expect(await fresh.regions('US')).toHaveLength(1); // same key whatever the case
+      expect(await fresh.cities('US', 'reg-nj')).toHaveLength(2);
+    }
+    // countries: the list once + the ISO -> id lookup once (regions/cities share it).
+    expect(count('/v3/countries') - before.countries).toBe(2);
+    expect(count('/v3/regions') - before.regions).toBe(1);
+    expect(count('/v3/cities') - before.cities).toBe(1);
+  });
+
   it('turns errors into DidProviderError with the first JSON:API error', async () => {
     const bad = new HttpDidwwProvider({ baseUrl: (didww as unknown as { o: { baseUrl: string } }).o.baseUrl, apiKey: 'wrong', trunk: { type: 'voice_in_trunks', id: 't' } });
     const err = await bad.countries().catch((e: unknown) => e);
