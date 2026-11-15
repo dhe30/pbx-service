@@ -93,7 +93,27 @@ Remaining exposure: Asterisk still re-INVITEs if it becomes the session-timer re
    Checked offline only: SIPp flow against a fake edge that answers the refresh with `4 101`, the
    analyzer on captures with and without the flip, and `promtool test rules`; not yet run against
    the real edges.
-2. Test a 16-minute call (Asterisk as session-timer refresher).
+2. Test a 16-minute call (Asterisk as session-timer refresher). **In progress (2026-11-14).**
+   What the config and pjproject (`sip_timer.c`) say:
+   - Asterisk has no `timers*` settings, so the defaults apply: session timers on,
+     `timers_sess_expires=1800`, `timers_min_se=90`. As refresher it refreshes at half: ~900 s.
+   - It is the refresher when the phone asks for it (`refresher=uas`) and, on legs Asterisk places
+     (ringing a desk phone, vendor/external legs), when the far side's 200 OK does not take the
+     role. A phone that refreshes itself (the course's callers: `Session-Expires: 90`, every 30 s)
+     keeps Asterisk out of it.
+   - pjsip refreshes with **UPDATE without SDP** if the far side's `Allow` lists UPDATE (Kamailio
+     never involves rtpengine then: harmless), otherwise with a **re-INVITE carrying SDP**, which
+     Kamailio's `INDLG_SDP` hands to rtpengine with the from-Asterisk flags: a five-codec re-offer
+     toward the phone, the same path as the connected-line re-INVITE above.
+   Test: `pbx-long-call-test <A's extension number> [edge]` on mon-1 (manual, ~16.5 min; scenarios
+   `files/quality/q_long_ua{c,s}.xml.tpl`, report by `long_call_check.py`). It forces the risky
+   case on both legs (no UPDATE in Allow; caller asks `refresher=uas`, callee does no timers),
+   answers Asterisk's re-INVITE with `4 0 8 18 101`, sends one re-INVITE of its own 30 s later,
+   and prints PASS / FLIP / INCONCLUSIVE with every refresh Asterisk sent. `ALLOW_UPDATE=1` runs
+   the UPDATE case. Results: not run yet. Still to find out from real traffic: whether the
+   course's phones (as callees) and the vendors include UPDATE in `Allow` and take the refresher
+   role themselves. Once `pbx-call-audio` (3.) is deployed, a flip on a real customer call longer
+   than 15 min would show up there as `format_mismatch` (unless it flips to PCMA).
 3. **Our own count of silent legs** (2026-11-14, not deployed yet): `pbx-call-audio` on each edge
    (`infra/ansible/roles/rtpengine/files/pbx-call-audio.py`) turns rtpengine's "Final packet stats"
    into one JSON line per call in `/var/log/pbx/call-audio.jsonl` (Call-ID, peer, codec, packets

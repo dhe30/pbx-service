@@ -1,0 +1,82 @@
+#!/bin/bash
+# Long-call test (managed by Ansible, roles/monitoring). MANUAL, not on a timer; run as root:
+#
+#   pbx-long-call-test <A's extension number> [edge-1|edge-2|...]      (default: the first edge)
+#
+# Follow-up 2 of docs/incidents/2026-11-14-codec-flip.md: does a call survive Asterisk refreshing
+# the session itself? Asterisk proposes Session-Expires {{ long_call_session_expires }}; when it is
+# the refresher it refreshes at half of that. pjsip refreshes with UPDATE (no SDP) if the other side's
+# Allow lists UPDATE, else with a re-INVITE carrying SDP, which rtpengine turns into a five-codec
+# re-offer toward the phone (the 2026-11-14 path). This places ONE call through one edge:
+#   caller = test extension B (digest auth only, NOT registered), offers 4 0 8 18 101, sends PCMU,
+#            asks Asterisk to refresh (refresher=uas), sends its own re-INVITE 30 s after Asterisk's
+#            refresh is due, hangs up 90 s after it;
+#   callee = test extension A, registered from here for the call only; answers PCMU without
+#            session-timer support (Asterisk refreshes this leg too) and answers re-INVITEs with
+#            4 0 8 18 101.
+# Both phones leave UPDATE out of Allow (the risky case). ALLOW_UPDATE=1 puts it in (expect UPDATE
+# refreshes without SDP). tcpdump records what reaches both phones; long_call_check.py prints the
+# refreshes Asterisk sent and judges each phone's codec after them (PASS / FLIP / INCONCLUSIVE).
+#
+# Roles are swapped on purpose: the every-minute synthetic call and the quality test only ring B
+# and only use A as a caller, so ringing A and calling FROM B (unregistered) collides with neither.
+# That is why this test does not take {{ synthetic_lock_file }}: holding it for ~17 min would
+# stop the synthetic call and fire SyntheticCheckNotRunning. Ports 5095/5096, media 6300/6400.
+#
+# Defaults (env overrides): SE={{ long_call_session_expires }} (Asterisk refreshes at SE/2),
+# REINVITE_AT=SE/2+30, HANGUP_AT=SE/2+90. Takes HANGUP_AT + ~5 s (16.5 min by default).
+set -u
+A_NUMBER=${1:?usage: pbx-long-call-test <A extension number> [edge name]}
+WANT_EDGE=${2:-}
+. /etc/pbx/synthetic-call.env        # A_USER A_PASSWORD B_USER B_PASSWORD B_NUMBER (root only)
+
+SHARE=/usr/local/share/pbx-quality
+REG=/usr/local/share/pbx-synthetic/syn_register.xml
+DOMAIN={{ sip_domain }}
+ME={{ hostvars[inventory_hostname].private_ip }}
+EDGES=({% for host in groups['edge'] | default([]) %}{{ hostvars[host].public_ip | default(hostvars[host].ansible_host) }}:{{ host }} {% endfor %})
+EDGE=""; EDGE_NAME=""
+for e in "${EDGES[@]}"; do
+  if [ -z "$WANT_EDGE" ] || [ "${e##*:}" = "$WANT_EDGE" ]; then EDGE=${e%%:*}; EDGE_NAME=${e##*:}; break; fi
+done
+[ -n "$EDGE" ] || { echo "unknown edge '$WANT_EDGE' (have: ${EDGES[*]})"; exit 1; }
+
+SE=${SE:-{{ long_call_session_expires }}}
+REINVITE_AT=${REINVITE_AT:-$((SE / 2 + 30))}
+HANGUP_AT=${HANGUP_AT:-$((SE / 2 + 90))}
+JUDGE_FROM=$((REINVITE_AT + 5))
+PTS="4 0 8 18 101"
+ALLOW="INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, REFER, NOTIFY"
+[ "${ALLOW_UPDATE:-0}" = 1 ] && ALLOW="$ALLOW, UPDATE"
+
+WORK=$(mktemp -d /var/tmp/pbx-long-call.XXXXXX)
+cd "$WORK"
+echo "$(date -u +%FT%TZ) $EDGE_NAME: B -> A ($A_NUMBER), Session-Expires $SE (Asterisk refresh due ~$((SE / 2)) s)," \
+     "own re-INVITE at $REINVITE_AT s, hangup at $HANGUP_AT s, Allow: $ALLOW. Files: $WORK"
+python3 "$SHARE/gen_pcap.py" caller.pcap PCMU 0 "$HANGUP_AT"
+python3 "$SHARE/gen_pcap.py" callee.pcap PCMU 0 "$HANGUP_AT"
+sub="s|@PTS@|$PTS|g; s|@SE@|$SE|g; s|@ALLOW@|$ALLOW|g; s|@REINVITE_S@|$REINVITE_AT|g; s|@HANGUP_S@|$HANGUP_AT|g"
+sed -e "$sub; s|@PCAP@|$WORK/caller.pcap|g" "$SHARE/q_long_uac.xml.tpl" > caller.xml
+sed -e "$sub; s|@PCAP@|$WORK/callee.pcap|g" "$SHARE/q_long_uas.xml.tpl" > callee.xml
+
+sipp_l() { sipp -nostdin -m 1 "$@"; }
+if ! sipp_l -timeout 10 -timeout_error -sf $REG -s "$A_USER" -key domain "$DOMAIN" -key expires $((HANGUP_AT + 120)) \
+     -au "$A_USER" -ap "$A_PASSWORD" -p 5095 "$EDGE:5060" >register.log 2>&1; then
+  echo "REGISTER of A failed (register.log)"; echo "VERDICT ERROR"; exit 1
+fi
+tcpdump -i any -nn -U -w call.pcap \
+  "udp and dst host $ME and (dst port 5095 or dst port 5096 or dst port 6300 or dst port 6400)" >/dev/null 2>&1 & TD=$!
+sleep 0.5
+sipp_l -timeout $((HANGUP_AT + 40)) -timeout_error -sf callee.xml -p 5095 -mp 6400 \
+  -trace_msg -message_file callee.sip.log "$EDGE:5060" >callee.out 2>&1 & U=$!
+sleep 0.3
+sipp_l -timeout $((HANGUP_AT + 30)) -timeout_error -sf caller.xml -s "$A_NUMBER" -key domain "$DOMAIN" -key from "$B_USER" \
+  -au "$B_USER" -ap "$B_PASSWORD" -p 5096 -mp 6300 -trace_msg -message_file caller.sip.log "$EDGE:5060" >caller.out 2>&1; rc_caller=$?
+wait $U; rc_callee=$?
+sleep 0.5; kill $TD 2>/dev/null; wait $TD 2>/dev/null
+sipp_l -timeout 10 -sf $REG -s "$A_USER" -key domain "$DOMAIN" -key expires 0 \
+  -au "$A_USER" -ap "$A_PASSWORD" -p 5095 "$EDGE:5060" >/dev/null 2>&1
+echo "SIPp exit codes: caller $rc_caller, callee $rc_callee (0 = scenario completed; SIP ladders: caller.sip.log, callee.sip.log)"
+python3 "$SHARE/long_call_check.py" call.pcap "$ME" 5096 5095 6300 6400 "$JUDGE_FROM"; verdict=$?
+[ $rc_caller = 0 ] && [ $rc_callee = 0 ] || [ $verdict = 2 ] || verdict=1
+exit $verdict
