@@ -202,6 +202,46 @@ describe('§3 Attended transfer', () => {
     expect(h.ctx.bus.size).toBe(0); // no leaked subscriptions
   });
 
+  it('consult call to an extension that forwards always: the extension itself rings', async () => {
+    // Live 2026-11-15: 103 held a caller and called 111 (forward always to an outside number); the
+    // consult went to that number and the transfer joined the caller with it, so 111 never rang.
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '103' });
+    await a.extension({ number: '111', forwardAlways: { type: 'external', number: '+16315550132' } });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['103']!.id });
+    h.ari.sip.set(a.ext['103']!.sip, { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['111']!.sip, { answerAfterMs: 5 });
+    h.ari.external.set('+16315550132', { answerAfterMs: 5 });
+    const caller = h.ari.carrierCall(did, '+16315550120');
+    const agent = await until(() => h.ari.peerOf(caller), 3000, 'connected');
+    h.ari.hold(agent);
+    await until(() => h.ari.channels.get(caller)!.moh);
+    const consult = h.ari.deviceCall(a.ext['103']!.sip, '111');
+    const target = await until(() => h.ari.peerOf(consult), 2000, 'consult connected');
+    expect(h.ari.legsTo(a.ext['111']!.sip).map((l) => l.id)).toContain(target);
+    expect(h.ari.legsTo('+16315550132')).toHaveLength(0);
+    h.ari.referAttended(agent, consult);
+    await until(() => h.ari.peerOf(caller) === target, 2000, 'caller joined with 111');
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
+  it('an ordinary call between extensions (nothing on hold) still follows forward always', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '103' });
+    await a.extension({ number: '111', forwardAlways: { type: 'external', number: '+16315550132' } });
+    await a.number(nextDid(), null);
+    h.ari.external.set('+16315550132', { answerAfterMs: 5 });
+    const ph = h.ari.deviceCall(a.ext['103']!.sip, '111');
+    await until(() => h.ari.legsTo('+16315550132')[0], 2000, 'forwarded to the outside number');
+    expect(h.ari.legsTo(a.ext['111']!.sip)).toHaveLength(0);
+    h.ari.remoteHangup(ph);
+    await h.settle();
+  });
+
   // Found on the deployed system (2026-11-12, softphone): the phone answers call 1, answers call 2
   // (call waiting, which holds call 1) and transfers call 1 to call 2. Both of the phone's legs are
   // channels WE originated, and each conversation's session routes the CALLER (B / C), so the

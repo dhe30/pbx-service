@@ -77,6 +77,11 @@ export class Conversation {
     this.who.set(channelId, party);
   }
 
+  /** Extensions of the parties currently holding this call (their phone put it on hold). */
+  holdingExtensions(): string[] {
+    return [...this.holding].map((ch) => this.who.get(ch)?.extension).filter((e): e is string => !!e);
+  }
+
   whoIs(channelId: string): Party | null {
     return this.who.get(channelId) ?? null;
   }
