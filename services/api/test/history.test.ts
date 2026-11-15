@@ -13,6 +13,7 @@ describe('history routes without a DB', () => {
     const id = randomUUID();
     for (const [method, url] of [
       ['GET', '/calls'],
+      ['GET', '/recordings'],
       ['GET', `/calls/${id}`],
       ['GET', `/calls/${id}/recording`],
       ['GET', '/voicemails'],
@@ -130,6 +131,8 @@ describe.skipIf(!db)('history (Postgres)', () => {
   let outgoing: { id: string; callId: string }; // 102 -> PSTN, intl
   let internal: { id: string; callId: string }; // 102 -> 101, busy
   let missed: { id: string; callId: string }; // PSTN -> 102, voicemail
+  let incomingRecording: { mediaId: string; key: string };
+  let outgoingRecording: { mediaId: string; key: string };
   const tied: string[] = []; // 3 legs with the same started_at (paging tie-break by id)
 
   beforeAll(async () => {
@@ -144,11 +147,14 @@ describe.skipIf(!db)('history (Postgres)', () => {
       callId: incoming.callId, parentId: incoming.id, direction: 'outgoing', from: '+15165550100', to: '+19175550199',
       startedAt: '2026-11-01T10:00:05Z', charge: 0.06,
     });
-    await audio(a, 'recording', incoming.callId);
+    incomingRecording = await audio(a, 'recording', incoming.callId);
     outgoing = await cdr(a, {
       direction: 'outgoing', from: '+15165550100', to: '+442071234567', did: '+15165550100', fromExt: '102',
       startedAt: '2026-11-02T09:30:00Z', cost: 0.020576, charge: 0.123456,
     });
+    outgoingRecording = await audio(a, 'recording', outgoing.callId);
+    await sql`update media set created_at = '2026-11-02T10:00:00Z' where id = ${outgoingRecording.mediaId}`;
+    await sql`update media set created_at = '2026-11-01T10:00:00Z' where id = ${incomingRecording.mediaId}`;
     internal = await cdr(a, { direction: 'internal', from: '102', to: '101', fromExt: '102', toExt: '101', startedAt: '2026-11-03T12:00:00Z', outcome: 'busy' });
     missed = await cdr(a, {
       direction: 'incoming', from: '+13125550111', to: '+15165550100', did: '+15165550100', toExt: '102',
@@ -180,7 +186,7 @@ describe.skipIf(!db)('history (Postgres)', () => {
         callId: outgoing.callId, parentId: null, direction: 'outgoing', fromNumber: '+15165550100',
         toNumber: '+442071234567', did: '+15165550100', fromExtension: '102', toExtension: null,
         startedAt: '2026-11-02T09:30:00.000Z', billableSec: 60, outcome: 'answered', voicemail: false,
-        cost: 0.020576, charge: 0.123456, recordingUrl: null,
+        cost: 0.020576, charge: 0.123456, recordingUrl: `/calls/${outgoing.callId}/recording`,
       });
       // Course spec §5: CDRs include cost (what we pay) and charge (what we bill).
       expect(out).not.toHaveProperty('pbxNode');
@@ -263,9 +269,32 @@ describe.skipIf(!db)('history (Postgres)', () => {
       }
       expect((await call(a.other, 'GET', `/calls/${incoming.callId}/recording`)).statusCode).toBe(404);
       expect((await call(b.owner, 'GET', `/calls/${incoming.callId}/recording`)).statusCode).toBe(404);
-      const none = await call(a.owner, 'GET', `/calls/${outgoing.callId}/recording`);
+      const none = await call(a.owner, 'GET', `/calls/${internal.callId}/recording`);
       expect(none.statusCode).toBe(404);
       expect(none.json().message).toMatch(/no recording/);
+    });
+  });
+
+  describe('GET /recordings', () => {
+    it('pages newest recordings and limits staff to calls involving their extensions', async () => {
+      const recordings = await call(a.owner, 'GET', '/recordings?limit=1');
+      expect(recordings.statusCode).toBe(200);
+      expect(recordings.json().items).toHaveLength(1);
+      expect(recordings.json().items[0]).toMatchObject({
+        id: outgoingRecording.mediaId,
+        callId: outgoing.callId,
+        direction: 'outgoing',
+        audioUrl: `/calls/${outgoing.callId}/recording`,
+      });
+      expect(recordings.json().nextCursor).toBeTruthy();
+      const next = await call(a.owner, 'GET', `/recordings?limit=1&cursor=${recordings.json().nextCursor}`);
+      expect(ids(next)).toEqual([incomingRecording.mediaId]);
+      expect(next.json().nextCursor).toBeNull();
+
+      expect(ids(await call(a.staff, 'GET', '/recordings'))).toEqual([incomingRecording.mediaId]);
+      expect(ids(await call(a.other, 'GET', '/recordings'))).toEqual([]);
+      expect(ids(await call(b.owner, 'GET', '/recordings'))).toEqual([]);
+      expect((await call(a.owner, 'GET', '/recordings?limit=201')).statusCode).toBe(400);
     });
   });
 

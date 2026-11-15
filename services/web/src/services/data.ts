@@ -44,6 +44,19 @@ export interface CallLeg {
     recordingUrl: string | null;
 }
 
+export interface CallRecording {
+    id: string;
+    callId: string;
+    direction: CallLeg["direction"];
+    fromNumber: string | null;
+    toNumber: string | null;
+    fromExtension: string | null;
+    toExtension: string | null;
+    startedAt: string;
+    billableSec: number;
+    audioUrl: string;
+}
+
 export interface VoicemailMessage {
     id: string;
     mailboxId: string;
@@ -242,6 +255,10 @@ export interface VoicemailsQuery {
 export const dataService = {
     async getCalls(params: CallsQuery = {}) {
         const { data } = await api.get<Page<CallLeg>>("/calls", { params });
+        return data;
+    },
+    async getRecordings(params: Pick<CallsQuery, "limit" | "cursor"> = {}) {
+        const { data } = await api.get<Page<CallRecording>>("/recordings", { params });
         return data;
     },
     async getVoicemails(params: VoicemailsQuery = {}) {

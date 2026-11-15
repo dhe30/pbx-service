@@ -9,6 +9,7 @@ Any logged-in user (see "Who sees what").
 | Route | Result | Errors |
 |---|---|---|
 | `GET /calls?from&to&direction&outcome&extension&number&limit&cursor` | `200 { items: [leg], nextCursor }` | 400 |
+| `GET /recordings?limit&cursor` | `200 { items: [recording], nextCursor }` | 400 |
 | `GET /calls/:callId` | `200 { callId, legs: [leg], recordingUrl }` | 404 |
 | `GET /calls/:callId/recording` | `200`/`206` WAV | 404, 416 |
 | `GET /voicemails?mailboxId&heard&limit&cursor` | `200 { items: [voicemail], nextCursor }` | 400 |
@@ -59,6 +60,10 @@ trigram index matches the expression. On the near-empty dev table the planner pi
 Newest first, keyset paging on `(started_at, id)` for calls and `(created_at, id)` for
 voicemails: `limit` 1-200 (default 50), and `nextCursor` is passed back as `cursor`. It is `null`
 on the last page.
+
+`GET /recordings` uses the same keyset paging contract, ordered by media creation time. Each
+recording row includes its call summary and an audio URL. Staff see recordings only for calls
+involving their extensions.
 
 - Keyset instead of OFFSET: stays fast deep into millions of CDRs, and calls arriving while
   someone pages don't shift rows between pages.

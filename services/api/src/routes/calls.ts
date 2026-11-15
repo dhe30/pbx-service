@@ -101,6 +101,30 @@ const SearchResult = z
   })
   .describe('A page of call history.');
 
+const RecordingSchema = z
+  .object({
+    id: z.string().uuid(),
+    callId: z.string().uuid(),
+    direction: z.enum(DIRECTIONS),
+    fromNumber: z.string().nullable(),
+    toNumber: z.string().nullable(),
+    fromExtension: z.string().nullable(),
+    toExtension: z.string().nullable(),
+    startedAt: z.string().datetime(),
+    billableSec: z.number().int(),
+    audioUrl: z.string(),
+  })
+  .describe('A call recording.');
+
+const RecordingPageSchema = z
+  .object({
+    items: z.array(RecordingSchema).describe('Recordings, newest first.'),
+    nextCursor: z.string().nullable().describe('Pass as `cursor` for the next page; null on the last page.'),
+  })
+  .describe('A page of call recordings.');
+
+const RecordingQuery = z.object(PageQuery);
+
 const CallSchema = z
   .object({
     callId: z.string().uuid().describe('Call id.'),
@@ -133,6 +157,19 @@ interface LegRow {
   charge: string;
   includedSec: number;
   hasRecording: boolean;
+  cursorTs: string;
+}
+
+interface RecordingRow {
+  id: string;
+  callId: string;
+  direction: (typeof DIRECTIONS)[number];
+  fromNumber: string | null;
+  toNumber: string | null;
+  fromExtension: string | null;
+  toExtension: string | null;
+  startedAt: Date;
+  billableSec: number;
   cursorTs: string;
 }
 
@@ -231,6 +268,63 @@ export const callRoutes: FastifyPluginAsync<{ sql: Sql; store: MediaStore }> = a
       );
       const { rows: items, nextCursor } = page(rows, q.limit);
       return { items: items.map(view), nextCursor };
+    },
+  );
+
+  app.get(
+    '/recordings',
+    withDoc(anyUser, {
+      tag: 'Calls',
+      auth: 'user',
+      summary: 'List call recordings',
+      description: 'Recordings newest first. Staff see recordings of calls involving their extensions. Paged with `cursor` / `nextCursor`.',
+      query: RecordingQuery,
+      responses: { 200: { description: 'A page of recordings', schema: RecordingPageSchema } },
+    }),
+    async (req) => {
+      const tenantId = tenantOf(req);
+      const q = parse(RecordingQuery, req.query);
+      const cursor = q.cursor ? decodeCursor(q.cursor) : null;
+      const exts = await visibleExtensions(sql, req.auth!);
+      if (exts && exts.length === 0) return { items: [], nextCursor: null };
+
+      const rows = await withRetry(
+        () => sql<RecordingRow[]>`
+          select m.id, m.call_id, c.direction, c.from_number, c.to_number, c.from_extension, c.to_extension,
+                 c.started_at, c.billable_sec,
+                 to_char(m.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_ts
+            from media m
+            join cdrs c on c.tenant_id = m.tenant_id and c.call_id = m.call_id and c.parent_id is null
+           where m.tenant_id = ${tenantId} and m.kind = 'recording'
+             ${
+               exts
+                 ? sql`and exists (
+                     select 1 from cdrs visible
+                      where visible.tenant_id = m.tenant_id and visible.call_id = m.call_id
+                        and (visible.from_extension = any(${exts}::text[]) or visible.to_extension = any(${exts}::text[]))
+                   )`
+                 : sql``
+             }
+             ${cursor ? sql`and (m.created_at, m.id) < (${cursor.ts}::timestamptz, ${cursor.id}::uuid)` : sql``}
+           order by m.created_at desc, m.id desc
+           limit ${q.limit + 1}`,
+      );
+      const { rows: items, nextCursor } = page(rows, q.limit);
+      return {
+        items: items.map((item) => ({
+          id: item.id,
+          callId: item.callId,
+          direction: item.direction,
+          fromNumber: item.fromNumber,
+          toNumber: item.toNumber,
+          fromExtension: item.fromExtension,
+          toExtension: item.toExtension,
+          startedAt: item.startedAt,
+          billableSec: item.billableSec,
+          audioUrl: recordingUrl(item.callId),
+        })),
+        nextCursor,
+      };
     },
   );
 
