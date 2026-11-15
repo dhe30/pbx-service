@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
-<!-- Quality test callee: answers with ONLY @CODEC@ (pt @PT@), plays 3 s of @CODEC@ audio,
+<!-- Quality test callee: answers with ONLY @CODEC@ (pt @PT@) + telephone-event 101 (as the course's
+     phones do: G.723 + 101 hit an rtpengine bug on 2026-11-15), plays 3 s of @CODEC@ audio,
      answers re-INVITEs with the same SDP, waits for the BYE. -->
 <scenario name="Quality callee @CODEC@">
   <recv request="INVITE" crlf="true"/>
@@ -23,9 +24,11 @@
       s=-
       c=IN IP[media_ip_type] [media_ip]
       t=0 0
-      m=audio [media_port] RTP/AVP @PT@
+      m=audio [media_port] RTP/AVP @PT@ 101
       a=rtpmap:@PT@ @RTPMAP@
       @EXTRA@
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
       a=ptime:@PTIME@
 
     ]]>
@@ -58,9 +61,11 @@
       s=-
       c=IN IP[media_ip_type] [media_ip]
       t=0 0
-      m=audio [media_port] RTP/AVP @PT@
+      m=audio [media_port] RTP/AVP @PT@ 101
       a=rtpmap:@PT@ @RTPMAP@
       @EXTRA@
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
       a=ptime:@PTIME@
 
     ]]>

@@ -97,6 +97,16 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_tout_ms", 100\)/);
       expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_retr", 7\)/);
     });
+    it('a phone answering G.723 with an fmtp line gets reuse-codecs (rtpengine 26.0.1 bug, 2026-11-15)', () => {
+      const fix = block(kam, 'route[G723_FIX]');
+      expect(fix).toContain('if (search_body("a=fmtp:4 ")) {');
+      expect(fix).toContain('$var(g723fix) = " reuse-codecs";');
+      // Every rtpengine_answer on a phone's answer (ringing branches and in-dialog replies) uses it.
+      const dev = block(kam, 'onreply_route[DEV_REPLY]');
+      expect(dev.indexOf('route(G723_FIX)')).toBeLessThan(dev.indexOf('rtpengine_answer'));
+      expect(dev.match(/rtpengine_answer\("[^"]*\$var\(g723fix\)"\)/g)).toHaveLength(3);
+      expect(block(kam, 'onreply_route[RTP_REPLY]')).toContain('rtpengine_answer("$avp(rtp_answer)$var(g723fix)")');
+    });
     it('requests to Asterisk / the peer edge are resent after 100 ms; the internet keeps SIP defaults', () => {
       const nh = block(kam, 'route[NH_TIMERS]');
       // Test inventory: pbx 127.0.0.21/.22, peer edge 127.0.0.12 (edge-1 is .11, not its own hop).
