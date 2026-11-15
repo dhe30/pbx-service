@@ -9,6 +9,7 @@ import {
   type OrderResult,
   type Place,
 } from './provider.js';
+import { LookupCache } from './lookup-cache.js';
 
 // DID provider client for the course's DIDWW API v3 clone (CLAUDE.md §3 A6, docs/cloud-deploy.md
 // §3.2). JSON:API over HTTPS, authenticated with the `Api-Key` header.
@@ -57,6 +58,8 @@ export interface DidwwOptions {
   /** Inbound trunk to assign new DIDs to (voice_in_trunks id), or a trunk group (A7: both edges). */
   trunk: { type: 'voice_in_trunks' | 'voice_in_trunk_groups'; id: string };
   timeoutMs?: number;
+  /** How long countries / regions / cities lists are served before a background refresh (default 1 h). */
+  lookupTtlMs?: number;
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null);
@@ -90,7 +93,19 @@ export class HttpDidwwProvider implements DidProvider {
   /** Per country id: region and city id -> name, for describing offers (loaded once per country). */
   private readonly placeNames = new Map<string, Promise<{ regions: Map<string, string>; cities: Map<string, string> }>>();
 
-  constructor(private readonly o: DidwwOptions) {}
+  /**
+   * GET /numbers/countries, /regions and /cities answers (src/numbers/lookup-cache.ts): DIDWW was
+   * called on every request and those routes were most of the API's >1 s tail. Keys hold the
+   * request's parameters, hence the bound.
+   */
+  private readonly countryList: LookupCache<Country[]>;
+  private readonly placeLists: LookupCache<Place[]>;
+
+  constructor(private readonly o: DidwwOptions) {
+    const ttlMs = o.lookupTtlMs ?? 3_600_000;
+    this.countryList = new LookupCache({ ttlMs, maxEntries: 1 });
+    this.placeLists = new LookupCache({ ttlMs, maxEntries: 500 });
+  }
 
   private async request(method: string, path: string, body?: unknown): Promise<Document> {
     const url = `${this.o.baseUrl.replace(/\/$/, '')}${path}`;
@@ -179,26 +194,34 @@ export class HttpDidwwProvider implements DidProvider {
   }
 
   async countries(): Promise<Country[]> {
-    const { data } = await this.list('/countries?page[size]=500');
-    return data
-      .map((c) => ({ iso: str(c.attributes?.iso) ?? '', name: str(c.attributes?.name) ?? '', prefix: str(c.attributes?.prefix) ?? '' }))
-      .filter((c) => c.iso !== '')
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return this.countryList.get('all', async () => {
+      const { data } = await this.list('/countries?page[size]=500');
+      return data
+        .map((c) => ({ iso: str(c.attributes?.iso) ?? '', name: str(c.attributes?.name) ?? '', prefix: str(c.attributes?.prefix) ?? '' }))
+        .filter((c) => c.iso !== '')
+        .sort((a, b) => a.name.localeCompare(b.name));
+    });
   }
 
   async regions(country: string): Promise<Place[]> {
-    const c = await this.country(country);
-    if (!c) return [];
-    const { data } = await this.list(`/regions?filter[country.id]=${c.id}&page[size]=500`);
-    return places(data);
+    const iso = country.toUpperCase();
+    return this.placeLists.get(`regions:${iso}`, async () => {
+      const c = await this.country(iso);
+      if (!c) return [];
+      const { data } = await this.list(`/regions?filter[country.id]=${c.id}&page[size]=500`);
+      return places(data);
+    });
   }
 
   async cities(country: string, regionId?: string): Promise<Place[]> {
-    const c = await this.country(country);
-    if (!c) return [];
-    const region = regionId ? `&filter[region.id]=${encodeURIComponent(regionId)}` : '';
-    const { data } = await this.list(`/cities?filter[country.id]=${c.id}${region}&page[size]=500`);
-    return places(data);
+    const iso = country.toUpperCase();
+    return this.placeLists.get(`cities:${iso}:${regionId ?? ''}`, async () => {
+      const c = await this.country(iso);
+      if (!c) return [];
+      const region = regionId ? `&filter[region.id]=${encodeURIComponent(regionId)}` : '';
+      const { data } = await this.list(`/cities?filter[country.id]=${c.id}${region}&page[size]=500`);
+      return places(data);
+    });
   }
 
   private async groupTypes(): Promise<Map<string, string>> {
