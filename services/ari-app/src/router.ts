@@ -3,7 +3,7 @@ import { Conversation } from './conversation.js';
 import type { Ctx } from './ctx.js';
 import { runIvr } from './ivr.js';
 import { extensionTargets, ringSequential, ringTargets, type RingResult, type Winner } from './ring.js';
-import type { CallSession } from './session.js';
+import { newLeg, type CallSession } from './session.js';
 import type { ExtensionCfg, TenantConfig } from './tenant.js';
 import { leaveVoicemail } from './voicemail.js';
 
@@ -155,7 +155,11 @@ function callerNumberOf(s: CallSession): string | null {
 export async function connect(ctx: Ctx, s: CallSession, winner: Winner): Promise<void> {
   s.connected = true;
   s.ringOutcome = null;
-  if (s.main) {
+  if (s.transferLeg) {
+    // Answer of a blind transfer: recorded on its own leg, the main row is left as it was.
+    if (winner.target.extension) s.transferLeg.toExtension = winner.target.extension.number;
+    s.transferLeg.answeredAt ??= new Date();
+  } else if (s.main) {
     if (winner.target.extension) s.main.toExtension = winner.target.extension.number;
     if (s.main.direction === 'internal') s.main.answeredAt ??= new Date();
   }
@@ -172,12 +176,42 @@ export async function connect(ctx: Ctx, s: CallSession, winner: Winner): Promise
       // Ring the target extension itself (no "forward always"), then follow what it returns.
       const ext = s.tenant!.extensions.get(dest.id);
       if (!ext) return missing(s, dest);
+      transferLegFor(s, winner, end.remaining, ext);
       const next = await ringExtension(ctx, s, ext, { blindTransfer: true });
       if (next) await routeTo(ctx, s, next);
     } else if (dest) {
       await routeTo(ctx, s, dest);
     }
   }
+}
+
+/**
+ * A blind transfer to an extension gets its own CDR leg (internal, free), from the extension that
+ * transferred to the target. The main row keeps the extension that answered first. Before
+ * 2026-11-15 the main row's to_extension was overwritten with the transfer target, so searching the
+ * call history by the extension that answered (and transferred) found nothing.
+ */
+function transferLegFor(s: CallSession, winner: Winner, remaining: string, target: ExtensionCfg): void {
+  const main = s.main;
+  if (!main) return;
+  const answerSide = s.transferLeg?.toExtension ?? main.toExtension;
+  // The party that stays decides who transferred: if the answering side stays, the caller's side
+  // sent the REFER.
+  const fromExtension = remaining === winner.channelId ? main.fromExtension : answerSide;
+  const now = new Date();
+  if (s.transferLeg) s.transferLeg.endedAt ??= now;
+  const leg = newLeg({
+    direction: 'internal',
+    chargeClass: 'internal',
+    parentId: main.id,
+    fromExtension,
+    fromNumber: fromExtension,
+    toExtension: target.number,
+    toNumber: target.number,
+    startedAt: now,
+  });
+  s.children.set(leg.id, leg);
+  s.transferLeg = leg;
 }
 
 /** A number typed on a phone (or a REFER target): extension of the account, else a PSTN number. */
