@@ -52,6 +52,30 @@ describe.skipIf(!python)('pbx-call-audio verdicts', () => {
     expect(r.duration_s).toBeGreaterThan(3500);   // the 60-minute call
   });
 
+  // A TLS (SRTP) phone talking G.723: rtpengine transcodes, and counts the 10-byte SRTP tag on what
+  // it SENDS (in 36 B, out 46 B). Live 2026-11-15 (edge-1, 10:57 and 11:13): two false alerts.
+  const srtpCall = (cid: string, inP: number, inB: number, outP: number, outB: number, codec = 'G723/8000') =>
+    [
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] Final packet stats:`,
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] --- Tag '7c810ae6', created 4:53 ago for branch ''`,
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] ------ Media #1 (audio over RTP/SAVP) using ${codec}`,
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] --------- Port       10.0.1.13:30010 <>  130.245.136.25:1703, SSRC 1, in ${inP} p, ${inB} b, 0 e, 30 ts, out ${outP} p, ${outB} b, 0 e`,
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] --- Tag '20a0bd51', created 4:53 ago for branch ''`,
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000`,
+      `1794740232.177 edge-1 rtpengine[1]: INFO: [${cid}]: [core] --------- Port       10.0.1.13:30020 <>      10.0.1.214:13580, SSRC 2, in 12834 p, 2207448 b, 0 e, 30 ts, out 12931 p, 2224132 b, 0 e`,
+      '',
+    ].join('\n');
+
+  it('SRTP tag counted on the sent side (transcoded G.723 TLS phone): ok, not format_mismatch', () => {
+    const [r] = run(srtpCall('9b6231dce3975047694a@130.245.136.25', 8621, 310356, 8556, 393576));
+    expect(r!.verdict).toBe('ok');
+  });
+
+  it('a real mismatch on an SRTP leg still shows: G.723 phone sent PCMU (+tag)', () => {
+    const [r] = run(srtpCall('mismatch@130.245.136.25', 8621, 310356, 8556, 8556 * 182));
+    expect(r!.verdict).toBe('format_mismatch');
+  });
+
   it('calls with a --test-peer leg are marked as test traffic', () => {
     const marked = run(FIXTURE, '--test-peer', '130.245.136.128');
     expect(marked.find((r) => r.call_id.startsWith('f068b387'))!.test).toBe(true);

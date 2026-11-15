@@ -69,7 +69,16 @@ def judge(leg):
         in_bpp = leg['in_b'] / in_p
         out_bpp = leg['out_b'] / out_p
         if 'SAVP' in leg['proto']:
-            in_bpp -= 10        # SRTP auth tag counted on the received (still encrypted) side
+            # SRTP adds an auth tag (10 B for AES_CM_128_HMAC_SHA1_80, 4 B for _32) to every packet,
+            # and rtpengine counts it on ONE side only, which side depending on the path: on received
+            # packets when it relays (PCMU<->PCMU: in 182, out 172), on sent packets when it
+            # transcodes (G.723 phone: in 36, out 46; 2026-11-15, two false format_mismatch alerts).
+            # So take up to 10 B off whichever side is larger: a real codec mismatch differs by far
+            # more (PCMU 172 vs G.729 32 / G.723 36) and still shows.
+            if in_bpp > out_bpp:
+                in_bpp -= min(10.0, in_bpp - out_bpp)
+            else:
+                out_bpp -= min(10.0, out_bpp - in_bpp)
         margin = max(8.0, 0.2 * max(in_bpp, out_bpp))
         # Judge only when the party's own stream clearly has one size. A browser mixes PCMU with
         # 13-byte comfort-noise packets (average ~130 B): not a codec, so not judged.
