@@ -469,6 +469,7 @@ Detailed reasoning: [docs/spec-transition.md](docs/spec-transition.md) (telephon
 | Carrier call gets 403 | Source IP not in `carrier_cidrs` |
 | Phone gets 401/407 repeatedly | The extension's `subscriber` row; replica lag right after creating it; `kamcmd ul.dump` on both edges |
 | No audio or one-way audio | `rtpengine-ctl list sessions all` on the edge; `sngrep` for the SDP; `/var/log/pbx/call-audio.jsonl` (packets each way per leg) |
+| Does an SRTP phone get valid audio when the RTP from Asterisk changes SSRC? | `loadtest/diag/remote.sh edge-2 py loadtest/diag/srtp-ssrc-replay.py --ip 10.0.0.42`: four ~6 s test sessions through that edge's rtpengine, decrypted as the phone would (usage in its header) |
 | Every call to one pbx node gets 503 | ARI app down: `systemctl status pbx-ari-app`, `curl 127.0.0.1:9101/health` |
 | Calls ignore a configuration change | `pbx_config` NOTIFY triggers (the cache refreshes within 30 s anyway) |
 | API answers 503 | `curl :3000/ready` on the app node (DB + S3); local proxy stats; `patronictl list` |

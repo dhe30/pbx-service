@@ -279,6 +279,9 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
     PJSIP/vendor-us-edge-a/sip:+1NXXNXXXXXX@<vendor host>.
   - allow_transfer=yes; the ARI app sets PJSIP_TRANSFER_HANDLING()=ari-only on bridged channels
     (REFER -> ChannelTransfer event; Asterisk 22.1+). [VERIFY]
+  - ARI bridges are `mixing,proxy_media`: no native RTP bridge, so a phone's stream keeps one SSRC
+    (a native bridge switches it to the far party's; SRTP phones then drop the audio). V-T16,
+    docs/incidents/2026-11-15-tls-bad-codec.md.
 - extensions.conf:
     [from-edge]
     exten => _[+*#0-9]!,1,Stasis(pbx-app,${PJSIP_HEADER(read,X-PBX-Src)},${PJSIP_HEADER(read,X-PBX-User)})

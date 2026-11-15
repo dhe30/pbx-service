@@ -147,6 +147,15 @@ describe('referTarget', () => {
   });
 });
 
+describe('AriClient.createBridge', () => {
+  it('asks for a mixing bridge without native RTP bridging (one SSRC toward each phone)', async () => {
+    const c = new AriClient({ url: 'http://127.0.0.1:1', user: 'u', password: 'p', app: 'pbx-app' });
+    const req = vi.spyOn(c, 'request').mockResolvedValue({ id: 'b1', bridge_type: 'mixing', channels: [] });
+    await c.createBridge('b1');
+    expect(req).toHaveBeenCalledWith('POST', '/bridges', { type: 'mixing,proxy_media', bridgeId: 'b1' });
+  });
+});
+
 describe('AriClient.stopPlayback', () => {
   const client = () => new AriClient({ url: 'http://127.0.0.1:1', user: 'u', password: 'p', app: 'pbx-app' });
   const failWith = (c: AriClient, status: number, body: string) =>
