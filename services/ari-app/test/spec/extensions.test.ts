@@ -140,6 +140,42 @@ describe('§3 Extensions: forwarding', () => {
     expect(rows[1]!.billableSec).toBe(30); // minimum increment (30/6)
   });
 
+  it("forward always -> the caller's own number is ignored: the extension itself rings", async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    const e101 = await a.extension({ number: '101', forwardAlways: { type: 'external', number: '+16315550132' } });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: e101 });
+    h.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 5 });
+    h.ari.external.set('+16315550132', { answerAfterMs: 5 });
+    // A call FROM the forwarding number: following the rule would ring the caller's own phone.
+    const caller = h.ari.carrierCall(did, '+16315550132');
+    const leg = await until(() => h.ari.legsTo(a.ext['101']!.sip)[0], 2000, 'rings 101');
+    await until(() => h.ari.peerOf(caller) === leg.id, 2000, 'caller bridged to 101');
+    expect(h.ari.legsTo('+16315550132')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    // Any other caller is still forwarded.
+    const other = h.ari.carrierCall(did, '+16315550000');
+    await until(() => h.ari.legsTo('+16315550132')[0], 2000, 'forwarded for another caller');
+    h.ari.remoteHangup(other);
+    await h.settle();
+  });
+
+  it("forward no answer -> the caller's own number is ignored: voicemail instead", async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    const e101 = await a.extension({ number: '101', forwardNoAnswer: { type: 'external', number: '+16315550132' } });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: e101 });
+    h.ari.sip.set(a.ext['101']!.sip, { failCause: 20 });
+    const caller = h.ari.carrierCall(did, '+16315550132');
+    await until(() => h.uploads.begun.find((u) => u.mailboxId === a.ext['101']!.mailboxId), 2000, 'voicemail');
+    expect(h.ari.legsTo('+16315550132')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('forward busy applies only when the devices are busy (486)', async () => {
     const h = makeHarness(db.sql);
     const a = await new Account(db.sql).create();

@@ -94,6 +94,28 @@ describe('§3 Blind transfer', () => {
     expect(rows[1]).toMatchObject({ direction: 'outgoing', toNumber: '+12015553333', outcome: 'answered', vendor: 'us' });
   });
 
+  it("to an extension that forwards always to the caller's own number: that extension rings", async () => {
+    // Live 2026-11-15 (Zhang Animal Hospital): "extension 111 never rang after the transfer". 111
+    // forwarded always to the caller's number, so the caller was connected to itself.
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '101' });
+    await a.extension({ number: '111', forwardAlways: { type: 'external', number: '+16315550132' } });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['101']!.id });
+    h.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['111']!.sip, { answerAfterMs: 5 });
+    h.ari.external.set('+16315550132', { answerAfterMs: 5 });
+    const caller = h.ari.carrierCall(did, '+16315550132');
+    const agent = await until(() => h.ari.peerOf(caller), 3000, 'connected');
+    h.ari.referBlind(agent, '111');
+    const leg111 = await until(() => h.ari.legsTo(a.ext['111']!.sip)[0], 2000, 'rings 111');
+    await until(() => h.ari.peerOf(caller) === leg111.id, 2000, 'caller bridged to 111');
+    expect(h.ari.legsTo('+16315550132')).toHaveLength(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('target does not answer -> the caller goes to the target extension’s voicemail', async () => {
     const { h, a, caller, agent } = await connectedCall();
     h.ari.sip.set(a.ext['102']!.sip, { failCause: 20 });
