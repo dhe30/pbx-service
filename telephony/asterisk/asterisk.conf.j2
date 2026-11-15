@@ -14,5 +14,9 @@ astsbindir => /usr/sbin
 
 [options]
 transcode_via_sln = yes
-maxload = 0.95
+; Refuse NEW calls (Kamailio gets 503 and tries the other pbx node) only when the 1-minute load
+; average is above asterisk_maxload (default 2 x vCPUs). It was 0.95, which on our 1-vCPU nodes
+; refused calls during ordinary load spikes (pbx-2, 2026-11-15: 5 times, peak load 1.46, Asterisk at
+; ~9 % CPU). Every refusal also sends the call to the other node, away from its account's node.
+maxload = {{ asterisk_maxload }}
 documentation_language = en_US

@@ -219,8 +219,15 @@ export class AriClient extends EventEmitter<AriClientEvents> {
     return this.request('POST', `/channels/${enc(channelId)}/transfer_progress`, { states });
   }
 
+  /**
+   * `proxy_media`: no native RTP bridge, so Asterisk relays frames with each channel's own SSRC.
+   * In a native (local) bridge Asterisk forwards the OTHER party's packets as they are, so the
+   * stream toward a phone switches to the far party's SSRC/sequence/timestamps once the bridge
+   * goes native. SRTP phones that keep one SSRC or one replay window then drop everything after
+   * the switch (2026-11-15 "bad_codec" at a PCMU+SRTP phone, docs/incidents/2026-11-15-tls-bad-codec.md).
+   */
   createBridge(bridgeId: string): Promise<Bridge> {
-    return this.request('POST', '/bridges', { type: 'mixing', bridgeId });
+    return this.request('POST', '/bridges', { type: 'mixing,proxy_media', bridgeId });
   }
 
   addToBridge(bridgeId: string, channelIds: string[]): Promise<void> {
