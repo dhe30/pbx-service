@@ -359,6 +359,16 @@ groups:
           summary: "{{ $value }} new support ticket(s) in the last 15 minutes"
           description: Something is failing for customers. Read them on the provider ticket page (GET /operator/tickets) and check the other alerts.
 
+      # Fires while any ticket is open; its RESOLVED means every ticket was closed (customers close
+      # them when it works again). NewSupportTicket only announces new ones and is never resolved.
+      - alert: SupportTicketsOpen
+        expr: pbx_support_tickets_open > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} support ticket(s) open"
+          description: Read them on the provider ticket page (GET /operator/tickets). Resolved only when every ticket is closed.
+
       - alert: SupportTicketsOpenLong
         expr: time() - pbx_support_tickets_oldest_open_timestamp_seconds > 6 * 3600
         labels: { severity: warning }
