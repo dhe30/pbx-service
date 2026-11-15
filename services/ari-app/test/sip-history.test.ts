@@ -51,8 +51,8 @@ function pcap(msgs: { t: number; src: string; dst: string; sip: string }[]): Buf
   return Buffer.concat(parts);
 }
 
-const req = (method: string, cid: string, proto: string, extra = '') =>
-  `${method} sip:16315550132@group-4 SIP/2.0\nP-KSR-SIPDump: ${proto} pid=1 pno=1\nCall-ID: ${cid}\nCSeq: 1 ${method}\nFrom: <sip:x2e11f8d87a326444@group-4>;tag=a\nTo: <sip:16315550132@group-4>\n${extra}Content-Length: 0\n\n`;
+const req = (method: string, cid: string, proto: string, extra = '', from = 'x2e11f8d87a326444') =>
+  `${method} sip:16315550132@group-4 SIP/2.0\nP-KSR-SIPDump: ${proto} pid=1 pno=1\nCall-ID: ${cid}\nCSeq: 1 ${method}\nFrom: <sip:${from}@group-4>;tag=a\nTo: <sip:16315550132@group-4>\n${extra}Content-Length: 0\n\n`;
 const rsp = (code: string, method: string, cid: string, proto: string) =>
   `SIP/2.0 ${code}\nP-KSR-SIPDump: ${proto} pid=1 pno=1\nCall-ID: ${cid}\nCSeq: 1 ${method}\nContent-Length: 0\n\n`;
 
@@ -82,10 +82,15 @@ describe.skipIf(!python)('sip-history.py', () => {
         // A REGISTER challenged with 401 and then accepted: not a failure.
         { t: 1794744001.0, src: '130.245.136.125:30070', dst: '10.0.1.13:5060', sip: req('REGISTER', 'reg@udp', 'udp') },
         { t: 1794744001.1, src: '10.0.1.13:5060', dst: '130.245.136.125:30070', sip: rsp('401 Unauthorized', 'REGISTER', 'reg@udp', 'udp') },
+        // An internet scanner's OPTIONS, refused: noise, not a customer failure.
+        { t: 1794744002.0, src: '103.77.253.46:59696', dst: '10.0.1.13:5060', sip: req('OPTIONS', '1', 'udp', '', 'scanner') },
+        { t: 1794744002.1, src: '10.0.1.13:5060', dst: '103.77.253.46:59696', sip: rsp('403 Forbidden', 'OPTIONS', '1', 'udp') },
       ]),
     );
     const failed = run(file, '--failed');
-    expect(failed).toMatch(/2 Call-IDs; 1 match/);
+    expect(failed).toMatch(/3 Call-IDs; 1 match/); // the scanner's OPTIONS 403 is left out
+    expect(failed).not.toMatch(/=== Call-ID 1 /);
+    expect(run(file, '--failed', '--method', 'OPTIONS')).toMatch(/=== Call-ID 1 /);
     expect(failed).toMatch(/=== Call-ID fail@tls/);
     expect(failed).toMatch(/tls\s+10\.0\.1\.13:5061 -> 130\.245\.136\.25:5061\s+SIP\/2\.0 486 Busy Here \(INVITE\)/);
     expect(run(file, '--match', 'x2e11f8d87a326444')).toMatch(/2 match/);

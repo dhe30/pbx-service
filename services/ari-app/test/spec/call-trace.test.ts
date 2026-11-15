@@ -42,6 +42,9 @@ describe('call trace', () => {
     expect(msgs.indexOf('route')).toBeLessThan(msgs.indexOf('ring: answered'));
     // Bindings aren't repeated inside every step.
     expect(end.trace!.steps.every((st) => !('sip' in st) && !('tenant' in st))).toBe(true);
+    // The "call ended" line carries the trace but isn't a step of it (it nested "[Circular]").
+    expect(msgs).not.toContain('call ended');
+    expect(JSON.stringify(end.trace)).not.toContain('Circular');
   });
 
   it('business hours log the local time and zone the decision used', async () => {

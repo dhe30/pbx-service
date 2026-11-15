@@ -12,7 +12,9 @@ matching Call-ID, in time order):
     --match TEXT       text in the request line / From / To / Contact / P-Asserted-Identity:
                        a number (16315550132), a SIP user (x2e11f8d87a326444), an IP
     --method M         only transactions of this method (REGISTER, INVITE, ...)
-    --failed           only Call-IDs where we sent or received a final reply >= 400 (no 401/407)
+    --failed           only Call-IDs where we sent or received a final reply >= 400 (no 401/407).
+                       OPTIONS are left out (internet scanners get hundreds of 403s an hour, all
+                       with Call-ID "1"); add --method OPTIONS to see them
     --since/--until    UTC, "HH:MM" (today) or "YYYY-MM-DDTHH:MM"; picks files and messages
     --full             print whole messages, not one line each
     --limit N          at most N Call-IDs (default 20)
@@ -196,7 +198,11 @@ def main():
             continue
         if a.match and not any(a.match in searchable(m) for m in msgs):
             continue
-        if a.failed and not any(m['status'] and m['status'] >= 400 and m['status'] not in (401, 407) for m in msgs):
+        want_options = bool(a.method) and a.method.upper() == 'OPTIONS'
+        if a.failed and not any(
+            m['status'] and m['status'] >= 400 and m['status'] not in (401, 407) and (want_options or m['method'] != 'OPTIONS')
+            for m in msgs
+        ):
             continue
         picked.append(cid)
 
