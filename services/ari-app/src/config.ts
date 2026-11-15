@@ -44,6 +44,11 @@ const EnvSchema = z.object({
   CONFIG_TTL_SEC: z.coerce.number().int().min(1).max(55).default(30),
 
   VOICEMAIL_MAX_SEC: z.coerce.number().int().min(10).max(600).default(120),
+  /**
+   * How long a caller who puts the call on hold while leaving a voicemail is waited for before the
+   * message is saved and the call ends (s). The course's callers came back after 0.4-16 s.
+   */
+  VOICEMAIL_HOLD_WAIT_SEC: z.coerce.number().int().min(1).max(1800).default(60),
   /** musiconhold.conf class played to the other party while one side holds. */
   HOLD_MOH_CLASS: z.string().min(1).default('default'),
   /** Max destination hops per call (forward -> ring group -> menu ...), guards against loops. */

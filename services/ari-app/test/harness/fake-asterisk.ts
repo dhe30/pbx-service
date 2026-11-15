@@ -58,6 +58,8 @@ export class FakeAsterisk implements Ari {
   readonly bridges = new Map<string, Set<string>>();
   readonly recordings = new Map<string, { target: string; kind: 'channel' | 'bridge' }>();
   readonly finishedRecordings: string[] = [];
+  /** Every channel recording started, with the options that matter to tests (in order). */
+  readonly channelRecordStarts: { name: string; channelId: string; beep?: boolean; ifExists?: string }[] = [];
   readonly originates: (OriginateOptions & { target: Target })[] = [];
   readonly plays: { channelId: string; media: string }[] = [];
   readonly transferProgressLog: { channelId: string; state: TransferProgressState }[] = [];
@@ -263,8 +265,10 @@ export class FakeAsterisk implements Ari {
     if (c) c.moh = false;
   }
 
-  async recordChannel(channelId: string, opts: { name: string }): Promise<LiveRecording> {
+  async recordChannel(channelId: string, opts: { name: string; beep?: boolean; ifExists?: string }): Promise<LiveRecording> {
     this.need(channelId);
+    if (this.recordings.has(opts.name)) throw new AriError(409, 'POST', `/channels/${channelId}/record`, 'recording in progress');
+    this.channelRecordStarts.push({ name: opts.name, channelId, beep: opts.beep, ifExists: opts.ifExists });
     this.recordings.set(opts.name, { target: channelId, kind: 'channel' });
     return { name: opts.name, format: 'wav', target_uri: `channel:${channelId}`, state: 'recording' };
   }
