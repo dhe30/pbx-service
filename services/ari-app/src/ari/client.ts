@@ -180,14 +180,22 @@ export class AriClient extends EventEmitter<AriClientEvents> {
     }
   }
 
+  /** `ifExists: 'append'` continues an earlier recording of the same name (default overwrite). */
   recordChannel(
     channelId: string,
-    opts: { name: string; maxDurationSeconds: number; maxSilenceSeconds: number; beep: boolean; terminateOn: string },
+    opts: {
+      name: string;
+      maxDurationSeconds: number;
+      maxSilenceSeconds: number;
+      beep: boolean;
+      terminateOn: string;
+      ifExists?: 'overwrite' | 'append';
+    },
   ): Promise<LiveRecording> {
     return this.request('POST', `/channels/${enc(channelId)}/record`, {
       ...opts,
       format: 'wav',
-      ifExists: 'overwrite',
+      ifExists: opts.ifExists ?? 'overwrite',
     });
   }
 

@@ -35,6 +35,92 @@ describe('§3 Voicemail: leaving a message', () => {
     expect(h.uploads.finished).toContain(up.name);
   });
 
+  // Live 2026-11-15: course callers put the call on hold mid-message; Asterisk ends the recording
+  // after 4 s without audio ("No audio available") and we used to say goodbye and hang up.
+  async function voicemailCall(env: Record<string, string> = {}) {
+    const h = makeHarness(db.sql, env);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '101' });
+    const did = nextDid();
+    await a.number(did, { type: 'voicemail', id: a.ext['101']!.mailboxId! });
+    const caller = h.ari.carrierCall(did, '+16315550000');
+    const up = await until(() => h.uploads.begun.find((u) => u.kind === 'voicemail'), 3000, 'recording');
+    await until(() => h.ari.recordings.has(up.name), 2000, 'recording started');
+    const goodbyes = () => h.ari.plays.filter((p) => p.channelId === caller && p.media === 'sound:vm-goodbye').length;
+    return { h, caller, name: up.name, goodbyes };
+  }
+
+  it('caller holds mid-message: the recording continues in the same file once they come back', async () => {
+    const { h, caller, name, goodbyes } = await voicemailCall();
+    h.ari.hold(caller);
+    h.ari.finishRecording(name); // Asterisk: "No audio available" 4 s into the hold
+    await sleep(100);
+    expect(goodbyes()).toBe(0);
+    expect(h.ari.channels.has(caller)).toBe(true); // not hung up on
+    expect(h.uploads.finished).not.toContain(name);
+    h.ari.unhold(caller);
+    await until(() => h.ari.channelRecordStarts.length === 2, 2000, 'recording resumed');
+    expect(h.ari.channelRecordStarts[1]).toMatchObject({ name, channelId: caller, ifExists: 'append', beep: false });
+    expect(h.ari.channelRecordStarts[0]).toMatchObject({ beep: true });
+    h.ari.remoteHangup(caller); // the caller ends the message
+    await h.settle();
+    expect(h.uploads.finished.filter((n) => n === name)).toHaveLength(1);
+    expect(goodbyes()).toBe(0);
+  });
+
+  it('caller never comes back from hold: the message is saved and the call ends after the wait', async () => {
+    const { h, caller, name, goodbyes } = await voicemailCall({ VOICEMAIL_HOLD_WAIT_SEC: '1' });
+    h.ari.hold(caller);
+    h.ari.finishRecording(name);
+    await until(() => goodbyes() === 1, 3000, 'goodbye after the hold wait');
+    expect(h.ari.channelRecordStarts).toHaveLength(1);
+    await until(() => h.uploads.finished.includes(name), 2000, 'saved');
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
+  it('caller hangs up while on hold: the message is saved, no goodbye', async () => {
+    const { h, caller, name, goodbyes } = await voicemailCall();
+    h.ari.hold(caller);
+    h.ari.finishRecording(name);
+    await sleep(50);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    expect(h.uploads.finished).toContain(name);
+    expect(h.ari.channelRecordStarts).toHaveLength(1);
+    expect(goodbyes()).toBe(0);
+  });
+
+  it('a recording that ends without a hold (silence, #, max length) still ends the call as before', async () => {
+    const { h, caller, name, goodbyes } = await voicemailCall();
+    h.ari.finishRecording(name);
+    await until(() => goodbyes() === 1, 2000, 'goodbye');
+    expect(h.ari.channelRecordStarts).toHaveLength(1);
+    expect(h.uploads.finished).toContain(name);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
+  it('a hold during the greeting is noticed too', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '101' });
+    const did = nextDid();
+    await a.number(did, { type: 'voicemail', id: a.ext['101']!.mailboxId! });
+    const caller = h.ari.carrierCall(did, '+16315550000');
+    await until(() => h.ari.plays.find((p) => p.channelId === caller), 2000, 'greeting');
+    h.ari.hold(caller);
+    const up = await until(() => h.uploads.begun.find((u) => u.kind === 'voicemail'), 3000, 'recording');
+    await until(() => h.ari.recordings.has(up.name), 2000, 'recording started');
+    h.ari.finishRecording(up.name);
+    await sleep(100);
+    expect(h.ari.plays.filter((p) => p.channelId === caller && p.media === 'sound:vm-goodbye')).toHaveLength(0);
+    h.ari.unhold(caller);
+    await until(() => h.ari.channelRecordStarts.length === 2, 2000, 'recording resumed');
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('records as wav (Asterisk "wav" = 16-bit signed linear PCM, 8 kHz, mono)', async () => {
     const { AriClient } = await import('../../src/ari/client.js');
     const calls: { body?: string; url: string }[] = [];

@@ -75,6 +75,11 @@ export class Subscription<E extends AriEvent> {
     }
   }
 
+  /** An event already delivered and not yet taken, without waiting; null if none. */
+  takeQueued(): E | null {
+    return this.queue.shift() ?? null;
+  }
+
   /**
    * Next matching event, or null on timeout. Rejects with `signal.reason` if the signal aborts
    * (e.g. the caller hung up).
