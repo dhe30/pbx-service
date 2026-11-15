@@ -78,7 +78,11 @@ export function tracedLogger(base: Logger, trace: CallTrace): Logger {
         const fn = (target as unknown as Record<string, (...a: unknown[]) => void>)[prop]!;
         return (first: unknown, ...rest: unknown[]) => {
           if (typeof first === 'string') trace.add(level, first);
-          else trace.add(level, typeof rest[0] === 'string' ? rest[0] : '', first);
+          // The line that carries the trace ("call ended") isn't a step of it: recording it nested
+          // a "[Circular]" copy at the end of every trace.
+          else if (!(first && typeof first === 'object' && 'trace' in first)) {
+            trace.add(level, typeof rest[0] === 'string' ? rest[0] : '', first);
+          }
           return fn.call(target, first, ...rest);
         };
       }
