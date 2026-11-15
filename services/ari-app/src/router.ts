@@ -85,6 +85,23 @@ function missing(s: CallSession, d: Destination): void {
 const forwardDest = (f: ForwardDestination): Destination => f;
 
 /**
+ * A forwarding rule, unless it points at the PSTN caller's own number: following it would connect
+ * the caller to itself, the same loop extensionTargets() avoids for external numbers. Seen live
+ * 2026-11-15 (Zhang Animal Hospital, ticket "extension 111 never rang after the transfer"): a call
+ * from +16315550132 was blind-transferred to 111, whose forward-always target is +16315550132.
+ * Such a rule is ignored, as if it weren't set: forward always -> ring the extension itself;
+ * forward busy / no answer -> the extension's voicemail.
+ */
+function forwardUnlessCaller(s: CallSession, f: ForwardDestination | null | undefined, rule: string): Destination | null {
+  if (!f) return null;
+  if (f.type === 'external' && f.number === callerNumberOf(s)) {
+    s.log.info({ rule, to: f }, 'forward to the caller\'s own number ignored');
+    return null;
+  }
+  return forwardDest(f);
+}
+
+/**
  * Ring an extension with its forwarding rules: always -> straight to the forward target;
  * otherwise ring all devices + external numbers; then busy -> forward_busy, no answer ->
  * forward_no_answer, else its voicemail box. Returns the next destination (or connects and
@@ -92,9 +109,10 @@ const forwardDest = (f: ForwardDestination): Destination => f;
  */
 export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg): Promise<Destination | null> {
   if (s.main && !s.main.toExtension) s.main.toExtension = ext.number;
-  if (ext.forwardAlways) {
-    s.log.info({ ext: ext.number, to: ext.forwardAlways }, 'forward always');
-    return forwardDest(ext.forwardAlways);
+  const always = forwardUnlessCaller(s, ext.forwardAlways, 'always');
+  if (always) {
+    s.log.info({ ext: ext.number, to: always }, 'forward always');
+    return always;
   }
   const r: RingResult = await ringTargets(ctx, s, extensionTargets(ext, callerNumberOf(s)), ext.ringTimeoutSec);
   if (r.winner) {
@@ -102,8 +120,9 @@ export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg)
     return null;
   }
   s.ringOutcome = r.outcome;
-  if (r.outcome === 'busy' && ext.forwardBusy) return forwardDest(ext.forwardBusy);
-  if (r.outcome !== 'busy' && ext.forwardNoAnswer) return forwardDest(ext.forwardNoAnswer);
+  const next =
+    r.outcome === 'busy' ? forwardUnlessCaller(s, ext.forwardBusy, 'busy') : forwardUnlessCaller(s, ext.forwardNoAnswer, 'no_answer');
+  if (next) return next;
   if (ext.mailboxId) return { type: 'voicemail', id: ext.mailboxId };
   return null;
 }

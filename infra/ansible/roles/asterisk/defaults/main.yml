@@ -13,3 +13,4 @@ asterisk_config_files:
   - rtp.conf
   - prometheus.conf
   - musiconhold.conf
+  - indications.conf  # ringback/busy tones; ring.ts plays tone:ring;tonezone=us
