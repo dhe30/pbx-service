@@ -110,10 +110,25 @@ function forwardUnlessCaller(s: CallSession, f: ForwardDestination | null | unde
  * otherwise ring all devices + external numbers; then busy -> forward_busy, no answer ->
  * forward_no_answer, else its voicemail box. Returns the next destination (or connects and
  * returns null).
+ *
+ * opts.blindTransfer: a blind transfer to this extension rings the extension itself; its
+ * "forward always" is not applied (busy / no answer forwarding and voicemail still are). Seen live
+ * 2026-11-15 (Zhang Animal Hospital): transfers to 111 and 109, both "forward always" to an
+ * outside number, were sent to that number; the course counted each as "extension never rang
+ * after the transfer (REFER 202)". Direct calls to those extensions follow the forward with no
+ * complaint, so only transfers skip it.
  */
-export async function ringExtension(ctx: Ctx, s: CallSession, ext: ExtensionCfg): Promise<Destination | null> {
+export async function ringExtension(
+  ctx: Ctx,
+  s: CallSession,
+  ext: ExtensionCfg,
+  opts: { blindTransfer?: boolean } = {},
+): Promise<Destination | null> {
   if (s.main && !s.main.toExtension) s.main.toExtension = ext.number;
-  const always = forwardUnlessCaller(s, ext.forwardAlways, 'always');
+  if (opts.blindTransfer && ext.forwardAlways) {
+    s.log.info({ ext: ext.number, to: ext.forwardAlways }, 'forward always not applied to a blind transfer');
+  }
+  const always = opts.blindTransfer ? null : forwardUnlessCaller(s, ext.forwardAlways, 'always');
   if (always) {
     s.log.info({ ext: ext.number, to: always }, 'forward always');
     return always;
@@ -153,7 +168,15 @@ export async function connect(ctx: Ctx, s: CallSession, winner: Winner): Promise
   if (end.reason === 'blind_transfer') {
     const dest = resolveDialTarget(s.tenant!, end.target);
     s.log.info({ target: end.target, dest }, 'routing blind transfer');
-    if (dest) await routeTo(ctx, s, dest);
+    if (dest?.type === 'extension') {
+      // Ring the target extension itself (no "forward always"), then follow what it returns.
+      const ext = s.tenant!.extensions.get(dest.id);
+      if (!ext) return missing(s, dest);
+      const next = await ringExtension(ctx, s, ext, { blindTransfer: true });
+      if (next) await routeTo(ctx, s, next);
+    } else if (dest) {
+      await routeTo(ctx, s, dest);
+    }
   }
 }
 
