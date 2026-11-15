@@ -16,7 +16,9 @@
 {% set db_hosts = groups.get('db', []) %}
 {% set edge_hosts = groups.get('edge', []) %}
 {% set app_hosts = groups.get('app', []) %}
-{% set rtpengine_hosts = groups.get('media') or edge_hosts %}
+{# Edges keep their rtpengine running after media nodes exist (set 0: calls anchored there, and
+   the fallback if the media switch is turned off), so scrape both. #}
+{% set rtpengine_hosts = (edge_hosts + groups.get('media', [])) | unique | list %}
 {# Hosts running the local DB proxy + its metrics gateway (roles/db_local_proxy). A host that is
    also a db node (all-in-one VM) has no local proxy. #}
 {% set proxy_hosts = groups.get('db_clients', []) | reject('in', db_hosts) | list %}

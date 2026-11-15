@@ -23,6 +23,17 @@
 # offers PCMU, PCMA, G.729, G.723.1 and Opus, so a phone that supports only one of them still
 # works ("A phone may support only one of PCMU, PCMA, G.729, G.723.1, or Opus"); rtpengine
 # transcodes only when the far side didn't pick PCMU.
+{% set MEDIA = (rtpengine_media_ips | default([])) | length > 0 %}
+{% if MEDIA %}
+#
+# rtpengine sets (inventory has a `media` group). Set 0 = the edges' rtpengines, set 1 = the media
+# nodes. Kamailio picks a node by hashing the Call-ID over ONE set, so changing a set's members
+# would move calls in progress to an rtpengine that doesn't know them (the simulator's phones
+# re-INVITE every 30 s: silence within a minute). Instead each NEW call gets a set from the live
+# switch pbx.media_rtp and remembers it in its Record-Route (;rs=1); in-dialog requests, replies
+# and failure routes use the call's own set ($avp(rtpset), modparam setid_avp). Switch on both
+# edges at once: kamcmd cfg.set_now_int pbx media_rtp 1 (back: 0). README 2.4, V-T18.
+{% endif %}
 
 ####### Defines ########
 
@@ -126,6 +137,13 @@ tcp_keepalive=yes
 
 server_header="Server: pbx-edge"
 user_agent_header="User-Agent: pbx-edge"
+{% if MEDIA %}
+
+# Live switch (cfg_rpc): rtpengine set for NEW calls, 0 = edges, 1 = media nodes.
+#   kamcmd cfg.get pbx media_rtp            kamcmd cfg.set_now_int pbx media_rtp 1
+# The value below is what a restart starts with (group_vars rtpengine_media_new_calls).
+pbx.media_rtp = {{ rtpengine_media_new_calls | int }} desc "rtpengine set for new calls: 0 = edges, 1 = media nodes"
+{% endif %}
 
 ####### Modules Section ########
 
@@ -155,6 +173,9 @@ loadmodule "auth.so"
 loadmodule "auth_db.so"
 loadmodule "nathelper.so"
 loadmodule "rtpengine.so"
+{% if MEDIA %}
+loadmodule "cfg_rpc.so"
+{% endif %}
 loadmodule "dispatcher.so"
 loadmodule "ipops.so"
 loadmodule "pike.so"
@@ -270,7 +291,16 @@ modparam("dispatcher", "hash_pvar", "$avp(dshash)")
 
 # ----- rtpengine: the SAME set on every edge, so any edge can handle any call's in-dialog requests.
 # Node choice is a hash of the Call-ID.
+{% if MEDIA %}
+# Set 0 (default) = the edges, written exactly as before the media nodes existed, so a call already
+# anchored on an edge hashes to the same node after the restart. Set 1 = the media nodes.
+modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_edge_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+modparam("rtpengine", "rtpengine_sock", "1 == {% for ip in rtpengine_media_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+# Set per message from this AVP (unset = set 0). Transaction AVPs reach reply and failure routes.
+modparam("rtpengine", "setid_avp", "$avp(rtpset)")
+{% else %}
 modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+{% endif %}
 modparam("rtpengine", "rtpengine_disable_tout", 20)
 # Wait per attempt for rtpengine's reply. Measured 2026-11-14 (10 min, 191 commands): replies take
 # 0.2-6 ms (same edge < 1.5 ms, cross-edge 1-6 ms). With 1000 ms, ONE lost UDP packet held the SIP
@@ -321,6 +351,11 @@ request_route {
 
 	if (is_method("CANCEL")) {
 		if (t_check_trans()) {
+{% if MEDIA %}
+			# The INVITE's AVPs aren't loaded for its CANCEL: use the switch as it is now (right unless it
+			# was flipped while this call was ringing; then rtpengine's no-media timeout cleans up).
+			route(RTP_SET_NEW);
+{% endif %}
 			rtpengine_delete();
 			route(RELAY);
 		}
@@ -546,6 +581,20 @@ route[PBX_TIMERS] {
 	t_on_failure("PBX_FAILOVER");
 }
 
+{% if MEDIA %}
+# rtpengine set for a NEW call, from the live switch (see the header). Sets $avp(rtpset), which
+# the rtpengine module reads for every command of this transaction (setid_avp).
+route[RTP_SET_NEW] {
+	if ($sel(cfg_get.pbx.media_rtp) == 1) $avp(rtpset) = 1;
+}
+
+# Remember the set in the Record-Route being built, for the call's in-dialog requests (on either
+# edge, and after a Kamailio restart). Call right before record_route().
+route[RTP_SET_RR] {
+	if ($avp(rtpset) == 1) add_rr_param(";rs=1");
+}
+
+{% endif %}
 failure_route[PBX_FAILOVER] {
 	if (t_is_canceled()) exit;
 	# 503: ARI app down (dialplan Hangup(34)) or overloaded. Timeout: node dead.
@@ -596,6 +645,10 @@ route[FROM_CARRIER] {
 
 	append_hf("X-PBX-Src: carrier\r\n");
 	route(PBX_SELECT);
+{% if MEDIA %}
+	route(RTP_SET_NEW);
+	route(RTP_SET_RR);
+{% endif %}
 	add_rr_param(";leg=carrier");
 	record_route();
 	if (!rtpengine_offer("{{ F.plain.far_offer }}")) {
@@ -623,6 +676,10 @@ route[FROM_DEVICE] {
 	append_hf("X-PBX-Src: device\r\n");
 	append_hf("X-PBX-User: $var(user)\r\n");
 	route(PBX_SELECT);
+{% if MEDIA %}
+	route(RTP_SET_NEW);
+	route(RTP_SET_RR);
+{% endif %}
 
 	if ($pr == "ws" || $pr == "wss") {
 		add_rr_param(";leg=staff_ws");
@@ -658,6 +715,10 @@ route[FROM_DEVICE] {
 # ---------------------------------------------------------------------------------------------
 route[TO_VENDOR] {
 	if (is_present_hf("Route")) loose_route();   # our own pre-loaded Route from Asterisk
+{% if MEDIA %}
+	route(RTP_SET_NEW);
+	route(RTP_SET_RR);
+{% endif %}
 	add_rr_param(";leg=vendor");
 	record_route();
 	if (!rtpengine_offer("{{ F.plain.pbx_offer }}")) {
@@ -708,6 +769,10 @@ route[TO_DEVICES] {
 		remove_hf("Allow");
 		append_hf("Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, PRACK, INFO, REFER, NOTIFY\r\n");
 	}
+{% if MEDIA %}
+	# One set for every branch of this fork (the AVP reaches DEV_BRANCH, DEV_REPLY, DEV_FAILURE).
+	route(RTP_SET_NEW);
+{% endif %}
 	t_on_branch("DEV_BRANCH");
 	t_on_reply("DEV_REPLY");
 	t_on_failure("DEV_FAILURE");
@@ -744,6 +809,9 @@ branch_route[DEV_BRANCH] {
 	# Leg tag for in-dialog requests (hold/resume, transfer). They can't tell from their own
 	# transport: with two edges a browser's re-INVITE reaches the anchoring edge over UDP.
 	$avp(extra_id) = @via[1].branch + $T_branch_idx;
+{% if MEDIA %}
+	route(RTP_SET_RR);
+{% endif %}
 	if (isbflagset(FLB_WS)) {
 		add_rr_param(";leg=staff_ws");
 		record_route();
@@ -835,6 +903,11 @@ route[FROM_PEER] {
 	remove_hf("Route");
 	$du = $var(rcv);
 	xlog("L_INFO", "devices: relaying for the peer edge to $du [ci=$ci]\n");
+{% if MEDIA %}
+	# Copy the sending edge's set into our own Record-Route, so the BYE we relay later deletes the
+	# session in the right set (as before the sets: both edges send it, the second is a no-op).
+	if (search("^Record-Route:.*;rs=1")) add_rr_param(";rs=1");
+{% endif %}
 	record_route();
 	t_on_reply("PEER_REPLY");
 	route(SEND_PUBLIC);
@@ -863,6 +936,10 @@ route[WITHINDLG] {
 	if (!isdsturiset()) {
 		handle_ruri_alias();
 	}
+{% if MEDIA %}
+	# The call's own rtpengine set, from OUR Record-Route entry (no tag = set 0, the edges).
+	if (check_route_param("rs=1")) $avp(rtpset) = 1;
+{% endif %}
 
 	if (is_method("BYE")) {
 		rtpengine_delete();

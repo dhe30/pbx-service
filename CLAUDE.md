@@ -257,7 +257,12 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
   matrix (single-codec phones: most legs transcode, see docs/spec-transition.md N1).
 - Kernel forwarding ON since 2026-11-09 (`table = 0` + rtpengine-kernel-dkms, falls back to
   userspace if the module can't load), num-threads = vCPUs. Dedicated media nodes: add an
-  inventory group `media` (rtpengine_ips and site.yml follow it). Decision (2026-10-27): keep WebRTC
+  inventory group `media` (site.yml installs rtpengine there). Kamailio then has two rtpengine
+  sets (set 0 = edges, unchanged so calls in progress keep their node; set 1 = media), a live
+  switch for NEW calls (`kamcmd cfg.set_now_int pbx media_rtp 1|0`, restart value
+  rtpengine_media_new_calls), and each call's set in its Record-Route (;rs=1). Runbook: README §2.4
+  "Adding media nodes"; V-T18/V-T19. Without a media group the configs render exactly as before.
+  Decision (2026-10-27): keep WebRTC
   termination in rtpengine, NOT Asterisk (webrtc=yes would need public IPs/TURN for pbx nodes for
   a small CPU saving; SRTP/DTLS cost is minor next to relaying/transcoding).
 - Metrics: enable its Prometheus/HTTP stats interface. [VERIFY]
