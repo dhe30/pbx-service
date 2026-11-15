@@ -9,12 +9,16 @@
 #   D  pbx_drain=false            -> no kamcmd calls, straight to restart
 #   E  only the marker (an earlier run was stopped, nothing "changed" now) -> drains and restarts
 #   F  the other pbx node is drained -> refuses before draining; no state d sent
+#   G  a new node (not in the edges' dispatcher list yet) -> no drain, no put-back, straight to restart
 # Run from WSL/Linux with ansible-core:  bash infra/ansible/tests/pbx-rollout/run.sh
 set -u
 cd "$(dirname "$0")"
 export ANSIBLE_NOCOLOR=1 ANSIBLE_LOCALHOST_WARNING=0
 R=$(cd ../../tasks && pwd)/pbx-rollout.yml
 both_up() { printf '  URI: sip:10.9.9.9:5060\n  FLAGS: AP\n  URI: sip:10.9.9.8:5060\n  FLAGS: AP\n' > ds.list; }
+new_node() { printf '  URI: sip:10.9.9.8:5060
+  FLAGS: AP
+' > ds.list; }
 other_down() { printf '  URI: sip:10.9.9.9:5060\n  FLAGS: AP\n  URI: sip:10.9.9.8:5060\n  FLAGS: DX\n' > ds.list; }
 run() {
   name=$1; shift
@@ -33,4 +37,5 @@ rm -f marker
 both_up; echo 3 > calls; run 'D: pbx_drain=false' -e '{"pbx_pending_restarts": ["asterisk"], "pbx_drain": false}'
 both_up; echo 1 > calls; printf 'asterisk\nari-app\n' > marker; run 'E: only the marker from a stopped run' -e '{"pbx_pending_restarts": [], "pbx_drain_wait_min": 1}'
 other_down; echo 1 > calls; echo ari-app > marker; run 'F: other node drained: refuse' -e '{"pbx_pending_restarts": ["ari-app"]}'
+new_node; echo 0 > calls; echo ari-app > marker; run 'G: new node, not in the dispatcher yet' -e '{"pbx_pending_restarts": ["asterisk", "ari-app"]}'
 rm -f calls rollout.log out.txt ds.list marker
