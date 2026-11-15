@@ -49,6 +49,17 @@
     mode: "0644"
   notify: Restart logrotate timer
 
+# This role runs before roles/asterisk, so on a NEW pbx node the user must exist before logrotate
+# accepts the `su asterisk asterisk` line (pbx-3, 2026-11-15: "unknown group 'asterisk'"). Same
+# settings as roles/asterisk ("asterisk system user").
+- name: asterisk user on pbx nodes (needed by the rotation rule below)
+  ansible.builtin.user:
+    name: asterisk
+    system: true
+    home: /var/lib/asterisk
+    shell: /usr/sbin/nologin
+  when: inventory_hostname in groups.get('pbx', [])
+
 - name: Asterisk log rotation (pbx nodes)
   ansible.builtin.template:
     src: logrotate-asterisk.j2
