@@ -77,7 +77,31 @@ describe('§3 Blind transfer', () => {
     expect(h.ari.channels.has(agent)).toBe(false);
     h.ari.remoteHangup(caller);
     await h.settle();
-    expect((await a.cdrs())[0]).toMatchObject({ outcome: 'answered', toExtension: '102' });
+    // The call's row keeps 101 (who answered); the transfer is its own free leg 101 -> 102, so
+    // the call history finds the call by either extension.
+    const [main, leg] = await a.cdrs();
+    expect(main).toMatchObject({ direction: 'incoming', outcome: 'answered', toExtension: '101', parentId: null });
+    expect(leg).toMatchObject({ direction: 'internal', outcome: 'answered', fromExtension: '101', toExtension: '102', parentId: main!.id, charge: '0.000000' });
+    expect(leg!.answeredAt).not.toBeNull();
+  });
+
+  it('internal call: the answering extension transfers the caller on; the record keeps both', async () => {
+    // Live 2026-11-15: 105 called 108, 108 answered and blind-transferred the caller; the call
+    // history searched by extension 108 found nothing (the row said 105 -> 105).
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    for (const n of ['105', '108', '109']) await a.extension({ number: n });
+    for (const n of ['108', '109']) h.ari.sip.set(a.ext[n]!.sip, { answerAfterMs: 5 });
+    const ph105 = h.ari.deviceCall(a.ext['105']!.sip, '108');
+    const leg108 = await until(() => h.ari.peerOf(ph105), 3000, '108 answered');
+    h.ari.referBlind(leg108, '109');
+    const leg109 = await until(() => h.ari.legsTo(a.ext['109']!.sip)[0], 2000, 'rings 109');
+    await until(() => h.ari.peerOf(ph105) === leg109.id, 2000, '105 bridged to 109');
+    h.ari.remoteHangup(ph105);
+    await h.settle();
+    const [main, leg] = await a.cdrs();
+    expect(main).toMatchObject({ direction: 'internal', fromExtension: '105', toExtension: '108', outcome: 'answered' });
+    expect(leg).toMatchObject({ direction: 'internal', fromExtension: '108', toExtension: '109', outcome: 'answered', parentId: main!.id });
   });
 
   it('to an external number: charged as its own outgoing leg', async () => {
@@ -137,8 +161,10 @@ describe('§3 Blind transfer', () => {
     h.ari.remoteHangup(caller);
     await h.settle();
     const rows = await a.cdrs();
-    expect(rows).toHaveLength(1); // no charged leg to the forward number
-    expect(rows[0]).toMatchObject({ outcome: 'answered', toExtension: '109' });
+    // No charged leg to the forward number: the call (answered by 103) + the free transfer leg to 109.
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ outcome: 'answered', toExtension: '103' });
+    expect(rows[1]).toMatchObject({ direction: 'internal', fromExtension: '103', toExtension: '109', outcome: 'answered', charge: '0.000000' });
   });
 
   it('target does not answer -> the caller goes to the target extension’s voicemail', async () => {

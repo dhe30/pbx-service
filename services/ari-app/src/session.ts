@@ -71,6 +71,12 @@ export class CallSession {
   main: LegDraft | null = null;
   /** Extra legs we placed to external numbers, by channel id. */
   readonly children = new Map<string, LegDraft>();
+  /**
+   * The leg of the latest blind transfer to an extension, while it is being rung and after: the
+   * extension that answers it goes here, not on the main row, so the main row keeps the extension
+   * that answered first (call history must still find the call by that extension).
+   */
+  transferLeg: LegDraft | null = null;
   /** Channels of legs this session owns whose end we must wait for before writing CDRs. */
   readonly liveLegs = new Map<string, Promise<void>>();
   answered = false;

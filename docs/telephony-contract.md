@@ -143,6 +143,10 @@ updated:
 - **Every extra leg we placed to an external number** (simultaneous ring, forwarding, IVR →
   external, transfer to a number) is its own row: `direction='outgoing'`, `parent_id` = main
   row, same `call_id`, with its own vendor, cost and charge.
+- **A blind transfer to an extension** is its own row too: `direction='internal'` (free),
+  `parent_id` = main row, same `call_id`, `from_extension` = the extension that transferred,
+  `to_extension` = the target. The main row keeps the extension that answered first, so a search
+  by either extension finds the call.
 - Columns: `from_number`, `to_number`, `did` (incoming DID, or caller ID used outgoing),
   `from_extension`, `to_extension` (who answered or was rung), `started_at`, `answered_at`,
   `ended_at`, `billable_sec` (30/6), `outcome` (`answered|busy|no_answer|failed|blocked`),
