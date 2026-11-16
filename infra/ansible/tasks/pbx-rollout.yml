@@ -110,8 +110,9 @@
     - name: "Waiting for 0 calls (up to {{ pbx_drain_wait_min | default(45) }} min; started with: {{ pbx_drain_start.stdout_lines | default([]) | join(', ') }})"
       ansible.builtin.command: asterisk -rx 'core show channels count'
       register: pbx_calls
-      # "N active calls" -> N (no capture group: Jinja turns '\1' into a control character).
-      until: (((pbx_calls.stdout | regex_search('[0-9]+(?= active call)')) or '1') | int) == 0
+      # "N active calls", or "N of M max active calls" once asterisk.conf sets maxcalls -> N
+      # (no capture group: Jinja turns '\1' into a control character).
+      until: (((pbx_calls.stdout | regex_search('[0-9]+(?= active call| of [0-9]+ max active call)')) or '1') | int) == 0
       retries: "{{ ((pbx_drain_wait_min | default(45) | int) * 60 / 15) | int }}"
       delay: 15
       changed_when: false
@@ -126,7 +127,7 @@
           Re-run later, or with -e pbx_drain_on_timeout=deploy to restart anyway (drops those calls).
       when:
         - pbx_drain_active | bool
-        - (((pbx_calls.stdout | default('') | regex_search('[0-9]+(?= active call)')) or '1') | int) > 0
+        - (((pbx_calls.stdout | default('') | regex_search('[0-9]+(?= active call| of [0-9]+ max active call)')) or '1') | int) > 0
         - (pbx_drain_on_timeout | default('abort')) != 'deploy'
 
     - name: Mark the restart as started (from here a failure leaves the node drained)
