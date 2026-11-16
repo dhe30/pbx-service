@@ -1,8 +1,15 @@
 #!/bin/sh
 # Fake Asterisk CLI: "core show channels count" reports the number in $CALLS_FILE, then decrements it.
+# With $CALLS_FILE.max present it prints what Asterisk prints when asterisk.conf sets maxcalls.
 case "$2" in
   'core show channels count')
-    n=$(cat "$CALLS_FILE"); echo "$((n*2)) active channels"; echo "$n active calls"; echo "100 calls processed"
+    n=$(cat "$CALLS_FILE"); echo "$((n*2)) active channels"
+    if [ -f "$CALLS_FILE.max" ]; then
+      echo "$n of $(cat "$CALLS_FILE.max") max active calls ( 0.00% of capacity)"
+    else
+      echo "$n active calls"
+    fi
+    echo "100 calls processed"
     [ "$n" -gt 0 ] && echo $((n-1)) > "$CALLS_FILE"; echo "asterisk count -> $n" >> "$ROLLOUT_LOG" ;;
   'core show channels concise') echo 'PJSIP/x!c!e!1!Up!Stasis!!!!!3!600!b!u' ;;
   *) echo "asterisk $2" >> "$ROLLOUT_LOG" ;;

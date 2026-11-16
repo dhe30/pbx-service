@@ -10,6 +10,7 @@
 #   E  only the marker (an earlier run was stopped, nothing "changed" now) -> drains and restarts
 #   F  the other pbx node is drained -> refuses before draining; no state d sent
 #   G  a new node (not in the edges' dispatcher list yet) -> no drain, no put-back, straight to restart
+#   H  like C, with maxcalls set ("N of 160 max active calls") -> d, counts 2,1,0, restart
 # Run from WSL/Linux with ansible-core:  bash infra/ansible/tests/pbx-rollout/run.sh
 set -u
 cd "$(dirname "$0")"
@@ -38,4 +39,6 @@ both_up; echo 3 > calls; run 'D: pbx_drain=false' -e '{"pbx_pending_restarts": [
 both_up; echo 1 > calls; printf 'asterisk\nari-app\n' > marker; run 'E: only the marker from a stopped run' -e '{"pbx_pending_restarts": [], "pbx_drain_wait_min": 1}'
 other_down; echo 1 > calls; echo ari-app > marker; run 'F: other node drained: refuse' -e '{"pbx_pending_restarts": ["ari-app"]}'
 new_node; echo 0 > calls; echo ari-app > marker; run 'G: new node, not in the dispatcher yet' -e '{"pbx_pending_restarts": ["asterisk", "ari-app"]}'
-rm -f calls rollout.log out.txt ds.list marker
+rm -f marker
+both_up; echo 2 > calls; echo 160 > calls.max; run 'H: maxcalls output format, drained to 0' -e '{"pbx_pending_restarts": ["asterisk"], "pbx_drain_wait_min": 2}'
+rm -f calls calls.max rollout.log out.txt ds.list marker
