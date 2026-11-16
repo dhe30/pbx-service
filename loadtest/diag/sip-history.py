@@ -19,6 +19,13 @@ matching Call-ID, in time order):
     --full             print whole messages, not one line each
     --limit N          at most N Call-IDs (default 20)
 
+Safe on a live edge (1 vCPU, 2 GB; a full-day scan once froze edge-1 for 11 minutes):
+    two streaming passes (pass 1 keeps a few bits per matching Call-ID, pass 2 keeps messages
+    only for the Call-IDs printed), runs at nice 10, and caps its own memory
+    (--max-mem-mb, default 300: exits with a message instead of starving Kamailio).
+    With --dir, --since is required and the window may be at most 2 h; --long lifts that, but
+    for long windows copy the pcaps off the edge (scp) and run there.
+
 Run on an edge (no install needed):
     loadtest/diag/remote.sh edge-1 py loadtest/diag/sip-history.py --dir /var/log/pbx/sipdump \\
         --since 10:55 --until 11:00 --match 16315550132
@@ -35,6 +42,7 @@ from collections import OrderedDict, defaultdict
 
 FILE_TS = re.compile(r'(\d{4}-\d{2}-\d{2})--(\d{2})-(\d{2})-(\d{2})\.pcap$')
 UTC = dt.timezone.utc
+MAX_WINDOW_H = 2  # longest --since/--until span on a live edge without --long
 
 
 def parse_when(s, default_date):
@@ -152,6 +160,44 @@ def sdp_summary(body):
     return f' [sdp {c.group(1) if c else "?"}:{m.group(1)} {m.group(2)} pt {m.group(3).strip()}{" " + dirs[0] if dirs else ""}]'
 
 
+MEM_HELP = ('Out of memory (cap {mb} MB, --max-mem-mb): narrow --since/--until or add filters. '
+            'For day-long analysis copy the pcaps off the edge and run there.')
+
+
+def limit_resources(max_mem_mb):
+    """Keep a search from starving Kamailio on a small edge (2026-11-15: a full-day scan held
+    every message in memory and edge-1 froze and rebooted, an 11-minute outage).
+    The cap makes Python raise MemoryError instead of pushing the VM into memory pressure."""
+    try:
+        os.nice(10)
+    except (AttributeError, OSError):  # no os.nice on Windows
+        pass
+    if max_mem_mb > 0:
+        try:
+            import resource
+            cap = max_mem_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+        except (ImportError, ValueError, OSError):
+            pass  # not on Linux (e.g. Windows dev box): no cap
+
+
+def messages(files, since, until):
+    """Stream parsed messages in the time window, one at a time."""
+    for path in files:
+        for t, src, dst, payload in packets(path):
+            when = dt.datetime.fromtimestamp(t, UTC)
+            if (since and when < since) or (until and when > until):
+                continue
+            msg = parse(payload)
+            if msg:
+                msg.update(t=t, src=src, dst=dst)
+                yield msg
+
+
+# Per-Call-ID criteria, kept as bits so pass 1 stores one small int per interesting Call-ID.
+B_METHOD, B_MATCH, B_FAILED = 1, 2, 4
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('files', nargs='*')
@@ -164,11 +210,19 @@ def main():
     ap.add_argument('--until')
     ap.add_argument('--full', action='store_true')
     ap.add_argument('--limit', type=int, default=20)
+    ap.add_argument('--max-mem-mb', type=int, default=300)
+    ap.add_argument('--long', action='store_true')
     a = ap.parse_args()
 
     today = dt.datetime.now(UTC).date()
     since = parse_when(a.since, today) if a.since else None
     until = parse_when(a.until, today) if a.until else None
+    if a.dir and not a.long:
+        start = since or dt.datetime.now(UTC) - dt.timedelta(hours=24)
+        span = (until or dt.datetime.now(UTC)) - start
+        if since is None or span > dt.timedelta(hours=MAX_WINDOW_H):
+            sys.exit(f'window is {span.total_seconds() / 3600:.1f} h; on a live edge give --since/--until '
+                     f'at most {MAX_WINDOW_H} h apart (or --long, ideally on a copy of the pcaps, not the edge)')
     files = list(a.files)
     if a.dir:
         files += pick_files(a.dir, since, until)
@@ -177,42 +231,62 @@ def main():
             return
     if not files:
         sys.exit('no pcap files (give files or --dir)')
+    limit_resources(a.max_mem_mb)
+    try:
+        run(a, files, since, until)
+    except MemoryError:
+        sys.exit(MEM_HELP.format(mb=a.max_mem_mb))
 
-    by_call = OrderedDict()
-    for path in files:
-        for t, src, dst, payload in packets(path):
-            when = dt.datetime.fromtimestamp(t, UTC)
-            if (since and when < since) or (until and when > until):
-                continue
-            msg = parse(payload)
-            if not msg:
-                continue
-            msg.update(t=t, src=src, dst=dst)
-            by_call.setdefault(msg['call_id'], []).append(msg)
 
-    picked = []
-    for cid, msgs in by_call.items():
+def run(a, files, since, until):
+    method = a.method.upper() if a.method else None
+    want_options = method == 'OPTIONS'
+    need = (B_METHOD if method else 0) | (B_MATCH if a.match else 0) | (B_FAILED if a.failed else 0)
+
+    # Pass 1: stream, remember only which Call-IDs meet which criteria (insertion order = first seen).
+    bits = OrderedDict()
+    n_msgs = 0
+    for m in messages(files, since, until):
+        n_msgs += 1
+        cid = m['call_id']
         if a.call_id and a.call_id not in cid:
             continue
-        if a.method and not any(m['method'] == a.method.upper() for m in msgs):
-            continue
-        if a.match and not any(a.match in searchable(m) for m in msgs):
-            continue
-        want_options = bool(a.method) and a.method.upper() == 'OPTIONS'
-        if a.failed and not any(
-            m['status'] and m['status'] >= 400 and m['status'] not in (401, 407) and (want_options or m['method'] != 'OPTIONS')
-            for m in msgs
-        ):
-            continue
-        picked.append(cid)
+        b = 0
+        if method and m['method'] == method:
+            b |= B_METHOD
+        if a.match and a.match in searchable(m):
+            b |= B_MATCH
+        st = m['status']
+        if a.failed and st and st >= 400 and st not in (401, 407) and (want_options or m['method'] != 'OPTIONS'):
+            b |= B_FAILED
+        if need == 0:
+            if cid not in bits and len(bits) <= a.limit:
+                bits[cid] = 0  # no criteria: the first Call-IDs seen (one extra = "more exist")
+        elif b:
+            bits[cid] = bits.get(cid, 0) | b
+    picked = [cid for cid, b in bits.items() if b & need == need]
+    total = len(picked)
+    picked = picked[:a.limit]
+    bits.clear()
 
-    print(f'{len(files)} file(s), {sum(len(v) for v in by_call.values())} messages, {len(by_call)} Call-IDs; '
-          f'{len(picked)} match' + (f', showing {a.limit}' if len(picked) > a.limit else ''))
-    for cid in picked[:a.limit]:
-        msgs = sorted(by_call[cid], key=lambda m: m['t'])
+    # Pass 2: keep messages only for the Call-IDs that will be printed.
+    keep = {cid: [] for cid in picked}
+    for m in messages(files, since, until):
+        lst = keep.get(m['call_id'])
+        if lst is not None:
+            if not a.full:
+                m['text'] = ''
+            m['h'] = None
+            lst.append(m)
+
+    more = f', showing {a.limit}' if total > a.limit else ''
+    print(f'{len(files)} file(s), {n_msgs} messages; {total}{"+" if need == 0 and total > a.limit else ""} '
+          f'Call-IDs match{more}')
+    for cid in picked:
+        msgs = sorted(keep[cid], key=lambda m: m['t'])
         print(f'\n=== Call-ID {cid} ({len(msgs)} messages)')
         for m in msgs:
-            if a.method and m['method'] != a.method.upper():
+            if method and m['method'] != method:
                 continue
             ts = dt.datetime.fromtimestamp(m['t'], UTC).strftime('%H:%M:%S.%f')[:-3]
             line = m['first'] if m['status'] is None else f"{m['first']} ({m['method']})"
