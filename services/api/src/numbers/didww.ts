@@ -107,9 +107,29 @@ export class HttpDidwwProvider implements DidProvider {
     this.placeLists = new LookupCache({ ttlMs, maxEntries: 500 });
   }
 
+  /**
+   * One request; reads (GET) are tried twice when the provider times out, is unreachable or
+   * answers 5xx. Under load the provider sometimes takes over 10 s; the timeout then fired while
+   * the body was being read, outside the try, and the customer got a 500 instead of a retry
+   * (a signup failed on its number search). Writes (orders) are never repeated here: their
+   * callers resume them with the Idempotency-Key.
+   */
   private async request(method: string, path: string, body?: unknown): Promise<Document> {
+    const attempts = method === 'GET' ? 2 : 1;
+    for (let i = 1; ; i++) {
+      try {
+        return await this.requestOnce(method, path, body);
+      } catch (err) {
+        const retryable = err instanceof DidProviderError && (err.status === null || err.status >= 500);
+        if (!retryable || i >= attempts) throw err;
+      }
+    }
+  }
+
+  private async requestOnce(method: string, path: string, body?: unknown): Promise<Document> {
     const url = `${this.o.baseUrl.replace(/\/$/, '')}${path}`;
     let res: Response;
+    let text: string;
     try {
       res = await fetch(url, {
         method,
@@ -121,10 +141,11 @@ export class HttpDidwwProvider implements DidProvider {
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(this.o.timeoutMs ?? 10_000),
       });
+      // Inside the try: the timeout can fire while the body is still arriving.
+      text = await res.text();
     } catch (err) {
       throw new DidProviderError(`DID provider unreachable: ${(err as Error).message}`);
     }
-    const text = await res.text();
     if (!res.ok) {
       // JSON:API errors: { errors: [{ title, detail, code }] }. Only the first is kept.
       let detail = text.slice(0, 300);

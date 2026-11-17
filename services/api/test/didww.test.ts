@@ -267,6 +267,36 @@ describe('HttpDidwwProvider', () => {
     const down = new HttpDidwwProvider({ baseUrl: 'http://127.0.0.1:1/v3', apiKey: 'k', trunk: { type: 'voice_in_trunks', id: 't' } });
     await expect(down.countries()).rejects.toMatchObject({ status: null, message: expect.stringContaining('unreachable') });
   });
+
+  // 2026-11-17: the provider answered a search after > 10 s; the timeout fired while the body was
+  // being read, outside the try, so the customer got a 500 (signup failed). Reads retry once.
+  it('retries a read once when the body stalls past the timeout or the provider answers 5xx', async () => {
+    let calls = 0;
+    let mode: 'stall' | '503' = 'stall';
+    const flaky = createServer((_req, res) => {
+      calls++;
+      res.writeHead(calls === 1 && mode === '503' ? 503 : 200, { 'content-type': 'application/vnd.api+json' });
+      if (calls === 1 && mode === 'stall') {
+        res.write('{"data":['); // headers and part of the body, then nothing until after the timeout
+        setTimeout(() => res.end(']}'), 400);
+        return;
+      }
+      res.end(JSON.stringify(calls === 1 ? { errors: [{ title: 'Busy' }] } : { data: [US] }));
+    });
+    await new Promise<void>((r) => flaky.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(flaky.address() as AddressInfo).port}/v3`;
+    try {
+      const p = () => new HttpDidwwProvider({ baseUrl: base, apiKey: 'k', trunk: { type: 'voice_in_trunks', id: 't' }, timeoutMs: 150 });
+      await expect(p().countries()).resolves.toMatchObject([{ iso: 'US' }]);
+      expect(calls).toBe(2);
+      calls = 0;
+      mode = '503';
+      await expect(p().countries()).resolves.toMatchObject([{ iso: 'US' }]);
+      expect(calls).toBe(2);
+    } finally {
+      await new Promise<void>((r) => flaky.close(() => r()));
+    }
+  });
 });
 
 describe('tollFreeCostPerMin', () => {
