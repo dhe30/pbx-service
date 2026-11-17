@@ -314,8 +314,14 @@ modparam("rtpengine", "rtpengine_disable_tout", 20)
 # commands are as exposed): each loss in a re-INVITE/answer showed up as a 200-300 ms SIP
 # transaction in the course's histogram. Replies take < 10 ms, so 100 ms is still 10x the worst
 # reply seen; 7 attempts keep 700 ms of patience.
+# 2026-11-17: 100 ms x 20 (2 s of patience). The media nodes' control thread sometimes stalls for
+# ~0.8 s (~40 times an hour per node; every resend then arrives in the same microsecond and is
+# answered from the cache). With 7 attempts a 0.8 s stall marked a healthy node dead for
+# rtpengine_disable_tout (20 s), and every call hashed to it failed with "no available proxies"
+# (03:06 burst = the course's 03:08 failure spike). A truly dead node now costs the first message
+# per worker 2 s instead of 0.7 s before it is disabled. Single lost packets still cost 0.1 s.
 modparam("rtpengine", "rtpengine_tout_ms", 100)
-modparam("rtpengine", "rtpengine_retr", 7)
+modparam("rtpengine", "rtpengine_retr", 20)
 # Forking: each branch toward a phone gets its own media leg in rtpengine (via-branch=extra with
 # a per-branch id), otherwise the branches' offers overwrite each other and the answering phone
 # can end up with no audio.
@@ -363,9 +369,17 @@ request_route {
 	}
 
 	# Retransmissions of requests we're already handling.
+	# t_precheck_trans() is true while ANOTHER worker is still running this same request through the
+	# script (e.g. waiting on rtpengine's offer in DEV_BRANCH). Drop the copy without touching the
+	# transaction: in Kamailio 6.0.8, t_check_trans() here finds that transaction before it has a
+	# branch, and at the end of this message tm releases it ("dropping orphaned transaction without
+	# branches ... kr=8"). The INVITE still goes out, but a 200 OK arriving > ~5 s later matches
+	# nothing, is relayed statelessly (no DEV_REPLY, no rtpengine_answer) and Asterisk gets the
+	# phone's own SDP: a silent call (2026-11-17, docs/incidents/2026-11-17-orphan-transaction.md).
+	# Upstream fix: kamailio 5479f28 (6.0 branch, after 6.0.8). The sender resends again (Asterisk
+	# after 200 ms), and by then the transaction has its branches and t_check_trans() below absorbs it.
 	if (!is_method("ACK")) {
 		if (t_precheck_trans()) {
-			t_check_trans();
 			exit;
 		}
 		t_check_trans();
