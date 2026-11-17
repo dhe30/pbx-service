@@ -283,6 +283,20 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     expect(ordersOf(o.number)).toBe(1);
   });
 
+  it('answers a search from the last good result while the provider is down', async () => {
+    const t = await makeTenant();
+    const first = await call(t.cookies, 'GET', '/numbers/available?areaCode=201&limit=4');
+    expect(first.statusCode).toBe(200);
+    expect(first.json().length).toBeGreaterThan(0);
+    provider.down = true;
+    const again = await call(t.cookies, 'GET', '/numbers/available?areaCode=201&limit=4');
+    expect(again.statusCode).toBe(200);
+    expect(again.json().map((o: { id: string }) => o.id)).toEqual(first.json().map((o: { id: string }) => o.id));
+    // A search nobody made before still fails.
+    const unseen = await call(t.cookies, 'GET', '/numbers/available?areaCode=516&limit=7');
+    expect(unseen.statusCode).toBe(502);
+  });
+
   it('provider or payment service down: 502, then the same key finishes without ordering twice', async () => {
     const t = await makeTenant();
     const o = await offer(t, 'areaCode=212');
@@ -311,7 +325,7 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     const key = randomUUID();
     const before = ordersOf(o.number); // an earlier test may have tried this number
     provider.loseNext = true;
-    expect((await buy(t, o.id, key)).statusCode).toBe(502);
+    // The API resumes the purchase itself after the provider error: the customer sees one 201.
     const res = await buy(t, o.id, key);
     expect(res.statusCode).toBe(201);
     expect(res.json().number.did).toBe(o.number);
