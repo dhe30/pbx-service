@@ -93,9 +93,14 @@ describe.skipIf(!rendered)('rendered configs', () => {
       // Trimmed before relaying, so every branch (and a peer edge's relay) gets the small version.
       expect(dev.indexOf('remove_hf("Allow")')).toBeLessThan(dev.indexOf('route(RELAY)'));
     });
-    it('a lost rtpengine command costs ~0.1 s, not 1 s (replies take < 10 ms), with 7 attempts', () => {
+    it('a lost rtpengine command costs ~0.1 s, and a ~0.8 s stall does not disable the node (20 attempts)', () => {
       expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_tout_ms", 100\)/);
-      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_retr", 7\)/);
+      expect(kam).toMatch(/modparam\("rtpengine", "rtpengine_retr", 20\)/);
+    });
+    it('a retransmission seen while another worker handles the request is dropped untouched (6.0.8 orphan release, 2026-11-17)', () => {
+      const req = block(kam, 'request_route {');
+      // t_check_trans() on a branch-less transaction made tm release it; the 200 OK then went stateless.
+      expect(req).toMatch(/if \(t_precheck_trans\(\)\) \{\n\t\t\texit;\n\t\t\}\n\t\tt_check_trans\(\);/);
     });
     it('a phone answering G.723 with an fmtp line gets reuse-codecs (rtpengine 26.0.1 bug, 2026-11-15)', () => {
       const fix = block(kam, 'route[G723_FIX]');
