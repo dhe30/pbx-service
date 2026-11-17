@@ -5,7 +5,7 @@
 #   2. promtool check rules / check config, amtool check-config
 # Output goes to infra/ansible/tests/.rendered-monitoring/ (gitignored).
 #
-#   sh infra/ansible/tests/check-monitoring.sh
+#   sh infra/ansible/tests/check-monitoring.sh   (also runs the alert unit tests, tests/pbx-alerts.test.yml)
 # The same validators also run on mon-1 before each file is installed (roles/monitoring/tasks).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -25,6 +25,7 @@ check() {
   if "$@" >"$OUT/last.log" 2>&1; then echo "PASS $*"; else echo "FAIL $*"; cat "$OUT/last.log"; status=1; fi
 }
 check promtool check rules "$MON/pbx-alerts.yml"
+check promtool test rules "$ROOT/infra/ansible/tests/pbx-alerts.test.yml"
 check promtool check config "$MON/prometheus.test.yml"
 check amtool check-config "$MON/alertmanager.yml"
 check prometheus-blackbox-exporter --config.check --config.file="$MON/blackbox.yml"

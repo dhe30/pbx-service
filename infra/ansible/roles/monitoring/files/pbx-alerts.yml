@@ -231,14 +231,16 @@ groups:
         annotations:
           summary: "{{ $labels.instance }}: {{ $value }} recordings waiting for upload to the object store"
 
-      # Q.850 cause 21 = call rejected; a PSTN vendor with a $0 prepaid balance answers 402, which
-      # arrives as 21. Many in a row usually means the vendor balance ran out.
+      # A PSTN vendor with a $0 prepaid balance answers 402, which Asterisk reports as Q.850 cause
+      # 127 (interworking; what it arrived as in production, 2026-11-16) or 21 (call rejected).
+      # Ordinary failures (busy 17, no answer 19, unallocated 1) are not counted.
+      # Summed over the pbx nodes: the rejections are spread over all of them.
       - alert: VendorCallsRejected
-        expr: sum by (instance) (increase(pbx_vendor_leg_failures_total{cause="21"}[10m])) >= 5
+        expr: sum(increase(pbx_vendor_leg_failures_total{cause=~"21|127"}[5m])) >= 5
         labels: { severity: critical }
         annotations:
-          summary: "{{ $labels.instance }}: {{ $value | humanize }} outgoing calls rejected by a PSTN vendor in 10 min"
-          description: Probably a vendor balance at $0 (402 Payment Required). Top up on the Course Services tab.
+          summary: "{{ $value | humanize }} outgoing calls rejected by a PSTN vendor in 5 min"
+          description: Probably a vendor balance at $0 (402 Payment Required). Top up that vendor from the bank now; every outgoing call fails until then.
 
   # ---- Object store (Garage on the db nodes) ------------------------------------------------------
   # [VERIFY] metric names against http://<db node>:3903/metrics on the first deployment.
@@ -376,19 +378,30 @@ groups:
           summary: "A support ticket has been open for {{ $value | humanizeDuration }}"
 
       # The DID provider charges a weekly fee per number and per-second fees on toll-free calls from
-      # this prepaid balance; at $0 it stops delivering incoming calls. Top up on the Course Services tab.
+      # this prepaid balance; at $0 it stops delivering incoming calls and refuses number orders (new
+      # signups fail). Thresholds leave a few hours / about an hour of a busy weekday's incoming cost.
       - alert: DidBalanceLow
-        expr: pbx_did_balance_usd < 10
+        expr: pbx_did_balance_usd < 25
         labels: { severity: warning }
         annotations:
           summary: "DID provider balance is ${{ $value | humanize }}"
-          description: At $0 incoming calls stop. Top up from the bank on the Course Services tab.
+          description: At $0 incoming calls stop and number orders fail. Top up the DID provider from the bank.
 
       - alert: DidBalanceCritical
-        expr: pbx_did_balance_usd < 3
+        expr: pbx_did_balance_usd < 10
         labels: { severity: critical }
         annotations:
           summary: "DID provider balance is ${{ $value | humanize }}: incoming calls stop at $0"
+
+      # Prepaid usage top-ups (API, src/billing/credit.ts). Many failures in a short time = the
+      # payment gateway is down or failing: credit is not refilled (calls still go through, but the
+      # money for them doesn't come in). A few declined cards are normal and not counted here.
+      - alert: PrepaidTopUpsFailing
+        expr: sum(increase(pbx_api_prepaid_topups_total{result="failed"}[15m])) >= 10
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanize }} prepaid top-ups failed in 15 min"
+          description: Payment gateway down or many cards declining. Check the API log ("prepaid top-up failed").
 
       - alert: BusinessCheckFailing
         expr: pbx_support_tickets_check_success == 0 or pbx_did_balance_check_success == 0

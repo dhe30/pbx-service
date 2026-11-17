@@ -1,0 +1,84 @@
+# Unit tests for roles/monitoring/files/pbx-alerts.yml (promtool test rules; check-monitoring.sh runs it):
+#   promtool test rules infra/ansible/tests/pbx-alerts.test.yml
+rule_files:
+  - ../roles/monitoring/files/pbx-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # A PSTN vendor out of funds: its 402s arrive as cause 127, spread over the pbx nodes.
+  - interval: 1m
+    input_series:
+      - series: 'pbx_vendor_leg_failures_total{instance="pbx-1",cause="127"}'
+        values: '0+1x15'
+      - series: 'pbx_vendor_leg_failures_total{instance="pbx-2",cause="127"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VendorCallsRejected
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "10 outgoing calls rejected by a PSTN vendor in 5 min"
+              description: Probably a vendor balance at $0 (402 Payment Required). Top up that vendor from the bank now; every outgoing call fails until then.
+
+  # Ordinary failures (busy, no answer) and a couple of plain rejections: no alert.
+  - interval: 1m
+    input_series:
+      - series: 'pbx_vendor_leg_failures_total{instance="pbx-1",cause="17"}'
+        values: '0+3x15'
+      - series: 'pbx_vendor_leg_failures_total{instance="pbx-1",cause="19"}'
+        values: '0+3x15'
+      - series: 'pbx_vendor_leg_failures_total{instance="pbx-2",cause="21"}'
+        values: '0 0 0 1 1 1 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VendorCallsRejected
+        exp_alerts: []
+
+  # Top-ups failing in bulk (gateway down) fire; a couple of declined cards don't.
+  - interval: 1m
+    input_series:
+      - series: 'pbx_api_prepaid_topups_total{instance="app-1",result="failed"}'
+        values: '0+1x20'
+      - series: 'pbx_api_prepaid_topups_total{instance="app-2",result="charged"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PrepaidTopUpsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "15 prepaid top-ups failed in 15 min"
+              description: Payment gateway down or many cards declining. Check the API log ("prepaid top-up failed").
+  - interval: 1m
+    input_series:
+      - series: 'pbx_api_prepaid_topups_total{instance="app-1",result="failed"}'
+        values: '0 0 1 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PrepaidTopUpsFailing
+        exp_alerts: []
+
+  # DID provider balance: warning under $25, critical under $10.
+  - interval: 1m
+    input_series:
+      - series: 'pbx_did_balance_usd{instance="mon-1"}'
+        values: '30 20 8'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: DidBalanceLow
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: DidBalanceLow
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: mon-1 }
+            exp_annotations:
+              summary: "DID provider balance is $20"
+              description: At $0 incoming calls stop and number orders fail. Top up the DID provider from the bank.
+      - eval_time: 2m
+        alertname: DidBalanceCritical
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: mon-1 }
+            exp_annotations:
+              summary: "DID provider balance is $8: incoming calls stop at $0"

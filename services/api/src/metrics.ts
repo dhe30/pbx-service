@@ -26,4 +26,13 @@ export const metrics = {
     help: 'Support tickets closed by customers',
     registers: [registry],
   }),
+  // Prepaid usage top-ups (src/billing/credit.ts): charged, failed (declined or gateway error, retried
+  // with backoff) and stopped (declined TOPUP_MAX_DECLINES times in a row: no more attempts until a
+  // new card is added). Per process: sum over the app nodes in Prometheus.
+  prepaidTopUps: new Counter({
+    name: 'pbx_api_prepaid_topups_total',
+    help: 'Prepaid credit top-up attempts by result',
+    labelNames: ['result'] as const,
+    registers: [registry],
+  }),
 };
