@@ -104,6 +104,26 @@
       changed_when: true
       notify: Restart asterisk
 
+# Asterisk opens its RTP sockets with the kernel's default receive buffer (208 KB). At the
+# 2026-11-17 morning peak the pbx nodes dropped up to 33 incoming UDP packets a second
+# (RcvbufErrors; the SIP socket on 5060 dropped none, so these were audio packets): a short stall
+# in Asterisk overflowed a call's buffer. Every new socket gets the new default, so this needs no
+# restart and takes effect with the next call.
+- name: Larger UDP receive buffers for RTP
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-pbx-udp-buffers.conf
+    content: |
+      # Managed by Ansible (role asterisk).
+      net.core.rmem_default = {{ asterisk_udp_rmem_default }}
+      net.core.rmem_max = {{ asterisk_udp_rmem_max }}
+    mode: "0644"
+  register: pbx_udp_buffers
+
+- name: Apply the UDP buffer settings now
+  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/90-pbx-udp-buffers.conf
+  when: pbx_udp_buffers.changed
+  changed_when: true
+
 - name: Asterisk directories
   ansible.builtin.file:
     path: "{{ item }}"
