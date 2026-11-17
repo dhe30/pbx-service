@@ -13,6 +13,7 @@ import { CdrWriter } from '../../src/cdr.js';
 import { loadConfig } from '../../src/config.js';
 import type { Ctx } from '../../src/ctx.js';
 import { LegTracker } from '../../src/legs.js';
+import { HoldState } from '../../src/hold-state.js';
 import { log } from '../../src/log.js';
 import { Repo } from '../../src/repo.js';
 import type { SpoolMeta } from '../../src/uploader.js';
@@ -106,6 +107,7 @@ export function makeHarness(sql: Sql, env: Record<string, string> = {}): Harness
     },
     legs: new LegTracker(),
     conversations: new Map(),
+    holds: new HoldState(),
   };
   // The app's own logger writes into `logs` so tests can assert on log lines (call trace).
   const logs: Record<string, unknown>[] = [];

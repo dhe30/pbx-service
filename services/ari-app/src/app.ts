@@ -28,6 +28,7 @@ export class PbxApp {
 
   onEvent(ev: AriEvent): void {
     this.ctx.legs.onEvent(ev);
+    this.ctx.holds.onEvent(ev);
     const taken = this.ctx.bus.dispatch(ev);
     switch (ev.type) {
       case 'StasisStart': {
