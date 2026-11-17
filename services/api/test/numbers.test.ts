@@ -283,6 +283,20 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     expect(ordersOf(o.number)).toBe(1);
   });
 
+  it('answers a search from the last good result while the provider is down', async () => {
+    const t = await makeTenant();
+    const first = await call(t.cookies, 'GET', '/numbers/available?areaCode=201&limit=4');
+    expect(first.statusCode).toBe(200);
+    expect(first.json().length).toBeGreaterThan(0);
+    provider.down = true;
+    const again = await call(t.cookies, 'GET', '/numbers/available?areaCode=201&limit=4');
+    expect(again.statusCode).toBe(200);
+    expect(again.json().map((o: { id: string }) => o.id)).toEqual(first.json().map((o: { id: string }) => o.id));
+    // A search nobody made before still fails.
+    const unseen = await call(t.cookies, 'GET', '/numbers/available?areaCode=516&limit=7');
+    expect(unseen.statusCode).toBe(502);
+  });
+
   it('provider or payment service down: 502, then the same key finishes without ordering twice', async () => {
     const t = await makeTenant();
     const o = await offer(t, 'areaCode=212');
