@@ -3,7 +3,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { saveCard, startCardSetup } from '../billing/account.js';
-import { PLAN, PRICES } from '../billing/catalog.js';
+import { BILLING_MODEL, PLAN, PREPAID, PRICES } from '../billing/catalog.js';
+import { creditState } from '../billing/credit.js';
 import { listRates, loadPricing, rateForNumber } from '../billing/rates.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
@@ -59,6 +60,32 @@ const PricesSchema = z
         intlMinPerMin: z.number().describe('International calls: minimum USD per minute.'),
       })
       .describe('Per-minute prices, billed in 30/6-second increments. Internal and other incoming calls are free. Per destination: GET /billing/rates.'),
+    billingModel: z
+      .enum(['prepaid', 'postpaid'])
+      .describe(
+        'How usage (per-minute charges) is paid, for every account. prepaid: usage is sold in advance from a credit ' +
+          'balance (see `prepaid`); the weekly invoice charges only the recurring items. postpaid: usage is invoiced ' +
+          'after each period.',
+      ),
+    prepaid: z
+      .object({
+        topUpCentsPer10Extensions: z
+          .number()
+          .int()
+          .describe(
+            "Top-up amount per 10 extensions, US cents. An account's top-up is this amount times its extensions / 10, " +
+              'rounded up (at least once): 1-10 extensions = 1x, 11-20 = 2x, and so on.',
+          ),
+        threshold: z
+          .literal('one_top_up')
+          .describe("Recharge threshold: a top-up is charged whenever the account's credit balance is below one top-up."),
+      })
+      .describe(
+        "Prepaid usage. The account's top-up is charged to the saved card at signup and automatically whenever the " +
+          'credit balance drops below the threshold. Usage is deducted from the balance as calls end; unused credit ' +
+          'carries over. Calls are never refused or cut off for lack of credit while the card works. ' +
+          'Balance: GET /billing `credit`.',
+      ),
   })
   .describe('Price list.');
 
@@ -92,6 +119,20 @@ const BillingSchema = z
         allowed: z.number().int().describe('Included in the plan plus bought.'),
       })
       .describe('Extension limit.'),
+    credit: z
+      .object({
+        balanceCents: z
+          .number()
+          .int()
+          .describe(
+            'Prepaid credit balance, US cents. Usage is deducted as calls end; it can dip below zero until the next ' +
+              'automatic top-up (calls are never refused for lack of credit).',
+          ),
+        topUpCents: z.number().int().describe("This account's top-up: the published amount per 10 extensions times extensions / 10, rounded up."),
+        thresholdCents: z.number().int().describe('A top-up is charged automatically whenever the balance is below this.'),
+        lastTopUpAt: z.date().nullable().describe('When the last top-up was charged; null = none yet.'),
+      })
+      .describe('Prepaid usage credit (GET /billing/prices `billingModel`).'),
   })
   .describe("The account's billing state.");
 
@@ -151,7 +192,9 @@ const docs = {
     tag: 'Billing',
     auth: 'public',
     summary: 'Price list',
-    description: 'Plan, items and per-minute prices, as charged. Show these before signup and before every purchase.',
+    description:
+      'Plan, items and per-minute prices, as charged, and the billing model (`billingModel`): usage is prepaid from ' +
+      'a credit balance, with the top-up per 10 extensions in `prepaid`. Show these before signup and before every purchase.',
     responses: { 200: { description: 'Prices', schema: PricesSchema } },
   },
   rates: {
@@ -198,7 +241,8 @@ const docs = {
     description:
       'Call after stripe.confirmCardSetup succeeded. The API checks the SetupIntent with Stripe, makes the card the ' +
       "default, and if the plan isn't paid yet charges it now, prorated to the end of the current period. " +
-      'Safe to retry: it never charges twice.',
+      'It then charges the prepaid usage top-up if the credit balance is below the threshold (at signup: always), ' +
+      'and a new card retries a declined top-up at once. Safe to retry: it never charges twice.',
     body: SaveCardBody,
     responses: { 200: { description: 'Card saved (and plan paid if it was due)', schema: BillingSchema } },
     errors: {
@@ -236,11 +280,18 @@ export const billingRoutes: FastifyPluginAsync<BillingOptions> = async (app, opt
     );
     const r = row!;
     const period = billingPeriod(r.timezone, r.createdAt, new Date());
+    const credit = await withRetry(() => creditState(sql, tenantId));
     return {
       card: r.paymentMethodId ? { brand: r.cardBrand, last4: r.cardLast4 } : null,
       planPaidThrough: r.planPaidThrough,
       currentPeriod: { start: period.start, end: period.end },
       extensions: { used: r.used, allowed: r.allowed },
+      credit: {
+        balanceCents: credit.balanceCents,
+        topUpCents: credit.topUpCents,
+        thresholdCents: credit.thresholdCents,
+        lastTopUpAt: credit.lastTopUpAt,
+      },
     };
   }
 
@@ -257,6 +308,8 @@ export const billingRoutes: FastifyPluginAsync<BillingOptions> = async (app, opt
         intlMultiplier: p.intlMultiplier,
         intlMinPerMin: p.intlMinPerMin,
       },
+      billingModel: BILLING_MODEL,
+      prepaid: { topUpCentsPer10Extensions: PREPAID.topUpCentsPer10Extensions, threshold: 'one_top_up' as const },
     };
   });
 

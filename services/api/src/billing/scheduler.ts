@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import { cleanupOrphanVoicemailMedia } from '../maintenance.js';
 import type { MediaStore } from '../object-store.js';
 import { MIN_CHARGE_CENTS } from './catalog.js';
+import { rechargeNext } from './credit.js';
 import { syncSettings } from './items.js';
 import type { StripeClient } from './stripe.js';
 
@@ -22,6 +23,10 @@ import type { StripeClient } from './stripe.js';
 //      then blocks outgoing external legs (tenants.status, NOTIFY pbx_config).
 //   4. lapse: add-ons whose cancelled period ended are switched off (tenant_settings).
 //   5. housekeeping (with a store): voicemail audio left behind by *98 deletes (src/maintenance.ts).
+//   6. prepaid top-ups: every account whose credit is below its threshold gets one top-up charged
+//      (credit.ts). Runs first, so a new account's credit is charged within one tick.
+// Prepaid usage: calls started at or after tenants.prepaid_since are deducted from the
+// credit balance, not invoiced; the invoice shows the credit charged and the usage deducted.
 // A paid invoice reactivates a past-due account once nothing else is unpaid. Adding a card charges
 // every unpaid invoice at once (payOverdue, called from POST /billing/card).
 
@@ -47,10 +52,18 @@ export interface TickResult {
   pastDue: number;
   lapsed: number;
   orphansDeleted: number;
+  toppedUp: number;
+  topUpsFailed: number;
 }
 
 export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<TickResult> {
-  const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0, orphansDeleted: 0 };
+  const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0, orphansDeleted: 0, toppedUp: 0, topUpsFailed: 0 };
+  for (let i = 0; i < BATCH; i++) {
+    const outcome = await rechargeNext(d, now);
+    if (outcome === null) break;
+    if (outcome === 'charged') r.toppedUp++;
+    else r.topUpsFailed++;
+  }
   r.lapsed = await expireLapsedAddons(d, now);
   for (let i = 0; i < BATCH && (await invoiceNextAccount(d, now)); i++) r.invoiced++;
   for (let i = 0; i < BATCH; i++) {
@@ -63,7 +76,7 @@ export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<
   if (d.store) {
     r.orphansDeleted = await cleanupOrphanVoicemailMedia({ sql: d.sql, store: d.store, log: d.log }, now);
   }
-  if (r.invoiced || r.charged || r.failed || r.pastDue || r.lapsed) d.log.info({ ...r }, 'billing tick');
+  if (r.invoiced || r.charged || r.failed || r.pastDue || r.lapsed || r.toppedUp || r.topUpsFailed) d.log.info({ ...r }, 'billing tick');
   return r;
 }
 
@@ -156,6 +169,12 @@ async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Peri
         })),
       )}`;
   }
+  // Prepaid usage: calls started at or after prepaid_since were deducted from the credit
+  // balance as they ended, so only earlier (postpaid) calls are invoiced and charged here.
+  const [t] = await tx<{ prepaidSince: Date | null }[]>`select prepaid_since from tenants where id = ${tenantId}`;
+  const prepaidSince = t?.prepaidSince ?? null;
+  const postpaidUntil = prepaidSince && prepaidSince < ended.end ? prepaidSince : ended.end;
+
   // One usage line per charged leg of the ended period (outgoing beyond the included minutes,
   // international, incoming toll-free, every external leg).
   await tx`
@@ -168,7 +187,19 @@ async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Peri
            end || ', ' || c.billable_sec || ' s billed',
            c.id, c.call_id, c.started_at, c.billable_sec, c.charge
       from cdrs c
-     where c.tenant_id = ${tenantId} and c.started_at >= ${ended.start} and c.started_at < ${ended.end} and c.charge > 0`;
+     where c.tenant_id = ${tenantId} and c.started_at >= ${ended.start} and c.started_at < ${postpaidUntil} and c.charge > 0`;
+
+  // Shown on the invoice, not charged by it: the credit bought during the ended period and the
+  // prepaid usage deducted from it.
+  const [credit] = await tx<{ chargedCents: number; deductedCents: number }[]>`
+    select coalesce((select sum(amount_cents) from payments
+                      where tenant_id = ${tenantId} and purpose = 'topup' and status = 'succeeded'
+                        and created_at >= ${ended.start} and created_at < ${ended.end}), 0)::int as charged_cents,
+           coalesce((select round(sum(charge) * 100) from cdrs
+                      where tenant_id = ${tenantId} and charge > 0
+                        and started_at >= ${prepaidSince && prepaidSince > ended.start ? prepaidSince : ended.start}
+                        and started_at < ${ended.end}
+                        and ${prepaidSince !== null}), 0)::int as deducted_cents`;
 
   const recurringCents = renewed.reduce((sum, r) => sum + r.priceCents, 0);
   await tx`
@@ -176,6 +207,8 @@ async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Peri
        set recurring_cents = ${recurringCents},
            usage_cents = u.cents,
            total_cents = ${recurringCents} + u.cents,
+           credit_charged_cents = ${credit?.chargedCents ?? 0},
+           usage_deducted_cents = ${credit?.deductedCents ?? 0},
            included_sec_used = coalesce((select included_sec_used from usage_periods
                                           where tenant_id = ${tenantId} and period_start = ${ended.startDate}), 0)
       from (select coalesce(round(sum(amount) * 100), 0)::int as cents

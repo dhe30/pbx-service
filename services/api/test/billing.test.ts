@@ -3,7 +3,7 @@ import { billingPeriod, type Sql } from '@pbx/shared';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
-import { CEILINGS_CENTS, PLAN, PRICES, proratedCents } from '../src/billing/catalog.js';
+import { CEILINGS_CENTS, PLAN, PRICES, proratedCents, topUpCents } from '../src/billing/catalog.js';
 import { FakeStripe, build, connectTestDb } from './helpers.js';
 
 // Signup card + first plan charge + extension limit (docs/billing-flows.md §1, §3).
@@ -105,20 +105,26 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
       planPaidThrough: period.end.toISOString(),
       currentPeriod: { start: period.start.toISOString(), end: period.end.toISOString() },
     });
-    expect(stripe.charges.length).toBe(charges + 1);
-    const charge = stripe.charges.at(-1)!;
+    // The prorated plan, then the first prepaid usage top-up (charged at signup).
+    expect(stripe.charges.length).toBe(charges + 2);
+    const charge = stripe.charges.at(-2)!;
     // Signed up today, so most of the first period is left: between 6/7 of the price and all of it.
     expect(charge.amountCents).toBeGreaterThan(Math.floor((PLAN.priceCents * 6) / 7));
     expect(charge.amountCents).toBeLessThanOrEqual(PLAN.priceCents);
-    const [payment] = await sql`select purpose, amount_cents, status from payments where tenant_id = ${t.tenantId}`;
-    expect(payment).toEqual({ purpose: 'plan', amountCents: charge.amountCents, status: 'succeeded' });
+    expect(stripe.charges.at(-1)!.amountCents).toBe(topUpCents(0));
+    const payments = await sql`select purpose, amount_cents, status from payments where tenant_id = ${t.tenantId} order by purpose = 'topup', created_at`;
+    expect(payments).toEqual([
+      { purpose: 'plan', amountCents: charge.amountCents, status: 'succeeded' },
+      { purpose: 'topup', amountCents: topUpCents(0), status: 'succeeded' },
+    ]);
+    expect(saved.json().credit).toMatchObject({ balanceCents: topUpCents(0), topUpCents: topUpCents(0) });
     // The plan is a recurring item, renewed by the billing scheduler.
     const items = await sql`select kind, price_cents, paid_through, removed_at from account_items where tenant_id = ${t.tenantId}`;
     expect(items).toEqual([{ kind: 'plan', priceCents: PLAN.priceCents, paidThrough: period.end, removedAt: null }]);
 
-    // Retrying (lost response) charges nothing more.
+    // Retrying (lost response) charges nothing more (the credit is at the threshold).
     expect((await t.call('POST', '/billing/card', { setupIntentId: t.cardSetup.setupIntentId })).statusCode).toBe(200);
-    expect(stripe.charges.length).toBe(charges + 1);
+    expect(stripe.charges.length).toBe(charges + 2);
 
     // The plan's included extensions can be created; one more needs a purchased extension.
     const n = PLAN.includedExtensions;
@@ -134,7 +140,7 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     stripe.completeSetup(setup.setupIntentId, { brand: 'mastercard', last4: '4444' });
     const replaced = await t.call('POST', '/billing/card', { setupIntentId: setup.setupIntentId });
     expect(replaced.json().card).toEqual({ brand: 'mastercard', last4: '4444' });
-    expect(stripe.charges.length).toBe(charges + 1);
+    expect(stripe.charges.length).toBe(charges + 2);
   });
 
   it('a declined plan charge is 402 and leaves the plan unpaid; another card then pays', async () => {
@@ -157,8 +163,9 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     const paid = await t.call('POST', '/billing/card', { setupIntentId: setup.setupIntentId });
     expect(paid.statusCode).toBe(200);
     expect(paid.json().planPaidThrough).not.toBeNull();
-    const rows = await sql`select status from payments where tenant_id = ${t.tenantId} order by created_at`;
-    expect(rows.map((r) => r.status)).toEqual(['failed', 'succeeded']);
+    const rows = await sql`select purpose, status from payments where tenant_id = ${t.tenantId} order by purpose = 'topup', created_at`;
+    // The declined plan, the plan on the new card, then the first prepaid top-up.
+    expect(rows.map((r) => `${r.purpose}:${r.status}`)).toEqual(['plan:failed', 'plan:succeeded', 'topup:succeeded']);
   });
 
   it("refuses unconfirmed, unknown and other accounts' SetupIntents", async () => {

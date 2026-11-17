@@ -59,14 +59,14 @@ const rsp = (code: string, method: string, cid: string, proto: string) =>
 describe.skipIf(!python)('sip-history.py', () => {
   it('reads real Kamailio 6.0.8 sipdump output: transport, requests and our replies, by Call-ID', () => {
     const out = run(SAMPLE);
-    expect(out).toMatch(/1 file\(s\), 4 messages, 2 Call-IDs; 2 match/);
+    expect(out).toMatch(/1 file\(s\), 4 messages; 2 Call-IDs match/);
     expect(out).toMatch(/=== Call-ID test-1@127\.0\.0\.1 \(2 messages\)/);
     expect(out).toMatch(/udp\s+127\.0\.0\.1:5098 -> 127\.0\.0\.1:5099\s+REGISTER sip:127\.0\.0\.1:5099 SIP\/2\.0 cseq 1/);
     expect(out).toMatch(/udp\s+127\.0\.0\.1:5099 -> 127\.0\.0\.1:5098\s+SIP\/2\.0 200 OK \(REGISTER\) cseq 1/);
   });
 
   it('--method, --call-id and --full narrow and expand the ladder', () => {
-    expect(run(SAMPLE, '--method', 'register')).toMatch(/2 Call-IDs; 1 match/);
+    expect(run(SAMPLE, '--method', 'register')).toMatch(/; 1 Call-IDs match/);
     expect(run(SAMPLE, '--call-id', 'test-0')).toMatch(/=== Call-ID test-0@127\.0\.0\.1/);
     expect(run(SAMPLE, '--call-id', 'test-1', '--full')).toMatch(/\n {4}P-KSR-SIPDump: udp pid=\d+ pno=1/);
   });
@@ -88,13 +88,13 @@ describe.skipIf(!python)('sip-history.py', () => {
       ]),
     );
     const failed = run(file, '--failed');
-    expect(failed).toMatch(/3 Call-IDs; 1 match/); // the scanner's OPTIONS 403 is left out
+    expect(failed).toMatch(/; 1 Call-IDs match/); // only the 486: the 401 and the scanner's OPTIONS 403 are left out
     expect(failed).not.toMatch(/=== Call-ID 1 /);
     expect(run(file, '--failed', '--method', 'OPTIONS')).toMatch(/=== Call-ID 1 /);
     expect(failed).toMatch(/=== Call-ID fail@tls/);
     expect(failed).toMatch(/tls\s+10\.0\.1\.13:5061 -> 130\.245\.136\.25:5061\s+SIP\/2\.0 486 Busy Here \(INVITE\)/);
-    expect(run(file, '--match', 'x2e11f8d87a326444')).toMatch(/2 match/);
-    expect(run(file, '--match', '16315550132', '--method', 'INVITE')).toMatch(/1 match/);
+    expect(run(file, '--match', 'x2e11f8d87a326444')).toMatch(/; 2 Call-IDs match/);
+    expect(run(file, '--match', '16315550132', '--method', 'INVITE')).toMatch(/; 1 Call-IDs match/);
   });
 
   it('--dir with --since/--until picks files by their packets, not their (local-time) names', () => {
@@ -103,8 +103,8 @@ describe.skipIf(!python)('sip-history.py', () => {
     writeFileSync(join(dir, 'sip-2026-11-15--06-00-00.pcap'), pcap([
       { t: 1794740400.1, src: '130.245.136.25:5061', dst: '10.0.1.13:5061', sip: req('INVITE', 'in-window', 'tls') },
     ]));
-    expect(run('--dir', dir, '--since', '2026-11-15T10:59', '--until', '2026-11-15T11:01')).toMatch(/1 match/);
-    expect(run('--dir', dir, '--since', '2026-11-15T12:00')).toMatch(/0 messages/); // last file: still read, nothing in window
-    expect(run('--dir', dir, '--until', '2026-11-15T10:00')).toMatch(/no SIP history files in .* for that time window/);
+    expect(run('--dir', dir, '--since', '2026-11-15T10:59', '--until', '2026-11-15T11:01')).toMatch(/; 1 Call-IDs match/);
+    expect(run('--dir', dir, '--since', '2026-11-15T12:00', '--long')).toMatch(/0 messages/); // last file: still read, nothing in window (open-ended window: --long)
+    expect(run('--dir', dir, '--until', '2026-11-15T10:00', '--long')).toMatch(/no SIP history files in .* for that time window/);
   });
 });
