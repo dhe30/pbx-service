@@ -311,7 +311,7 @@ describe.skipIf(!db)('numbers (Postgres)', () => {
     const key = randomUUID();
     const before = ordersOf(o.number); // an earlier test may have tried this number
     provider.loseNext = true;
-    expect((await buy(t, o.id, key)).statusCode).toBe(502);
+    // The API resumes the purchase itself after the provider error: the customer sees one 201.
     const res = await buy(t, o.id, key);
     expect(res.statusCode).toBe(201);
     expect(res.json().number.did).toBe(o.number);

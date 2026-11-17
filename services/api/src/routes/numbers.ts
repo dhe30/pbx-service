@@ -6,7 +6,7 @@ import { proratedCents } from '../billing/catalog.js';
 import { IDEMPOTENCY_KEY_DOC, IdempotencyKeyHeader } from '../billing/purchase-requests.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { HttpError } from '../errors.js';
-import type { DidProvider } from '../numbers/provider.js';
+import { DidProviderError, type DidProvider } from '../numbers/provider.js';
 import { numberPriceCents, purchaseNumber } from '../numbers/purchase.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
 import { IdParams, assertOwned, destinationRefs, tenantOf } from '../tenancy.js';
@@ -261,6 +261,9 @@ const docs = {
 
 const COLUMNS = 'id, did, status, kind, destination, paid_until, purchased_at';
 
+/** Pauses before resuming a purchase after a DID provider failure (2 retries, ~3 s in all). */
+export const PURCHASE_RETRY_DELAYS_MS = [1000, 2000];
+
 export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; provider: DidProvider }> = async (
   app,
   { sql, stripe, provider },
@@ -308,7 +311,20 @@ export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; 
     const header = req.headers['idempotency-key'];
     const clientKey = parse(IdempotencyKey, Array.isArray(header) ? header[0] : header);
     const { availableNumberId } = parse(PurchaseBody, req.body);
-    const result = await purchaseNumber({ sql, stripe, provider, log: req.log }, { tenantId, clientKey, availableNumberId });
+    // The purchase resumes from its saved steps with the same key and never orders or charges
+    // twice (numbers/purchase.ts), so a provider failure is retried here instead of being handed
+    // to the customer: on 2026-11-17 signups failed on one 502 and the customer gave up.
+    let result: Awaited<ReturnType<typeof purchaseNumber>>;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        result = await purchaseNumber({ sql, stripe, provider, log: req.log }, { tenantId, clientKey, availableNumberId });
+        break;
+      } catch (err) {
+        if (!(err instanceof DidProviderError) || attempt >= PURCHASE_RETRY_DELAYS_MS.length) throw err;
+        req.log.warn({ err: err.message, attempt: attempt + 1 }, 'DID provider failed during a purchase; resuming');
+        await new Promise((r) => setTimeout(r, PURCHASE_RETRY_DELAYS_MS[attempt]));
+      }
+    }
     if (result.status === 'processing') {
       return reply
         .status(202)
