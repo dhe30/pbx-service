@@ -134,13 +134,17 @@ describe.skipIf(!db)('signup card, plan charge, extension limit (Postgres)', () 
     expect(over.json().error).toBe('extension_limit');
     expect((await t.call('GET', '/billing')).json().extensions).toEqual({ used: n, allowed: n });
 
-    // Replacing the card later: new setup, no charge (the plan is paid).
+    // Replacing the card later: new setup, no plan charge (the plan is paid). The account now has
+    // n extensions, so its top-up (and threshold) is topUpCents(n); a credit below that is topped up
+    // with the new card, and only then.
     const setup = (await t.call('POST', '/billing/setup-intent')).json();
     expect(setup).toMatchObject({ publishableKey: 'pk_test_fake', stripeJsUrl: 'https://stripe.test/v3/' });
     stripe.completeSetup(setup.setupIntentId, { brand: 'mastercard', last4: '4444' });
     const replaced = await t.call('POST', '/billing/card', { setupIntentId: setup.setupIntentId });
     expect(replaced.json().card).toEqual({ brand: 'mastercard', last4: '4444' });
-    expect(stripe.charges.length).toBe(charges + 2);
+    const toppedUp = topUpCents(0) < topUpCents(n) ? 1 : 0;
+    expect(stripe.charges.length).toBe(charges + 2 + toppedUp);
+    if (toppedUp) expect(stripe.charges.at(-1)!.amountCents).toBe(topUpCents(n));
   });
 
   it('a declined plan charge is 402 and leaves the plan unpaid; another card then pays', async () => {

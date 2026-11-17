@@ -21,30 +21,36 @@
 // cost (extensions, plan and add-ons have no direct cost; local numbers cost 1.50/period). Per-minute
 // prices are in migration 20261119000000_price_cut.sql, which also lowers existing customers' items
 // to these prices.
+// REPRICED (2026-11-17): with usage prepaid, revenue no longer lags costs, so prices only have to
+// stay profitable. Cut the items that cost us nothing (included and extra extensions, plan,
+// add-ons) and the local number to $0.45 above its cost; US per-minute and international in
+// migration 20261121000000_pricing_b.sql. Weekly estimate at 2026-11-17 volume: revenue ~$3.5k,
+// costs ~$2.6k (vendors, DID numbers, card fees, VMs), profit ~$0.7k. Existing customers' renewing
+// items are lowered to these prices, never raised (same migration).
 export const PLAN = {
   name: 'Business',
   /** Plan price per period. Ceiling: $11.50 per included extension. */
-  priceCents: 450,
-  includedExtensions: 5,
-  /** US outgoing minutes included per period, shared by the account. */
+  priceCents: 350,
+  includedExtensions: 20,
+  /** US outgoing minutes included per period, shared by the account (~$3 at the vendor's rate). */
   includedUsMinutes: 500,
 } as const;
 
 export const PRICES = {
-  /** Each additional extension, per period. Ceiling $11.50. */
-  extensionCents: 49,
+  /** Each additional extension, per period. Ceiling $11.50. No direct cost. */
+  extensionCents: 25,
   /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
-  localNumberCents: 215,
+  localNumberCents: 195,
   /**
    * Ceiling $3.50, and we charge it: the DID provider takes 2.00 setup + 3.00 per 7-day period for
    * a toll-free number (verify-backlog V-D15, 2026-11-11), so 3.00 lost the setup fee and earned
    * nothing on renewal. At 3.50 the setup is recovered in 4 periods. (Local: 0.00 + 1.50 vs 2.75.)
    */
   tollFreeNumberCents: 350,
-  /** International calling add-on. Ceiling $4.60. */
-  intlCallingCents: 150,
-  /** Call recording add-on. Ceiling $4.60. */
-  recordingCents: 150,
+  /** International calling add-on. Ceiling $4.60. No direct cost. */
+  intlCallingCents: 89,
+  /** Call recording add-on. Ceiling $4.60. No direct cost (object storage is ours). */
+  recordingCents: 89,
 } as const;
 
 /** Course ceilings in cents (spec §2), per billing period. */
