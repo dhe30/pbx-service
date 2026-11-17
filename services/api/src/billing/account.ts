@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import { HttpError } from '../errors.js';
 import { MIN_CHARGE_CENTS, PLAN, proratedCents } from './catalog.js';
+import { rechargeNext } from './credit.js';
 import { payOverdue } from './scheduler.js';
 import type { StripeClient } from './stripe.js';
 
@@ -99,14 +100,21 @@ export async function saveCard(
       return { brand: null, last4: null };
     }),
   ]);
+  // A new card also gets a declined prepaid top-up retried right away (topup_retry_at cleared).
   await withRetry(
     () => sql`
       update billing_accounts
-         set payment_method_id = ${pm}, card_brand = ${card.brand}, card_last4 = ${card.last4}, updated_at = now()
+         set payment_method_id = ${pm}, card_brand = ${card.brand}, card_last4 = ${card.last4},
+             topup_retry_at = null, updated_at = now()
        where tenant_id = ${tenantId}`,
   );
 
-  if (!acct.planPaidThrough) return chargeFirstPeriod(sql, stripe, tenantId, acct.stripeCustomerId, pm, log, now);
+  if (!acct.planPaidThrough) {
+    const first = await chargeFirstPeriod(sql, stripe, tenantId, acct.stripeCustomerId, pm, log, now);
+    await firstTopUp(sql, stripe, tenantId, log, now);
+    return first;
+  }
+  await firstTopUp(sql, stripe, tenantId, log, now);
 
   // A replacement card. Billing-flows §5: "charge every overdue invoice immediately; on success set
   // status active" (the scheduler's charge reactivates the account; the call path unblocks within
@@ -121,6 +129,19 @@ export async function saveCard(
   }
   if (overdue.paid > 0) log.info({ tenantId, invoices: overdue.paid }, 'overdue invoices paid with a new card');
   return { chargedCents: 0 };
+}
+
+/**
+ * Prepaid usage: "charge it [the top-up] at signup". Charges a top-up now if the balance is below
+ * the threshold. Never fails the request: a decline or gateway error is retried by the billing
+ * scheduler, and calls are never refused for lack of credit.
+ */
+async function firstTopUp(sql: Sql, stripe: StripeClient, tenantId: string, log: FastifyBaseLogger, now: Date): Promise<void> {
+  try {
+    await rechargeNext({ sql, stripe, log }, now, tenantId);
+  } catch (err) {
+    log.warn({ err, tenantId }, 'prepaid top-up at signup failed; the billing scheduler retries it');
+  }
 }
 
 /** "Items bought mid-period (including the plan at signup) are charged immediately, prorated." */

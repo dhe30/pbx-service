@@ -55,7 +55,30 @@ export const CEILINGS_CENTS = {
   tollFreeNumber: 350,
   intlCalling: 460,
   recording: 460,
+  /** Prepaid top-up per 10 extensions. */
+  topUpPer10Extensions: 2500,
 } as const;
+
+/**
+ * Prepaid usage (2026-11-17): usage is sold in advance from a credit balance.
+ * An account's top-up is `topUpCentsPer10Extensions` times its extensions / 10, rounded up (at
+ * least once). It is charged at signup and automatically whenever the balance drops below the
+ * threshold, which we set to one top-up (the highest allowed). Calls are never refused for lack of
+ * credit. The model applies to every account (tenants.prepaid_since, migration
+ * 20261120000000_prepaid_credit.sql).
+ *
+ * DECISION (2026-11-17): $5 per 10 extensions. Revenue now arrives as usage happens instead of
+ * once a week, while the vendors are paid in advance.
+ */
+export const BILLING_MODEL = 'prepaid' as const;
+export const PREPAID = {
+  topUpCentsPer10Extensions: 500,
+} as const;
+
+/** An account's top-up (and its recharge threshold) for its number of extensions. */
+export function topUpCents(extensions: number): number {
+  return PREPAID.topUpCentsPer10Extensions * Math.max(1, Math.ceil(extensions / 10));
+}
 
 /** Stripe's minimum USD charge. A prorated amount below it is not charged (we waive it). */
 export const MIN_CHARGE_CENTS = 50;

@@ -23,8 +23,22 @@ const InvoiceSchema = z
     usageFrom: z.date().describe('Start of the ended period whose call usage is billed.'),
     usageTo: z.date().describe('End of the ended period.'),
     recurringCents: z.number().int().describe('Plan, additional extensions, numbers and add-ons for the new period, US cents.'),
-    usageCents: z.number().int().describe('Call charges of the ended period (summed, then rounded once), US cents.'),
-    totalCents: z.number().int().describe('Amount charged to the card, US cents.'),
+    usageCents: z
+      .number()
+      .int()
+      .describe(
+        'Postpaid call charges of the ended period (summed, then rounded once), US cents. Calls made while usage is ' +
+          'prepaid are not invoiced here: they are in `usageDeductedCents`.',
+      ),
+    totalCents: z.number().int().describe('Amount charged to the card, US cents: recurringCents + usageCents.'),
+    creditChargedCents: z
+      .number()
+      .int()
+      .describe('Prepaid usage: credit top-ups charged to the card during the ended period, US cents. Shown, not charged again.'),
+    usageDeductedCents: z
+      .number()
+      .int()
+      .describe('Prepaid usage: call charges of the ended period deducted from the credit balance, US cents. Shown, not charged again.'),
     includedMinutesUsed: z.number().describe("Plan US minutes used in the ended period (shared by the account)."),
     status: z.enum(STATUSES).describe('open: not charged yet. paid. failed: the last charge was declined; retried automatically.'),
     pastDue: z.boolean().describe('Unpaid more than 24 h after the ended period: outgoing calls are blocked until it is paid (add a card).'),
@@ -59,7 +73,9 @@ const docs = {
     summary: 'List invoices',
     description:
       'Every invoice of the account, newest first. Issued within an hour after each 7-day billing period ends: the new ' +
-      "period's recurring charges plus the ended period's call usage, charged to the saved card (failures are retried).",
+      "period's recurring charges plus any postpaid call usage of the ended period, charged to the saved card (failures " +
+      'are retried). Usage is prepaid (GET /billing/prices `billingModel`): each invoice also shows the credit top-ups ' +
+      'charged and the usage deducted from the credit during the ended period.',
     responses: { 200: { description: 'Invoices', schema: z.array(InvoiceSchema).describe('Invoices, newest first.') } },
   },
   get: {
@@ -81,6 +97,8 @@ interface InvoiceRow {
   recurringCents: number;
   usageCents: number;
   totalCents: number;
+  creditChargedCents: number;
+  usageDeductedCents: number;
   includedSecUsed: string; // bigint
   status: (typeof STATUSES)[number];
   pastDue: boolean;
@@ -97,7 +115,7 @@ export const invoiceRoutes: FastifyPluginAsync<{ sql: Sql }> = async (app, { sql
   const ownerOnly = { preHandler: [authenticate, requireRole('owner')] };
   const columns = sql`
     id, period_start_at as period_start, period_end_at as period_end, usage_from, usage_to, recurring_cents,
-    usage_cents, total_cents, included_sec_used, status, status <> 'paid' and due_at <= now() as past_due,
+    usage_cents, total_cents, credit_charged_cents, usage_deducted_cents, included_sec_used, status, status <> 'paid' and due_at <= now() as past_due,
     attempts, last_error, next_attempt_at, paid_at, created_at`;
 
   app.get('/invoices', withDoc(ownerOnly, docs.list), async (req) => {

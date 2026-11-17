@@ -203,6 +203,9 @@ describe('§5 CDR content of real calls', () => {
     h.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 2 });
     const caller = h.ari.carrierCall(did.slice(1), '6315550000'); // carrier digits without '+', 10-digit caller
     await until(() => h.ari.peerOf(caller));
+    // Talk for a moment: answered and hung up in the same millisecond is a 0 s call (billed 0 s), which
+    // happened on a loaded test machine. Any real answered call lasts longer and is billed 30/6.
+    await new Promise((r) => setTimeout(r, 20));
     h.ari.remoteHangup(caller);
     await h.settle();
     const [r] = await a.cdrs();
