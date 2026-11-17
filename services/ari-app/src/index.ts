@@ -10,6 +10,7 @@ import type { Ctx } from './ctx.js';
 import { MediaCache } from './greetings.js';
 import { startHealthServer } from './health.js';
 import { LegTracker } from './legs.js';
+import { HoldState } from './hold-state.js';
 import { log } from './log.js';
 import { metrics } from './metrics.js';
 import { ObjectStore } from './object-store.js';
@@ -39,7 +40,7 @@ async function main(): Promise<void> {
   const media = new MediaCache(cfg.SOUNDS_CACHE_DIR, repo, store, log.child({ mod: 'media' }));
   const ari = new AriClient({ url: cfg.ARI_URL, user: cfg.ARI_USER, password: cfg.ARI_PASSWORD, app: cfg.ARI_APP });
   const bus = new EventBus();
-  const ctx: Ctx = { cfg, ari, bus, repo, cache, cdr, media, uploader, legs: new LegTracker(), conversations: new Map() };
+  const ctx: Ctx = { cfg, ari, bus, repo, cache, cdr, media, uploader, legs: new LegTracker(), conversations: new Map(), holds: new HoldState() };
   const app = new PbxApp(ctx, log);
 
   startHealthServer({ host: cfg.HEALTH_HOST, port: cfg.HEALTH_PORT, ari, repo });

@@ -5,6 +5,7 @@ import type { CdrWriter } from './cdr.js';
 import type { Config } from './config.js';
 import type { Conversation } from './conversation.js';
 import type { MediaCache } from './greetings.js';
+import type { HoldState } from './hold-state.js';
 import type { LegTracker } from './legs.js';
 import type { Repo } from './repo.js';
 import type { Uploader } from './uploader.js';
@@ -22,6 +23,8 @@ export interface Ctx {
   legs: LegTracker;
   /** Conversation (bridged call) each channel currently belongs to; used by attended transfer. */
   conversations: Map<string, Conversation>;
+  /** Which channels are on hold now, including holds from before they were bridged. */
+  holds: HoldState;
 }
 
 /** Call-flow timer in ms for a duration in seconds (TIME_SCALE speeds up tests). */

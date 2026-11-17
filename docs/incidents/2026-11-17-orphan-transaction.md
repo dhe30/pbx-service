@@ -73,8 +73,11 @@ Tests: `services/ari-app/test/configs.test.ts`.
 Carrier -> ext 102 answered, blind transfer to ext 153 at 15 s, 153 rang 12.4 s and answered, then
 hung up after 5 s: we sent 153 nothing. The phone leg's answer was rewritten normally. The carrier
 leg shows the caller sent only 870 packets (17 s) in a 32 s call: its audio stopped before 153
-answered, so there was nothing to forward. Probably the course's caller going quiet during a long
-transfer ring; not confirmed.
+answered, so there was nothing to forward.
+
+Correction (same day): the caller **held** (re-INVITE `a=sendonly` at 02:52:49.36, on edge-2) while
+153 rang, and the call app ignored holds from before the bridge, so 153 got no music on hold. See
+[2026-11-17-hold-before-answer.md](2026-11-17-hold-before-answer.md).
 
 ## Checks after deploying
 

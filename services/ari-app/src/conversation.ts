@@ -12,6 +12,7 @@ import type { CallSession, Party } from './session.js';
 // Either side may hold (staff answering a customer, or a phone that placed an outgoing call).
 // Asterisk would pass hold on by itself only in a 2-party bridge; a recorded call has a third
 // member (the recorder) and a softmix bridge, which drops hold frames, so we always do it here.
+// A hold from BEFORE the bridge (IVR, extension still ringing) comes from ctx.holds (hold-state.ts).
 //
 // Transfer: every party gets PJSIP_TRANSFER_HANDLING()=ari-only, so a REFER from a phone becomes a
 // ChannelTransfer event instead of Asterisk acting on its own (Asterisk 22.1+). [VERIFY on VM]
@@ -101,6 +102,10 @@ export class Conversation {
       await ctx.ari.addToBridge(this.bridgeId, this.parties);
       await Promise.all(this.parties.map((p) => this.enableAriTransfer(p)));
       if (this.opts.record) await this.startRecording();
+      // A party may have held before we bridged (caller in the IVR or while the extension rang):
+      // its ChannelHold came before our subscription. Apply that state now; holds and resumes from
+      // here on arrive as events (already queued ones included), and setHold() ignores repeats.
+      for (const p of this.parties) if (ctx.holds.isHeld(p)) await this.setHold(p, true);
 
       for (;;) {
         const ev = (await sub.next()) as AriEvent | ReleaseCommand | null;

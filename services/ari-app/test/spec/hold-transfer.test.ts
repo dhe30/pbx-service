@@ -41,6 +41,70 @@ describe('§3 Hold', () => {
     await h.settle();
   });
 
+  // Hussain Notary 2026-11-17 08:10 UTC ("extension 103 heard nothing", "no_audio at a phone that
+  // takes PCMU"): the caller pressed 3 in the IVR and put the call on hold while 103 was ringing.
+  // The hold came before the bridge existed, so 103 answered into silence (no MOH, and a held
+  // caller sends nothing). docs/incidents/2026-11-17-hold-before-answer.md
+  it('caller holds while the extension rings (IVR) -> the extension answers into music on hold', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '103' });
+    const menu = await a.ivr({ options: { '3': { type: 'extension', id: a.ext['103']!.id } } });
+    const did = nextDid();
+    await a.number(did, { type: 'ivr_menu', id: menu });
+    h.ari.sip.set(a.ext['103']!.sip, { answerAfterMs: 100 });
+    const caller = h.ari.carrierCall(did, '+16315550155');
+    await until(() => h.ari.channels.get(caller)?.answered, 2000, 'IVR answered');
+    h.ari.dtmf(caller, '3');
+    await until(() => h.ari.legsTo(a.ext['103']!.sip)[0], 2000, 'rings 103');
+    h.ari.hold(caller);
+    const agent = await until(() => h.ari.peerOf(caller), 3000, '103 connected');
+    await until(() => h.ari.channels.get(agent)!.moh, 2000, 'MOH to 103');
+    h.ari.unhold(caller);
+    await until(() => !h.ari.channels.get(agent)!.moh, 2000, 'MOH off after resume');
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
+  it('caller holds and resumes before the extension answers -> no MOH', async () => {
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '101' });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['101']!.id });
+    h.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 100 });
+    const caller = h.ari.carrierCall(did, '+16315550156');
+    await until(() => h.ari.legsTo(a.ext['101']!.sip)[0], 2000, 'rings 101');
+    h.ari.hold(caller);
+    h.ari.unhold(caller);
+    const agent = await until(() => h.ari.peerOf(caller), 3000, '101 connected');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.ari.channels.get(agent)!.moh).toBe(false);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
+  it('caller holds while a blind-transfer target rings -> the target answers into music on hold', async () => {
+    // The 02:53 UTC call the same day: 102 blind-transferred to 153, the caller held during the ring.
+    const h = makeHarness(db.sql);
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '102' });
+    await a.extension({ number: '153' });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['102']!.id });
+    h.ari.sip.set(a.ext['102']!.sip, { answerAfterMs: 5 });
+    h.ari.sip.set(a.ext['153']!.sip, { answerAfterMs: 100 });
+    const caller = h.ari.carrierCall(did, '+16315550348');
+    const agent = await until(() => h.ari.peerOf(caller), 3000, '102 connected');
+    h.ari.referBlind(agent, '153');
+    const leg153 = await until(() => h.ari.legsTo(a.ext['153']!.sip)[0], 2000, 'rings 153');
+    h.ari.hold(caller);
+    await until(() => h.ari.peerOf(caller) === leg153.id, 3000, '153 connected');
+    await until(() => h.ari.channels.get(leg153.id)!.moh, 2000, 'MOH to 153');
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('a phone that placed an outgoing call can hold too (MOH to the PSTN party)', async () => {
     const h = makeHarness(db.sql);
     const a = await new Account(db.sql).create();
