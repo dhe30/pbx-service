@@ -100,12 +100,13 @@ export async function saveCard(
       return { brand: null, last4: null };
     }),
   ]);
-  // A new card also gets a declined prepaid top-up retried right away (topup_retry_at cleared).
+  // A new card also gets a declined (or stopped) prepaid top-up retried right away, with a fresh
+  // count of declines (topup_retry_at and topup_attempts cleared).
   await withRetry(
     () => sql`
       update billing_accounts
          set payment_method_id = ${pm}, card_brand = ${card.brand}, card_last4 = ${card.last4},
-             topup_retry_at = null, updated_at = now()
+             topup_retry_at = null, topup_attempts = 0, updated_at = now()
        where tenant_id = ${tenantId}`,
   );
 

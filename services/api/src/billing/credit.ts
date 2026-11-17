@@ -1,5 +1,6 @@
 import { withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
+import { metrics } from '../metrics.js';
 import { PREPAID, topUpCents } from './catalog.js';
 import type { StripeClient } from './stripe.js';
 
@@ -11,12 +12,16 @@ import type { StripeClient } from './stripe.js';
 // charged to the saved card and added to the balance: at signup (saveCard) and in every billing
 // tick. Calls are never refused for lack of credit, so the balance may dip below zero until the
 // next top-up goes through. A declined top-up is retried with backoff; the account keeps calling.
+// After TOPUP_MAX_DECLINES declines in a row the account gets no more attempts (topup_retry_at =
+// infinity) until a new card is saved: an abandoned signup whose card is dead must not be charged
+// over and over. A payment gateway error is not a decline: it is retried after a minute and never
+// stops anything, so a gateway outage can't switch top-ups off for everyone.
 //
 // Concurrency: the account's billing_accounts row is locked (SKIP LOCKED) for the whole attempt,
 // so app nodes never charge the same top-up twice. The deduction trigger only touches
 // credit_balances, so calls never wait for a top-up in progress. The Stripe Idempotency-Key is
-// topup:<tenant>:<n>:<attempt>: a retried transaction replays the same charge, a new attempt after
-// a decline really tries again.
+// topup:<tenant>:<n>:<attempt>:<card>: a retried transaction replays the same charge, a new attempt
+// after a decline (or with a new card) really tries again.
 
 export interface CreditDeps {
   sql: Sql;
@@ -26,6 +31,10 @@ export interface CreditDeps {
 
 /** Wait after a declined top-up attempt (attempt 1, 2, ...), then the last one repeats. */
 export const TOPUP_RETRY_DELAYS_SEC = [60, 5 * 60, 15 * 60, 3600];
+/** Declines in a row after which top-ups stop until a new card (about 3 h with the delays above). */
+export const TOPUP_MAX_DECLINES = 6;
+/** Retry after a payment gateway error (not a decline; same attempt, same Idempotency-Key). */
+export const TOPUP_GATEWAY_RETRY_SEC = 60;
 
 export interface CreditState {
   balanceCents: number;
@@ -94,9 +103,12 @@ export async function rechargeNext(d: CreditDeps, now: Date, tenantId?: string):
 async function chargeTopUp(d: CreditDeps, tx: Db, a: DueAccount, now: Date): Promise<'charged' | 'failed'> {
   const amountCents = topUpCents(a.extensions);
   const attempt = a.topupAttempts + 1;
-  const key = `topup:${a.tenantId}:${a.topupSeq + 1}:${attempt}`;
+  // Per card too: a new card restarts the attempt count, and Stripe would replay the old card's
+  // cached decline for a reused key.
+  const key = `topup:${a.tenantId}:${a.topupSeq + 1}:${attempt}:${a.paymentMethodId}`;
   let paymentIntentId: string | null = null;
   let error: string | null = null;
+  let gatewayError = false;
   try {
     const result = await d.stripe.charge(
       {
@@ -112,6 +124,7 @@ async function chargeTopUp(d: CreditDeps, tx: Db, a: DueAccount, now: Date): Pro
     if (!result.ok) error = result.message;
   } catch (err) {
     error = `payment gateway error: ${(err as Error).message}`;
+    gatewayError = true;
   }
 
   await tx`
@@ -121,12 +134,33 @@ async function chargeTopUp(d: CreditDeps, tx: Db, a: DueAccount, now: Date): Pro
       set status = excluded.status, stripe_payment_intent_id = excluded.stripe_payment_intent_id,
           failure_message = excluded.failure_message`;
 
+  if (gatewayError) {
+    // Not the card's fault: same attempt again soon (same Idempotency-Key, so a charge the gateway
+    // did make is replayed, not repeated). Never counts towards TOPUP_MAX_DECLINES.
+    await tx`
+      update billing_accounts
+         set topup_retry_at = ${new Date(now.getTime() + TOPUP_GATEWAY_RETRY_SEC * 1000)}, updated_at = now()
+       where tenant_id = ${a.tenantId}`;
+    metrics.prepaidTopUps.inc({ result: 'failed' });
+    d.log.warn({ tenantId: a.tenantId, amountCents, attempt, error }, 'prepaid top-up failed');
+    return 'failed';
+  }
   if (error) {
+    if (attempt >= TOPUP_MAX_DECLINES) {
+      await tx`
+        update billing_accounts
+           set topup_attempts = ${attempt}, topup_retry_at = 'infinity', updated_at = now()
+         where tenant_id = ${a.tenantId}`;
+      metrics.prepaidTopUps.inc({ result: 'stopped' });
+      d.log.warn({ tenantId: a.tenantId, amountCents, attempt, error }, 'prepaid top-ups stopped: card declined repeatedly; resumes when a new card is added');
+      return 'failed';
+    }
     const delay = TOPUP_RETRY_DELAYS_SEC[Math.min(attempt, TOPUP_RETRY_DELAYS_SEC.length) - 1]!;
     await tx`
       update billing_accounts
          set topup_attempts = ${attempt}, topup_retry_at = ${new Date(now.getTime() + delay * 1000)}, updated_at = now()
        where tenant_id = ${a.tenantId}`;
+    metrics.prepaidTopUps.inc({ result: 'failed' });
     d.log.warn({ tenantId: a.tenantId, amountCents, attempt, error }, 'prepaid top-up failed');
     return 'failed';
   }
@@ -137,6 +171,7 @@ async function chargeTopUp(d: CreditDeps, tx: Db, a: DueAccount, now: Date): Pro
     update billing_accounts
        set topup_seq = ${a.topupSeq + 1}, topup_attempts = 0, topup_retry_at = null, updated_at = now()
      where tenant_id = ${a.tenantId}`;
+  metrics.prepaidTopUps.inc({ result: 'charged' });
   d.log.info({ tenantId: a.tenantId, amountCents, credit: a.credit }, 'prepaid top-up charged');
   return 'charged';
 }

@@ -5,7 +5,7 @@ import pino from 'pino';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
 import { CEILINGS_CENTS, PLAN, PREPAID, topUpCents } from '../src/billing/catalog.js';
-import { rechargeNext, TOPUP_RETRY_DELAYS_SEC } from '../src/billing/credit.js';
+import { rechargeNext, TOPUP_GATEWAY_RETRY_SEC, TOPUP_MAX_DECLINES, TOPUP_RETRY_DELAYS_SEC } from '../src/billing/credit.js';
 import { runBillingTick } from '../src/billing/scheduler.js';
 import { FakeStripe, build, connectTestDb } from './helpers.js';
 
@@ -91,13 +91,13 @@ describe.skipIf(!db)('prepaid usage (Postgres)', () => {
     expect(await credit(t.id)).toBeCloseTo(10, 6); // 12 extensions = 2 x $5
     const charge = stripe.charges.at(-1)!;
     expect(charge.amountCents).toBe(1000);
-    expect(charge.key).toBe(`topup:${t.id}:1:1`);
+    expect(charge.key).toBe(`topup:${t.id}:1:1:pm_card_visa`);
     expect(await rechargeNext(deps, now, t.id)).toBeNull(); // at the threshold: nothing due
 
     await addCdr(t.id, '2026-10-08T01:00:00Z', 0.01); // $9.99 < $10: due again
     expect(await rechargeNext(deps, now, t.id)).toBe('charged');
     expect(await credit(t.id)).toBeCloseTo(19.99, 6);
-    expect(stripe.charges.at(-1)!.key).toBe(`topup:${t.id}:2:1`);
+    expect(stripe.charges.at(-1)!.key).toBe(`topup:${t.id}:2:1:pm_card_visa`);
 
     const [p] = await sql<{ n: number; cents: number }[]>`
       select count(*)::int as n, sum(amount_cents)::int as cents from payments
@@ -130,9 +130,55 @@ describe.skipIf(!db)('prepaid usage (Postgres)', () => {
     expect(await rechargeNext(deps, new Date(now.getTime() + 1000), t.id)).toBeNull(); // backing off
     const later = new Date(now.getTime() + TOPUP_RETRY_DELAYS_SEC[0]! * 1000);
     expect(await rechargeNext(deps, later, t.id)).toBe('charged');
-    expect(stripe.charges.at(-1)!.key).toBe(`topup:${t.id}:1:2`);
+    expect(stripe.charges.at(-1)!.key).toBe(`topup:${t.id}:1:2:pm_card_visa`);
     expect(await credit(t.id)).toBeCloseTo(5, 6);
     expect(await rechargeNext(deps, later, noCard.id)).toBeNull();
+  });
+
+  it('stops after repeated declines, until a new card is saved; gateway errors never count', async () => {
+    const t = await makeAccount();
+    const attemptsOf = async () =>
+      (await sql<{ topupAttempts: number; topupRetryAt: Date | null }[]>`
+        select topup_attempts, case when topup_retry_at = 'infinity' then null else topup_retry_at end as topup_retry_at
+          from billing_accounts where tenant_id = ${t.id}`)[0]!;
+
+    // A gateway outage: retried after a minute, the decline count stays 0, same key next time.
+    let now = new Date('2026-10-09T00:00:00Z');
+    stripe.down = true;
+    try {
+      expect(await rechargeNext(deps, now, t.id)).toBe('failed');
+    } finally {
+      stripe.down = false;
+    }
+    expect((await attemptsOf()).topupAttempts).toBe(0);
+    expect((await attemptsOf()).topupRetryAt).toEqual(new Date(now.getTime() + TOPUP_GATEWAY_RETRY_SEC * 1000));
+
+    // Declines: backoff, then no more attempts after TOPUP_MAX_DECLINES.
+    stripe.declineWith = 'Your card was declined.';
+    try {
+      for (let i = 1; i <= TOPUP_MAX_DECLINES; i++) {
+        now = new Date(now.getTime() + 2 * 3600 * 1000); // past any backoff
+        expect(await rechargeNext(deps, now, t.id)).toBe('failed');
+        expect((await attemptsOf()).topupAttempts).toBe(i);
+      }
+    } finally {
+      stripe.declineWith = null;
+    }
+    const [stopped] = await sql<{ stopped: boolean }[]>`
+      select topup_retry_at = 'infinity' as stopped from billing_accounts where tenant_id = ${t.id}`;
+    expect(stopped!.stopped).toBe(true);
+    expect(await rechargeNext(deps, new Date('2027-06-01T00:00:00Z'), t.id)).toBeNull(); // stopped
+    const charges = stripe.charges.length;
+
+    // A new card (POST /billing/card) restarts: charged at once, with a fresh key.
+    const setup = (await app.inject({ method: 'POST', url: '/billing/setup-intent', cookies: t.cookies })).json();
+    const pm = stripe.completeSetup(setup.setupIntentId);
+    const saved = await app.inject({ method: 'POST', url: '/billing/card', cookies: t.cookies, payload: { setupIntentId: setup.setupIntentId } });
+    expect(saved.statusCode).toBe(200);
+    expect(stripe.charges.length).toBe(charges + 1);
+    expect(stripe.charges.at(-1)!.key).toBe(`topup:${t.id}:1:1:${pm}`);
+    expect(saved.json().credit.balanceCents).toBe(topUpCents(0));
+    expect(await attemptsOf()).toEqual({ topupAttempts: 0, topupRetryAt: null });
   });
 
   it('the billing tick tops up every account that is due', async () => {
