@@ -209,7 +209,7 @@ modparam("tls", "config", "/etc/kamailio/tls.cfg")
 
 # ----- tm -----
 modparam("tm", "failure_reply_mode", 3)
-modparam("tm", "fr_timer", 5000)          # ms: no reply at all
+modparam("tm", "fr_timer", 5000)          # ms: no reply at all (phones: route[DEV_TIMERS])
 modparam("tm", "fr_inv_timer", 120000)    # ms: provisional received, waiting for final
 
 # ----- rr -----
@@ -438,6 +438,16 @@ reply_route {
 {% else %}
 		force_send_socket(udp:{{ public_bind_ip }}:5060);
 {% endif %}
+	}
+	# A party's 2xx to an INVITE that no longer has a transaction: mostly a phone answering AFTER
+	# we gave up on it (no reply within the phone-branch timer -> 408 to Asterisk), relayed without
+	# rtpengine, so Asterisk gets the phone's own SDP for a call it already ended (2026-11-17 14:32
+	# UTC: a TLS phone answered 11 s late and hung up into a dead call). Also the phone resending
+	# its 200 OK after the transaction ended. Kept relaying: Asterisk ACKs it and the phone hangs up
+	# at once; dropping it would leave the phone resending for 32 s. Logged so these can be counted
+	# (journalctl -u kamailio | grep "late 2xx").
+	if ($Rp != {{ kamailio_internal_port }} && $rm == "INVITE" && status =~ "^2[0-9][0-9]$" && !t_check_trans()) {
+		xlog("L_WARN", "devices: late 2xx from $si:$sp ($pr) with no transaction, relayed as is [ci=$ci]\n");
 	}
 }
 
@@ -814,7 +824,19 @@ route[TO_DEVICES] {
 	t_on_branch("DEV_BRANCH");
 	t_on_reply("DEV_REPLY");
 	t_on_failure("DEV_FAILURE");
+	route(DEV_TIMERS);
 	route(RELAY);
+}
+
+# Phones get longer than the 5 s default to send their FIRST reply. At the 2026-11-17 morning
+# peak the course's phones took up to 7.4 s (some 11-21 s) to answer our INVITE even with a 100
+# Trying: with 5 s, Kamailio answered Asterisk 408 (the ARI app's "ring: leg ended" cause 18) and
+# the call went on to voicemail while the phone was about to ring; its late 200 OK then reached
+# a call that was gone (see reply_route). How long a phone RINGS is still the ARI app's ring
+# timeout (20 s, Asterisk CANCELs); this only decides when a phone that never answered at all is
+# given up. Also set on the peer edge (FROM_PEER), which delivers to phones connected there.
+route[DEV_TIMERS] {
+	t_set_fr(120000, {{ kamailio_device_fr_timer_ms | default(15000) }});
 }
 
 # Runs once per contact. $du is that contact's Path: the edge holding its connection, with the
@@ -948,6 +970,7 @@ route[FROM_PEER] {
 {% endif %}
 	record_route();
 	t_on_reply("PEER_REPLY");
+	route(DEV_TIMERS);
 	route(SEND_PUBLIC);
 	route(RELAY);
 }
