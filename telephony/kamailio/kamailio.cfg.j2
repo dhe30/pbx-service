@@ -50,7 +50,15 @@
 #!define DBURL_RO "{{ kamailio_db_ro_url }}"
 
 {# ---- rtpengine flag sets (one place; every offer/answer below uses these) ---- #}
-{% set BASE = "replace-origin replace-session-connection" %}
+{# strict-source: once rtpengine has learned a stream's sender (endpoint learning, first ~3 s),
+   drop packets from any other address instead of relaying them. Our media ports answer on the
+   public IP (1:1 NAT onto the one local address), the Asterisk-facing ones included, so a stale
+   stream from a host that once had the port relays straight into a new call: 2026-11-18 19:07 a
+   PCMA stream from 130.245.136.111 hit the Asterisk-facing port of a G.729 phone's call and went
+   to the phone untranscoded ("bad_codec", docs/incidents/2026-11-18-stray-rtp-bad-codec.md).
+   A re-INVITE with a new address re-learns, so hold/transfer/NAT rebinding with new SDP still
+   work. [VERIFY V-T21] #}
+{% set BASE = "replace-origin replace-session-connection strict-source" %}
 {% set TO_PBX_CODECS = "codec-mask=all codec-transcode=PCMU codec-transcode=telephone-event" %}
 {% set TO_FAR_CODECS = "codec-transcode=PCMA codec-transcode=G729 codec-transcode=G723 codec-transcode=opus" %}
 {# SDES offer toward TLS phones: only the AES_CM_128 suites. rtpengine accepts an answer only if

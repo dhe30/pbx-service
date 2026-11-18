@@ -151,6 +151,14 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(ws).toMatch(/ICE=force DTLS=passive/);
       expect(ws).not.toMatch(/G729|G723/);
     });
+    it('every rtpengine offer/answer drops media from senders other than the learned one (stray stream, 2026-11-18)', () => {
+      const calls = [...kam.matchAll(/rtpengine_(?:offer|answer)\("([^"]+)"\)/g)].map((m) => m[1]!).filter((f) => !f.startsWith('$avp'));
+      expect(calls.length).toBeGreaterThan(10);
+      for (const f of calls) expect(f).toContain('strict-source');
+      // In-dialog replies take their flags from an avp set to one of the same flag sets.
+      const avps = [...kam.matchAll(/\$avp\(rtp_answer\) = "([^"]+)"/g)].map((m) => m[1]!);
+      for (const f of avps) expect(f).toContain('strict-source');
+    });
     it('in-dialog re-INVITEs (hold/resume, transfer) cover all five leg types both ways', () => {
       const ind = block(kam, 'route[INDLG_SDP]');
       for (const leg of ['carrier', 'vendor', 'staff_udp', 'staff_tls', 'staff_ws']) expect(ind).toContain(`check_route_param("leg=${leg}")`);
@@ -363,6 +371,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[TO_VENDOR] {')).toMatch(/^route\[TO_VENDOR\] \{\n\troute\(LEG_TAG\);/);
       // and it can't be forged from outside: X-PBX-* is stripped from anyone but pbx nodes / peer
       expect(kam).toContain('remove_hf_re("^X-PBX-");');
+    });
     it('phones get 15 s for a first reply (5 s turned slow phones into cause 18 at the peak, 2026-11-18)', () => {
       expect(block(kam, 'route[DEV_TIMERS] {')).toContain('t_set_fr(120000, 15000);');
       // both places that send an INVITE to a phone: this edge's fork, and delivery for the peer edge
