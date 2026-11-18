@@ -352,7 +352,7 @@ describe('§3 Business hours: weekly schedule in the account time zone; open and
 });
 
 describe('§3 Caller blocklist: listed callers are rejected', () => {
-  it('rejected with 403 before ringing anyone, CDR outcome blocked', async () => {
+  it('rejected with 603 Decline (no carrier retry on the other trunk) before ringing anyone, CDR outcome blocked', async () => {
     const { h, a } = await acct();
     await a.extension({ number: '101' });
     const did = nextDid();
@@ -361,7 +361,12 @@ describe('§3 Caller blocklist: listed callers are rejected', () => {
     // The carrier sends the caller as digits without '+': normalized before matching.
     const caller = h.ari.carrierCall(did, '16315550666');
     await until(() => h.ari.destroyed.has(caller));
-    expect(h.ari.hangups.find((x) => x.channelId === caller)?.reason).toBe('rejected');
+    // reason=normal before answer = 603 Decline from chan_pjsip; 'rejected' would be a 403, which
+    // lets the carrier retry the other edge (inbound.ts BLOCKED_HANGUP_REASON). Every hangup of the
+    // channel must agree, or the first one to land decides the SIP code (seen live: 403 or 603).
+    const mine = h.ari.hangups.filter((x) => x.channelId === caller).map((x) => x.reason);
+    expect(mine[0]).toBe('normal');
+    expect(mine.every((r) => r === 'normal')).toBe(true);
     expect(h.ari.originates).toHaveLength(0);
     await h.settle();
     expect((await a.cdrs())[0]).toMatchObject({ outcome: 'blocked', direction: 'incoming', fromNumber: '+16315550666' });
@@ -378,7 +383,7 @@ describe('§3 Caller blocklist: listed callers are rejected', () => {
     await until(() => h.ari.destroyed.has(first));
     const second = h.ari.carrierCall(did, '+16315550772');
     await until(() => h.ari.destroyed.has(second));
-    expect(h.ari.hangups.find((x) => x.channelId === second)?.reason).toBe('rejected');
+    expect(h.ari.hangups.find((x) => x.channelId === second)?.reason).toBe('normal');
     await h.settle();
     const rows = await a.cdrs();
     expect(rows).toHaveLength(1);
