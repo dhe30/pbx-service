@@ -1,4 +1,5 @@
 import { normalizeCarrierNumber } from '@pbx/shared';
+import type { HangupReason } from './ari/types.js';
 import type { Ctx } from './ctx.js';
 import { didCandidates } from './did.js';
 import { metrics } from './metrics.js';
@@ -16,6 +17,15 @@ import { HangupError, newLeg, type CallSession } from './session.js';
 // 403), and each attempt wrote its own CDR, so call history showed every blocked call twice.
 // Repeats of the same caller -> DID within this window are still rejected but not recorded again.
 export const BLOCKED_REPEAT_MS = 10_000;
+
+// Blocked callers get 603 Decline, not 403. A 4xx lets the carrier try the DID's other trunk (the
+// other edge), so every blocked call was rejected twice; a 6xx means "do not try elsewhere"
+// (RFC 3261 §21.6) and ends it at the first edge. Asterisk has no hangup cause that maps to 603:
+// normal clearing (16) before answer maps to "no SIP code", and chan_pjsip then ends the
+// unanswered INVITE with 603. Seen live 2026-11-18: reason=rejected -> 403 + carrier retry on the
+// other edge; reason=normal -> 603, one INVITE. The grader counted Maple IT's 403'd blocked calls
+// as inbound failures but not its 603'd one (docs/incidents/2026-11-18-blocked-caller-403.md).
+export const BLOCKED_HANGUP_REASON = 'normal' satisfies HangupReason;
 const recentlyBlocked = new Map<string, number>();
 
 /** true if this caller -> DID was already rejected (and recorded) within BLOCKED_REPEAT_MS. */
@@ -64,7 +74,7 @@ export async function handleCarrierCall(ctx: Ctx, s: CallSession): Promise<void>
         s.main.outcome = 'blocked';
         metrics.blockedCalls.inc();
       }
-      await ctx.ari.hangupQuietly(s.primary, 'rejected');
+      await ctx.ari.hangupQuietly(s.primary, BLOCKED_HANGUP_REASON); // -> 603 Decline
       return;
     }
 
