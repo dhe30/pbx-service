@@ -11,6 +11,11 @@ import type { CallSession } from './session.js';
 // means "next". Digits are buffered (DigitReader), so a fast "##" is never lost.
 // Changes are written to Postgres immediately, so the web inbox shows them too (new = heard false,
 // saved = heard true, deleted = row gone). The caller is identified by their SIP account: no PIN.
+//
+// Trace (2026-11-18): every key pressed, every message played and every save/delete goes into the
+// call's trace (the "call ended" line), and saves/deletes also get a log line of their own. Before,
+// a *98 call logged nothing at all: a "no message played" ticket could not be told apart from the
+// caller having deleted the messages itself (it had, with 3, hours earlier).
 
 const P = {
   youHave: 'sound:vm-youhave',
@@ -34,6 +39,7 @@ export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: strin
   const t = s.tenant!;
   await s.ensureAnswered(ctx.ari);
   if (!mailboxId || !t.mailboxes.has(mailboxId)) {
+    s.step('vm: no mailbox', { mailbox: mailboxId });
     await playOnce(ctx, s, P.noMessages);
     return;
   }
@@ -42,19 +48,27 @@ export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: strin
     let timeouts = 0;
     for (;;) {
       const c = await ctx.repo.countVoicemails(t.id, mailboxId);
+      s.step('vm: main menu', { mailbox: mailboxId, new: c.new });
       const prompts = [P.youHave, `number:${c.new}`, P.newMsgs, P.messages, P.mainMenu];
       const d = await reader.prompt(prompts, MENU_WAIT_SEC);
       if (d === null) {
+        s.step('vm: no key', { menu: 'main' });
         if (++timeouts >= MAX_MENU_TIMEOUTS) break;
         continue;
       }
       timeouts = 0;
       let r: ListResult = 'main';
-      if (d === '1') r = await playList(ctx, s, reader, mailboxId, false);
-      else if (d === '3') {
+      if (d === '1') {
+        s.step('vm: key', { menu: 'main', digit: d });
+        r = await playList(ctx, s, reader, mailboxId, false);
+      } else if (d === '3') {
         const d2 = await reader.digit(MENU_WAIT_SEC);
+        s.step('vm: key', { menu: 'main', digit: d, then: d2 });
         if (d2 === '1') r = await playList(ctx, s, reader, mailboxId, true);
-      } else if (d === '*') break;
+      } else {
+        s.step('vm: key', { menu: 'main', digit: d });
+        if (d === '*') break;
+      }
       if (r === 'hangup') return;
     }
     await playOnce(ctx, s, P.goodbye).catch(() => {});
@@ -67,6 +81,7 @@ export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: strin
 async function playList(ctx: Ctx, s: CallSession, reader: DigitReader, mailboxId: string, saved: boolean): Promise<ListResult> {
   const t = s.tenant!;
   const msgs = await ctx.repo.listVoicemails(t.id, mailboxId, saved);
+  s.step('vm: list', { list: saved ? 'saved' : 'new', count: msgs.length });
   if (msgs.length === 0) {
     await playOnce(ctx, s, P.noMessages);
     return 'main';
@@ -75,10 +90,12 @@ async function playList(ctx: Ctx, s: CallSession, reader: DigitReader, mailboxId
     const action = await playMessage(ctx, s, reader, msgs[i]!);
     if (action === 'save') {
       if (!saved) await ctx.repo.saveVoicemail(t.id, msgs[i]!.id);
+      s.log.info({ voicemail: msgs[i]!.id, mailbox: mailboxId, list: saved ? 'saved' : 'new' }, 'vm: message saved');
       await playOnce(ctx, s, P.saved);
       i++;
     } else if (action === 'delete') {
       await ctx.repo.deleteVoicemail(t.id, msgs[i]!.id);
+      s.log.info({ voicemail: msgs[i]!.id, mailbox: mailboxId, list: saved ? 'saved' : 'new' }, 'vm: message deleted');
       await playOnce(ctx, s, P.deleted);
       i++;
     } else if (action === 'next') {
@@ -97,7 +114,9 @@ async function playMessage(ctx: Ctx, s: CallSession, reader: DigitReader, m: Voi
   const uri = await ctx.media.objectUri(m.mediaId, m.objectKey);
   for (;;) {
     // ---- during playback ----
+    s.step('vm: playing', { voicemail: m.id, audio: uri ? 'ok' : 'missing' });
     let d: string | null = uri ? await reader.prompt([uri], 0) : null;
+    s.step('vm: key', { menu: 'during', digit: d ?? 'none (played to the end)' });
     if (d === '1') continue; // restart
     if (d === '2') return 'save';
     if (d === '3') return 'delete';
@@ -105,6 +124,7 @@ async function playMessage(ctx: Ctx, s: CallSession, reader: DigitReader, m: Voi
     let timeouts = 0;
     for (;;) {
       d = await reader.prompt([P.afterMenu], MENU_WAIT_SEC);
+      s.step('vm: key', { menu: 'after', digit: d ?? 'none' });
       if (d === null) {
         if (++timeouts >= MAX_MENU_TIMEOUTS) return 'main';
         continue;

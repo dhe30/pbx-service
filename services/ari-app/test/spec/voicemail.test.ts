@@ -202,6 +202,34 @@ describe('§3 *98: Cisco Unity standard conversation', () => {
     await h.settle();
   });
 
+  it('the call trace records each key, each message played and each save/delete (2026-11-18 ticket)', async () => {
+    const { h, m1, m2, call } = await mailbox();
+    h.ari.playMs = 40;
+    const ch = call();
+    await heardPrompt(h, ch, 'sound:vm-onefor');
+    h.ari.dtmf(ch, '1');
+    await until(() => msgPlays(h, ch).length === 1);
+    h.ari.dtmf(ch, '3'); // delete m1
+    await until(async () => (await heard(m1)) === 'deleted', 2000, 'deleted');
+    await until(() => msgPlays(h, ch).length === 2, 2000, 'next message');
+    h.ari.dtmf(ch, '2'); // save m2
+    await until(async () => (await heard(m2)) === true, 2000, 'm2 saved');
+    h.ari.remoteHangup(ch);
+    await h.settle();
+
+    type Step = { msg: string; [k: string]: unknown };
+    const end = h.logs.find((l) => l.msg === 'call ended' && l.ch === ch) as { trace?: { steps: Step[] } } | undefined;
+    const steps = end!.trace!.steps;
+    const keys = steps.filter((st) => st.msg === 'vm: key').map((st) => `${st.menu}:${st.digit}`);
+    expect(keys).toEqual(['main:1', 'during:3', 'during:2']);
+    expect(steps.find((st) => st.msg === 'vm: main menu')).toMatchObject({ new: 2 });
+    expect(steps.find((st) => st.msg === 'vm: list')).toMatchObject({ list: 'new', count: 2 });
+    expect(steps.filter((st) => st.msg === 'vm: playing').map((st) => st.voicemail)).toEqual([m1, m2]);
+    // Deletes and saves change the mailbox: they get a log line of their own too.
+    expect(h.logs.find((l) => l.msg === 'vm: message deleted' && l.ch === ch)).toMatchObject({ voicemail: m1 });
+    expect(h.logs.find((l) => l.msg === 'vm: message saved' && l.ch === ch)).toMatchObject({ voicemail: m2 });
+  });
+
   it('during playback: 1 restarts the message', async () => {
     const { h, call } = await mailbox();
     h.ari.playMs = 40;
