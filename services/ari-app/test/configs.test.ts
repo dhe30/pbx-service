@@ -243,6 +243,15 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(ext).toMatch(/Stasis\(pbx-app,\$\{PJSIP_HEADER\(read,X-PBX-Src\)\},\$\{PJSIP_HEADER\(read,X-PBX-User\)\},\$\{CHANNEL\(pjsip,call-id\)\}\)/);
       expect(ext).toMatch(/Hangup\(34\)/);
     });
+    it('the h extension keeps the ARI app\'s hangup cause (the `_.` catch-all turned every reject into 404, 2026-11-18)', () => {
+      const ext = read('pbx-1', 'extensions.conf');
+      const h = ext.match(/^exten => h,1,(.*)$/m);
+      expect(h).not.toBeNull();
+      expect(h![1]).not.toMatch(/Hangup/);
+      // The explicit h line must exist in the same context as the catch-all.
+      expect(ext.indexOf('exten => h,1')).toBeLessThan(ext.indexOf('exten => _.,1,Hangup(1)'));
+      expect(ext.indexOf('[from-edge]')).toBeLessThan(ext.indexOf('exten => h,1'));
+    });
   });
 
   describe('SIP history (sipdump, 2026-11-15)', () => {
