@@ -79,7 +79,46 @@ nothing was changed. Packet counts can't show content: if this recurs, capture t
 - 124 was registered (UDP, on edge-2, User-Agent cse356-market).
 
 So the transferring phone never placed the consult call (or placed it somewhere other than us), and
-never sent a REFER. Nothing on our side failed. Question for course staff:
+never sent a REFER. Nothing on our side failed.
+
+**Course staff's answer (2026-11-18 evening):** the simulated phone does all three steps itself: a
+hold re-INVITE on the original call, the consult call to 124 through us, then REFER with Replaces.
+"Here it stopped at the first step: its hold re-INVITE on the original call didn't get a final
+response."
+
+**What we see for that step.** Every INVITE that reached either edge from outside between 18:57 and
+19:01 got a final response (edge-1 181/181, edge-2 462/462), none took over 1 s, and no request was
+retransmitted. Node exporter shows no UDP receive drops on any node 18:55-19:02. There were four
+hold re-INVITEs (a=sendonly) in 18:58-19:00:15; two were Hussain's, and both were answered and ACKed:
+
+```
+65db5cd1-cc62-4282-a8ca-86dfcfa28236  Asterisk -> Desk 102 (x35534e069e665971), leg of a carrier call
+                                      through the IVR, the same shape as the 17:23 transfer
+18:58:19.388 102 (130.245.136.25:33545) -> edge-2  INVITE cseq 5136, a=sendonly (hold)
+18:58:19.388 edge-2 -> 102                          100 trying
+18:58:19.400 edge-2 -> 102                          200 OK cseq 5136, a=recvonly
+18:58:19.402 102 -> edge-2                          ACK cseq 5136
+18:58:31.805 102 -> edge-2                          INVITE cseq 5137, sendrecv (resume), 200 + ACK
+18:58:31.845 102 -> edge-2                          INVITE cseq 5138, sendrecv, 200 + ACK
+
+5cda780300c956361f6c@130.245.136.25   ext 210 -> 106: hold 18:58:44.311, 200 18:58:44.316, ACK .318;
+                                      resume 18:58:57.530, 200 + ACK
+```
+
+A UAC sends the ACK for a 2xx from its dialog layer, so 102's phone did receive and process our 200
+for the hold. 12 s later it resumed instead of placing the consult call. Our reply to course staff:
+
+> Thanks. We looked at that step. Every re-INVITE from Hussain Notary's phones between 18:57 and
+> 19:01 UTC got a 200 OK within 15 ms, and the phone ACKed it. The only hold we can match to Desk 102
+> (the transferor in the earlier transfer) is Call-ID 65db5cd1-cc62-4282-a8ca-86dfcfa28236: re-INVITE
+> CSeq 5136 (a=sendonly) from 130.245.136.25:33545 at 18:58:19.388, our 200 OK (a=recvonly) at
+> 18:58:19.400, the phone's ACK at 18:58:19.402, then resume (CSeq 5137) at 18:58:31.8. We received
+> no retransmissions and no other hold re-INVITEs from this customer, and saw no packet drops. Could
+> you tell us the Call-ID, CSeq and time of the hold re-INVITE your phone was waiting on, and the
+> address/port it sent it to? If it is this one, the phone ACKed our 200 OK 2 ms after we sent it,
+> so the final response did arrive.
+
+Earlier question to course staff (kept for the record):
 
 > Hussain Notary (group 4), ticket `transfer_attended`, failure at 2026-11-18 19:00:11 UTC:
 > "extension 124 never rang after the transfer (REFER not sent)". Our edges received no INVITE for
