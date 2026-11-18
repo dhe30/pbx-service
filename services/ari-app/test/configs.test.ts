@@ -343,6 +343,16 @@ describe.skipIf(!rendered)('rendered configs', () => {
       // in-dialog requests: double Record-Route picks the socket
       expect(kam).toMatch(/modparam\("rr", "enable_double_rr", 1\)/);
     });
+    it('replies relayed statelessly to the internet leave from the public socket too (2026-11-18)', () => {
+      // A 200 OK retransmission from Asterisk after the transaction is gone went out of the first
+      // (internal) socket, :5070. Only replies that came in on the internal socket, go on over UDP
+      // and are not for one of our own private hops get the public socket.
+      const rr = block(kam, '\nreply_route {');
+      expect(rr).toContain('if ($Rp == 5070 && $(sel(via[2].transport){s.tolower}) == "udp") {');
+      expect(rr).toContain('$sel(via[2].host) != "127.0.0.21" && $sel(via[2].host) != "127.0.0.22" && $sel(via[2].host) != "127.0.0.12"');
+      expect(rr).toContain('force_send_socket(udp:127.0.1.11:5060);');
+      expect(block(kam2, '\nreply_route {')).toContain('force_send_socket(udp:127.0.0.12:5060);');
+    });
     it('Asterisk and the peer edge reach Kamailio on the internal port', () => {
       expect(block(kam, 'route[REGISTRAR]')).toContain('Path: <sip:127.0.0.11:5070;lr;received=');
       const pjsip = read('pbx-1', 'pjsip.conf');

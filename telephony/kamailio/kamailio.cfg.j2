@@ -417,6 +417,30 @@ request_route {
 	exit;
 }
 
+# Every reply, before tm matches it. Only one case needs work: a reply relayed STATELESSLY (no
+# transaction left, e.g. Asterisk's 200 OK retransmissions after tm's wait timer) goes out of the
+# socket the core picks from the next hop's address. The internal and public UDP sockets share the
+# private IP (1:1 NAT) and the internal one is listed first, so such a reply to a phone or the
+# carrier left from :{{ kamailio_internal_port }} instead of :5060, which clients may ignore: if the first 200 OK
+# is lost, every retransmission was wasted and the call failed after 32 s without an ACK
+# (2026-11-17 14:31 UTC, synthetic call on edge-1). Replies relayed by tm keep the socket the
+# request arrived on, so forcing here changes nothing for them. Checked on Kamailio 6.0.8: without
+# this the relayed reply leaves from the first socket, with it from the forced one; a private next
+# hop keeps the internal socket.
+{# Our own hops on the private network: the pbx nodes and the peer edges (also used by NH_TIMERS). #}
+{% set private_hops = ((groups.get('pbx', []) | map('extract', hostvars, 'private_ip') | list) + edge_peer_ips) | reject('equalto', private_ip) | unique | list %}
+reply_route {
+	if ($Rp == {{ kamailio_internal_port }} && $(sel(via[2].transport){s.tolower}) == "udp") {
+{% if private_hops %}
+		if ({% for ip in private_hops %}$sel(via[2].host) != "{{ ip }}"{% if not loop.last %} && {% endif %}{% endfor %}) {
+			force_send_socket(udp:{{ public_bind_ip }}:5060);
+		}
+{% else %}
+		force_send_socket(udp:{{ public_bind_ip }}:5060);
+{% endif %}
+	}
+}
+
 # Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_DEVICE_SRC (+ FLT_TRUSTED).
 route[CLASSIFY] {
 {# carrier_cidrs / trusted_tester_cidrs entries: "IP", "IP/bits", optionally ":port" (carrier only).
@@ -504,7 +528,7 @@ route[RELAY] {
 # one lost packet on that hop added 0.5 s to the transaction (2026-11-14: a carrier re-INVITE's
 # first copy to Asterisk got no answer; the resend 444 ms later was answered in 1.4 ms). Requests
 # to the internet keep the defaults. tm never retransmits over TCP/TLS/WS, so only UDP is affected.
-{% set private_hops = ((groups.get('pbx', []) | map('extract', hostvars, 'private_ip') | list) + edge_peer_ips) | reject('equalto', private_ip) | unique | list %}
+# (private_hops is set above reply_route.)
 route[NH_TIMERS] {
 {% if private_hops %}
 	if ({% for ip in private_hops %}$nh(d) == "{{ ip }}"{% if not loop.last %} || {% endif %}{% endfor %}) {
