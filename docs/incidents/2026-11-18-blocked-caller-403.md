@@ -61,3 +61,36 @@ Leaderboard success = calls / (calls + failed). One failure costs ~0.002 points 
 so this trickle costs ~0.01 points an hour. It is not why the rate fell after the 11-17 peak: that
 was the rolling window (successful hours leaving, the peak's ~8.5k failures staying until they
 leave 14:55-17:30 UTC on 11-18). It does count toward per-customer dissatisfaction.
+
+## 6. Result after the deploy (V-T20, checked 19:20 UTC)
+
+Deployed 15:24-15:57 (ari-app restarts: pbx-1 15:31, pbx-2 15:39, pbx-3 15:57). The drains caused
+no failed INVITEs (SIP history 15:29-15:59 on both edges: only 486/487).
+
+**On the wire: fixed.** Every blocked call is now one INVITE answered 180 + 603 within ~20 ms, on
+one edge, with no carrier retry. For example, Maple at 19:11:02 (edge-2 -> pbx-3) and tenant
+1a55df98 at 19:09:24 (edge-2 -> pbx-1) look the same.
+
+**In the grader: not fixed.** Maple's blocked calls at 16:42, 17:35/17:36, 17:43/17:44, 18:16,
+18:34 and 19:11 are each still followed by an `inbound` failure 1-2 min later. Other tenants'
+blocked calls are still not counted. So the SIP code was never what the grader judged.
+
+**What makes Maple different.** +16315550252 behaves like one of Maple's *regular* grader callers,
+not like a blocked one:
+
+| Caller (to Maple, 16:14-19:11) | Calls | Redials another Maple DID after rejection |
+|---|---|---|
+| +16315550252 (blocked) | 16 | yes, ~24 s later (Maple has 3 DIDs) |
+| +16315550280 | 17 | - |
+| +16315550213 | ~15 | - |
+| +16315550249 | ~11 | - |
+
+The blocked numbers at other tenants (e.g. +16315550738 at 1a55df98) call about once every 2 h and
+never redial. Maple's blocklist row (created 07:31:21) is unchanged: the API logs on both app nodes
+show one POST and one GET of `/blocked-numbers` for it today, and no DELETE.
+
+**Conclusion.** The grader's Maple customer blocked one of its own regular callers and then counts
+our (correct) rejection as a failed inbound call. We can't fix that without breaking the
+blocklist requirement. It costs ~2-5 failures an hour (~0.01 points an hour) while Maple keeps
+calling. Option: ask course staff whether this is intended. 603 stays: it is correct, deterministic
+and halves the work per blocked call.
