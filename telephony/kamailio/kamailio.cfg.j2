@@ -751,7 +751,19 @@ route[FROM_DEVICE] {
 # Asterisk -> PSTN vendor (outgoing call, forwarding, simultaneous ring, transfer to a number).
 # Asterisk sends it with us as outbound proxy and answers the vendor's 401/407 itself.
 # ---------------------------------------------------------------------------------------------
+# The ARI app tags each ring leg it originates with X-PBX-Leg: <its ARI channel id>. Log it once,
+# next to this leg's SIP Call-ID, and strip it (it's ours, not the phone's or the vendor's). Joins
+# the app's "ring: answered" / "ring: leg ended" lines (channel id, caller's Call-ID) to the leg's
+# audio record on the media node (its own Call-ID): loadtest/diag/silent-legs.py (2026-11-18).
+route[LEG_TAG] {
+	if (is_present_hf("X-PBX-Leg")) {
+		xlog("L_INFO", "legs: $hdr(X-PBX-Leg) is [ci=$ci] to $rU\n");
+		remove_hf("X-PBX-Leg");
+	}
+}
+
 route[TO_VENDOR] {
+	route(LEG_TAG);
 	if (is_present_hf("Route")) loose_route();   # our own pre-loaded Route from Asterisk
 {% if MEDIA %}
 	route(RTP_SET_NEW);
@@ -780,6 +792,7 @@ failure_route[VENDOR_FAILURE] {
 # Asterisk -> every registered device of one extension (parallel fork)
 # ---------------------------------------------------------------------------------------------
 route[TO_DEVICES] {
+	route(LEG_TAG);
 	if (!lookup("location")) {
 		# No device registered: the ARI app treats it as "no answer" (forward / voicemail).
 		# Fork logging (L_INFO, shown at debug=2): which extension rang which contact, and how each

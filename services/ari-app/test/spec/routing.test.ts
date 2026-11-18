@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Account, makeHarness, nextDid, startDb, until, type Db, type Harness } from '../harness/env.js';
+import { LEG_HEADER_VAR } from '../../src/ring.js';
 
 // Course spec §3: IVR menus, ring groups, business hours, number routing, caller blocklist.
 
@@ -224,6 +225,28 @@ describe('§3 Ring groups: extensions rung all at once or in order (each for a s
     // The other two stop.
     const others = h.ari.originates.filter((o) => o.target.kind === 'sip' && o.target.user !== a.ext['103']!.sip);
     await until(() => others.every((o) => h.ari.destroyed.has(o.channelId)));
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
+  it('each ring leg is tagged with its channel id; answer and the stopped losers are logged with leg ids (2026-11-18)', async () => {
+    const { h, a } = await acct();
+    for (const n of ['101', '102', '103']) await a.extension({ number: n });
+    const g = await a.ringGroup('all', ['101', '102', '103'], 20, null);
+    const did = nextDid();
+    await a.number(did, { type: 'ring_group', id: g });
+    h.ari.sip.set(a.ext['103']!.sip, { answerAfterMs: 30 });
+    const caller = h.ari.carrierCall(did, '+16315550000');
+    await until(() => h.ari.originates.length === 3, 2000, 'all three ringing');
+    await bridged(h, caller);
+    // X-PBX-Leg: <channel id> on every originate (the edge logs it next to the leg's SIP Call-ID)
+    for (const o of h.ari.originates) expect(o.variables).toEqual({ [LEG_HEADER_VAR]: o.channelId });
+    const won = h.ari.originates.find((o) => o.target.kind === 'sip' && o.target.user === a.ext['103']!.sip)!;
+    const ans = h.logs.find((l) => l.msg === 'ring: answered' && l.ch === caller) as Record<string, unknown>;
+    expect(ans.leg).toBe(won.channelId);
+    const stopped = h.logs.find((l) => l.msg === 'ring: others stopped' && l.ch === caller) as Record<string, unknown>;
+    expect(stopped).toMatchObject({ stopped: 2, won: won.channelId });
+    expect(new Set(stopped.legs as string[])).toEqual(new Set(h.ari.originates.filter((o) => o !== won).map((o) => o.channelId)));
     h.ari.remoteHangup(caller);
     await h.settle();
   });

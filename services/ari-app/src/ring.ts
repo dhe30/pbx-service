@@ -43,6 +43,9 @@ export interface RingOptions {
   externalIsMain?: boolean;
 }
 
+/** Channel variable that adds `X-PBX-Leg: <channel id>` to a ring leg's INVITE (see originate). */
+export const LEG_HEADER_VAR = 'PJSIP_HEADER(add,X-PBX-Leg)';
+
 /** Leg failed within this window with a non-user cause => try the next trunk. */
 const FAST_FAIL_MS = 3000;
 /** Q.850 causes that mean "the person didn't/couldn't answer", not "the path is broken". */
@@ -105,6 +108,12 @@ export async function ringTargets(
           callerId,
           timeout: Math.max(1, Math.ceil((deadline - Date.now()) / 1000)),
           originator: s.primary,
+          // Tags the leg's INVITE with our channel id. The edge logs it next to the leg's SIP
+          // Call-ID ("devices: leg ..." / "vendor: leg ...") and strips it before the INVITE leaves.
+          // That joins this call's "ring: answered" / "ring: leg ended" lines (channel id, caller's
+          // Call-ID) to the leg's audio record (its own Call-ID) without guessing by time
+          // (loadtest/diag/silent-legs.py; 2026-11-18).
+          variables: { [LEG_HEADER_VAR]: channelId },
         });
         return true;
       } catch (err) {
@@ -165,13 +174,13 @@ export async function ringTargets(
       legs.delete(ev.channel.id);
       if (ev.type === 'StasisStart') {
         sub.unwatch(chKey(ev.channel.id));
-        s.log.info({ target: leg.target, trunk: trunks[leg.trunkIdx] }, 'ring: answered');
+        s.log.info({ target: leg.target, trunk: trunks[leg.trunkIdx], leg: ev.channel.id }, 'ring: answered');
         winner = { channelId: ev.channel.id, target: leg.target };
         return { winner, outcome: 'answered' };
       }
       // ChannelDestroyed before answer
       const fast = Date.now() - leg.startedAt < FAST_FAIL_MS;
-      s.log.info({ target: leg.target, cause: ev.cause, causeTxt: ev.cause_txt }, 'ring: leg ended');
+      s.log.info({ target: leg.target, cause: ev.cause, causeTxt: ev.cause_txt, leg: ev.channel.id, ms: Date.now() - leg.startedAt }, 'ring: leg ended');
       if (fast && !USER_CAUSES.has(ev.cause) && leg.trunkIdx + 1 < trunks.length) {
         if (leg.draft) leg.draft.endedAt = leg.draft.outcome = null;
         await start(leg.target, leg.trunkIdx + 1, leg.draft);
@@ -190,6 +199,11 @@ export async function ringTargets(
     sub.close();
     await ctx.ari.stopPlayback(ringbackId).catch(() => {});
     // Everyone still ringing lost (or we gave up): stop their phones. Their CDR legs end as no answer.
+    // Logged with their channel ids: a slow phone can still answer one of these after we stopped
+    // it, and that leg's audio record then shows a silent call that was never ours to bridge
+    // (loadtest/diag/silent-legs.py: "stopped by the app").
+    const stopped = [...legs.keys()].filter((id) => id !== winner?.channelId);
+    if (stopped.length > 0) s.log.info({ stopped: stopped.length, legs: stopped, won: winner?.channelId ?? null }, 'ring: others stopped');
     await Promise.all(
       [...legs.entries()]
         .filter(([id]) => id !== winner?.channelId)
