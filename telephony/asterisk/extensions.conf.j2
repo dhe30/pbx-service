@@ -18,5 +18,12 @@ exten => _[+*#0-9]!,1,NoOp(${PJSIP_HEADER(read,X-PBX-Src)} call to ${EXTEN} from
 ; Kamailio fails the call over to another pbx node.
  same => n,Hangup(34)
 
+; Runs when a channel of this context hangs up, including every call the ARI app rejects before
+; answering. It must NOT set a cause: without this line the `_.` below matched `h` too, and its
+; Hangup(1) overwrote the app's cause, so blocked callers (403), busy (486), no answer (480) and
+; failed-before-answer (503, which makes Kamailio try another pbx node) all went out as 404
+; (2026-11-18). An exact extension wins over a pattern.
+exten => h,1,NoOp(hangup cause ${HANGUPCAUSE})
+
 ; Anything else (e.g. non-numeric R-URI user) is not ours.
 exten => _.,1,Hangup(1)
