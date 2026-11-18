@@ -363,6 +363,20 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[TO_VENDOR] {')).toMatch(/^route\[TO_VENDOR\] \{\n\troute\(LEG_TAG\);/);
       // and it can't be forged from outside: X-PBX-* is stripped from anyone but pbx nodes / peer
       expect(kam).toContain('remove_hf_re("^X-PBX-");');
+    it('phones get 15 s for a first reply (5 s turned slow phones into cause 18 at the peak, 2026-11-18)', () => {
+      expect(block(kam, 'route[DEV_TIMERS] {')).toContain('t_set_fr(120000, 15000);');
+      // both places that send an INVITE to a phone: this edge's fork, and delivery for the peer edge
+      expect(block(kam, 'route[TO_DEVICES]')).toMatch(/route\(DEV_TIMERS\);\n\troute\(RELAY\);/);
+      expect(block(kam, 'route[FROM_PEER]')).toMatch(/route\(DEV_TIMERS\);\n\troute\(SEND_PUBLIC\);\n\troute\(RELAY\);/);
+      // everything else keeps the 5 s default; the pbx nodes keep their 2 s failover timer
+      expect(kam).toMatch(/modparam\("tm", "fr_timer", 5000\)/);
+      expect(block(kam, 'route[PBX_TIMERS]')).toContain('t_set_fr(120000, 2000);');
+    });
+    it('a late 2xx from a party with no transaction is logged (still relayed)', () => {
+      const rr = block(kam, '\nreply_route {');
+      expect(rr).toContain('if ($Rp != 5070 && $rm == "INVITE" && status =~ "^2[0-9][0-9]$" && !t_check_trans()) {');
+      expect(rr).toMatch(/xlog\("L_WARN", "devices: late 2xx from .*\[ci=\$ci\]\\n"\);/);
+      expect(rr).not.toMatch(/^\s*drop;/m);
     });
     it('Asterisk and the peer edge reach Kamailio on the internal port', () => {
       expect(block(kam, 'route[REGISTRAR]')).toContain('Path: <sip:127.0.0.11:5070;lr;received=');
