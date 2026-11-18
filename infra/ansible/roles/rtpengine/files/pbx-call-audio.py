@@ -186,11 +186,30 @@ class Parser:
             self.flush(cid)
 
 
-def write_prom(path, counts, last_bad_ts):
+CODECS = ('PCMU', 'PCMA', 'G729', 'G723', 'opus')
+
+
+def codec_label(leg):
+    """Codec of a party leg for the metric: one of CODECS, 'unknown' (rtpengine never learned it,
+    e.g. the party sent nothing) or 'other' (bounded label set)."""
+    c = (leg.get('codec') or '').split('/')[0]
+    if c.startswith('unknown') or not c:
+        return 'unknown'
+    return c if c in CODECS else 'other'
+
+
+def write_prom(path, counts, last_bad_ts, by_codec=None):
     lines = ['# HELP pbx_call_audio_legs_total Party-facing call legs by audio verdict (rtpengine final stats).',
              '# TYPE pbx_call_audio_legs_total counter']
     for (verdict, test), n in sorted(counts.items()):
         lines.append(f'pbx_call_audio_legs_total{{verdict="{verdict}",test="{str(test).lower()}"}} {n}')
+    # Customer legs only, split by the party's codec and SRTP: is silence a transcoding problem
+    # (some codecs worse) or not (all alike)? 2026-11-17 peak: silent 2.7 % PCMU vs 4.4 % transcoded,
+    # which took a day of log joins to explain (late answers, not rtpengine).
+    lines += ['# HELP pbx_call_audio_party_legs_total Customer party legs by audio verdict, party codec and SRTP.',
+              '# TYPE pbx_call_audio_party_legs_total counter']
+    for (verdict, codec, srtp), n in sorted((by_codec or {}).items()):
+        lines.append(f'pbx_call_audio_party_legs_total{{verdict="{verdict}",codec="{codec}",srtp="{srtp}"}} {n}')
     lines += ['# HELP pbx_call_audio_last_bad_timestamp_seconds Last customer leg with a verdict other than ok.',
               '# TYPE pbx_call_audio_last_bad_timestamp_seconds gauge',
               f'pbx_call_audio_last_bad_timestamp_seconds {last_bad_ts}',
@@ -218,6 +237,7 @@ def main():
 
     # Counters start at 0 on each restart; Prometheus' increase() handles the reset.
     counts = Counter({(v, t): 0 for v in VERDICTS for t in (False, True)})
+    by_codec = Counter({(v, c, s): 0 for v in VERDICTS for c in CODECS + ('unknown', 'other') for s in ('true', 'false')})
     state = {'last_bad': 0, 'dirty': True}
     out = open(args.jsonl, 'a', buffering=1) if args.jsonl else None
 
@@ -225,6 +245,9 @@ def main():
         for leg in rec['legs']:
             if leg['side'] == 'party':
                 counts[(leg['verdict'], rec['test'])] += 1
+                if not rec['test'] and leg['verdict'] in VERDICTS:
+                    srtp = 'true' if 'SAVP' in (leg.get('proto') or '') else 'false'
+                    by_codec[(leg['verdict'], codec_label(leg), srtp)] += 1
         if rec['verdict'] not in ('ok', 'no_party_leg') and not rec['test']:
             state['last_bad'] = int(rec['ts'])
         state['dirty'] = True
@@ -241,7 +264,7 @@ def main():
             parser.line(raw)
         parser.flush_all()
         if args.prom:
-            write_prom(args.prom, counts, state['last_bad'])
+            write_prom(args.prom, counts, state["last_bad"], by_codec)
         if args.summary:
             print(json.dumps({f'{v}{" (test)" if t else ""}': n for (v, t), n in sorted(counts.items()) if n},
                              indent=1), file=sys.stderr)
@@ -261,7 +284,7 @@ def main():
             parser.line(raw)
         parser.flush_idle()
         if args.prom and (state['dirty'] or time.time() - last_write > 60):
-            write_prom(args.prom, counts, state['last_bad'])
+            write_prom(args.prom, counts, state["last_bad"], by_codec)
             state['dirty'], last_write = False, time.time()
 
 

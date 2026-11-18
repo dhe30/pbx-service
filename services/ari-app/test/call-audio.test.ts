@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -80,5 +81,27 @@ describe.skipIf(!python)('pbx-call-audio verdicts', () => {
     const marked = run(FIXTURE, '--test-peer', '130.245.136.128');
     expect(marked.find((r) => r.call_id.startsWith('f068b387'))!.test).toBe(true);
     expect(marked.find((r) => r.call_id.startsWith('5e814da2'))!.test).toBe(false);
+  });
+
+  it('--prom: customer legs also counted by party codec and SRTP (2026-11-18)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pbx-call-audio-'));
+    const prom = join(dir, 'm.prom');
+    const r = spawnSync(python!, ['-I', SCRIPT, '--stdin', '--prom', prom, '--test-peer', '130.245.136.128'], { input: FIXTURE, encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    const text = readFileSync(prom, 'utf8');
+    rmSync(dir, { recursive: true });
+    expect(text).toContain('# TYPE pbx_call_audio_party_legs_total counter');
+    const series = [...text.matchAll(/^pbx_call_audio_party_legs_total\{verdict="([^"]+)",codec="([^"]+)",srtp="(true|false)"\} (\d+)$/gm)];
+    // a fixed label set (verdicts x 5 codecs + unknown/other x srtp), zeros included
+    expect(series).toHaveLength(5 * 7 * 2);
+    const n = (v: string, c: string, s: string) => Number(series.find((m) => m[1] === v && m[2] === c && m[3] === s)![4]);
+    const customerParty = run(FIXTURE, '--test-peer', '130.245.136.128')
+      .filter((x) => !x.test)
+      .flatMap((x) => x.legs.filter((l) => l.side === 'party' && l.verdict));
+    const sum = series.reduce((a, m) => a + Number(m[4]), 0);
+    expect(sum).toBe(customerParty.length); // every customer party leg, once; test legs not at all
+    expect(n('ok', 'PCMU', 'false')).toBeGreaterThan(0);
+    // the existing metric (alert CustomerCallAudioBad) is unchanged
+    expect(text).toMatch(/^pbx_call_audio_legs_total\{verdict="ok",test="false"\} \d+$/m);
   });
 });

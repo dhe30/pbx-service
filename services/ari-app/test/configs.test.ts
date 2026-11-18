@@ -353,6 +353,16 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(rr).toContain('force_send_socket(udp:127.0.1.11:5060);');
       expect(block(kam2, '\nreply_route {')).toContain('force_send_socket(udp:127.0.0.12:5060);');
     });
+    it("ring legs: the app's X-PBX-Leg tag is logged with the leg's Call-ID and stripped (2026-11-18)", () => {
+      const tag = block(kam, 'route[LEG_TAG] {');
+      expect(tag).toContain('if (is_present_hf("X-PBX-Leg")) {');
+      expect(tag).toContain('xlog("L_INFO", "legs: $hdr(X-PBX-Leg) is [ci=$ci] to $rU\\n");');
+      expect(tag).toContain('remove_hf("X-PBX-Leg");');
+      // first thing on both paths of a leg the app placed: phones and vendors
+      expect(block(kam, 'route[TO_DEVICES]')).toMatch(/^route\[TO_DEVICES\] \{\n\troute\(LEG_TAG\);/);
+      expect(block(kam, 'route[TO_VENDOR] {')).toMatch(/^route\[TO_VENDOR\] \{\n\troute\(LEG_TAG\);/);
+      // and it can't be forged from outside: X-PBX-* is stripped from anyone but pbx nodes / peer
+      expect(kam).toContain('remove_hf_re("^X-PBX-");');
     it('phones get 15 s for a first reply (5 s turned slow phones into cause 18 at the peak, 2026-11-18)', () => {
       expect(block(kam, 'route[DEV_TIMERS] {')).toContain('t_set_fr(120000, 15000);');
       // both places that send an INVITE to a phone: this edge's fork, and delivery for the peer edge
