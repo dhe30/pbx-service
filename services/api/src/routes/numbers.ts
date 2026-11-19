@@ -266,8 +266,8 @@ export const PURCHASE_RETRY_DELAYS_MS = [1000, 2000];
 
 /**
  * Last good answer per number search, used when the provider fails. Under load the provider
- * failed searches outright (2026-11-17: signups ended on a 502 from GET /numbers/available and
- * the customers disputed the charge). Offers from up to 15 minutes ago are better than an error:
+ * failed searches outright (GET /numbers/available answered 502). Offers from up to 15 minutes
+ * ago are better than an error:
  * one that is gone by now makes the purchase answer 409 number_unavailable (search again).
  */
 export const SEARCH_FALLBACK_MS = 15 * 60_000;
@@ -337,7 +337,7 @@ export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; 
     const { availableNumberId } = parse(PurchaseBody, req.body);
     // The purchase resumes from its saved steps with the same key and never orders or charges
     // twice (numbers/purchase.ts), so a provider failure is retried here instead of being handed
-    // to the customer: on 2026-11-17 signups failed on one 502 and the customer gave up.
+    // to the customer.
     let result: Awaited<ReturnType<typeof purchaseNumber>>;
     for (let attempt = 0; ; attempt++) {
       try {
