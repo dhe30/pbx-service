@@ -1,4 +1,4 @@
-// What we sell and for how much (course spec §2). Prices are per billing period (7 days) in US
+// What we sell and for how much. Prices are per billing period (7 days) in US
 // cents. Simulated customers' cards decline anything above the course ceilings
 // (docs/billing-flows.md §2), so test/billing.test.ts checks every price against them.
 //
@@ -10,12 +10,9 @@
 // Per-minute prices are not here: they live in the call_pricing table (what the call path
 // charges), and GET /billing/prices reads them from there.
 //
-// REPRICED (2026-11-13): the course market compares providers' public price lists before signing
-// up, and with the old prices ($19 plan with 2 extensions + 100 min, $0.05/min US) no simulated
-// customer signed up. The new prices undercut a live competitor (plan $9 / 1 ext / 500 min,
-// $0.03/min US) on every item except toll-free numbers, where cost leaves no room. Margins, with
-// gateway fees of 2.9% + $0.30 per charge: plan $8.50 nets ~$7.95; its 500 US minutes cost
-// $3.00 at the US vendor's $0.006/min (up to $7.50 if every minute went to Alaska at $0.015).
+// REPRICED (2026-11-13): lower prices (old: $19 plan with 2 extensions + 100 min, $0.05/min US).
+// Margins, with gateway fees of 2.9% + $0.30 per charge: plan $8.50 nets ~$7.95; its 500 US
+// minutes cost $3.00 at the US vendor's $0.006/min (up to $7.50 if every minute went to Alaska).
 
 // REPRICED (2026-11-15): lower plan, extension, local number and add-on prices, all still above
 // cost (extensions, plan and add-ons have no direct cost; local numbers cost 1.50/period). Per-minute
@@ -27,6 +24,8 @@
 // migration 20261121000000_pricing_b.sql. Weekly estimate at 2026-11-17 volume: revenue ~$3.5k,
 // costs ~$2.6k (vendors, DID numbers, card fees, VMs), profit ~$0.7k. Existing customers' renewing
 // items are lowered to these prices, never raised (same migration).
+// REPRICED again (2026-11-18, migration 20261122000000_pricing_c.sql): closer to cost, every
+// item still above its direct cost.
 export const PLAN = {
   name: 'Business',
   /** Plan price per period. Ceiling: $11.50 per included extension. */
@@ -38,9 +37,9 @@ export const PLAN = {
 
 export const PRICES = {
   /** Each additional extension, per period. Ceiling $11.50. No direct cost. */
-  extensionCents: 25,
+  extensionCents: 10,
   /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
-  localNumberCents: 195,
+  localNumberCents: 165,
   /**
    * Ceiling $3.50, and we charge it: the DID provider takes 2.00 setup + 3.00 per 7-day period for
    * a toll-free number (verify-backlog V-D15, 2026-11-11), so 3.00 lost the setup fee and earned
@@ -48,12 +47,12 @@ export const PRICES = {
    */
   tollFreeNumberCents: 350,
   /** International calling add-on. Ceiling $4.60. No direct cost. */
-  intlCallingCents: 89,
+  intlCallingCents: 59,
   /** Call recording add-on. Ceiling $4.60. No direct cost (object storage is ours). */
-  recordingCents: 89,
+  recordingCents: 59,
 } as const;
 
-/** Course ceilings in cents (spec §2), per billing period. */
+/** Price ceilings in cents, per billing period. */
 export const CEILINGS_CENTS = {
   perIncludedExtension: 1150,
   extension: 1150,
