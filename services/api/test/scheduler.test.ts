@@ -60,8 +60,17 @@ describe.skipIf(!db)('billing scheduler (Postgres)', () => {
       // Cancelled during the first period: not renewed, switched off when the period ends.
       { tenant_id: id, kind: 'intl_calling', price_cents: PRICES.intlCallingCents, paid_through: P1_END, phone_number_id: null, removed_at: at('2026-10-08T00:00:00Z') },
     ])}`;
+    // 2 included + the 1 extra slot, all in use (an unused slot would not renew).
+    await addExtensions(id, 3);
     const cookies = { [ACCESS_COOKIE]: app.jwt.sign({ sub: u!.id, tid: id, role: 'owner', typ: 'access' }) };
     return { id, did, numberId: n!.id, customer, cookies };
+  }
+
+  async function addExtensions(tenantId: string, count: number) {
+    for (let i = 0; i < count; i++) {
+      await sql`insert into extensions (tenant_id, number, name, sip_username)
+                values (${tenantId}, ${String(100 + i)}, ${`Ext ${i}`}, ${`x${randomUUID().replaceAll('-', '').slice(0, 16)}`})`;
+    }
   }
 
   async function addCdr(tenantId: string, startedAt: string, charge: number, extra: Partial<Record<string, unknown>> = {}) {
@@ -190,6 +199,46 @@ describe.skipIf(!db)('billing scheduler (Postgres)', () => {
     expect((await sql`select paid_through from account_items where tenant_id = ${t.id} and kind = 'plan'`)[0]!.paidThrough).toEqual(
       at('2026-11-02T00:00:00Z'),
     );
+  });
+
+  // 2026-11-17: accounts whose signup had failed still had extension slots and the plan renewing.
+  it('renews only the extension slots in use; the newest unused ones stop', async () => {
+    const t = await makeAccount(); // 2 included, 3 extensions, 1 slot
+    await sql`insert into account_items ${sql([1, 2, 3].map((i) => ({
+      tenant_id: t.id, kind: 'extension', price_cents: PRICES.extensionCents, paid_through: P1_END,
+      started_at: new Date(Date.parse('2026-10-06T00:00:00Z') + i * 60_000),
+    })))}`;
+    await sql`update tenant_settings set extra_extensions = 4 where tenant_id = ${t.id}`;
+
+    await runBillingTick(deps, at('2026-10-12T00:30:00Z'));
+    const slots = await sql<{ startedAt: Date; renewed: boolean; removed: boolean }[]>`
+      select started_at, paid_through = ${P2_END} as renewed, removed_at is not null as removed
+        from account_items where tenant_id = ${t.id} and kind = 'extension' order by started_at`;
+    expect(slots.map((s) => [s.renewed, s.removed])).toEqual([
+      [true, false], // the oldest slot: extension 3 needs it
+      [false, true],
+      [false, true],
+      [false, true],
+    ]);
+    const [inv] = await sql`select recurring_cents from invoices where tenant_id = ${t.id}`;
+    expect(inv!.recurringCents).toBe(PLAN.priceCents + PRICES.extensionCents + PRICES.localNumberCents);
+    expect((await sql`select extra_extensions from tenant_settings where tenant_id = ${t.id}`)[0]!.extraExtensions).toBe(1);
+  });
+
+  it('an account with no extension and no number renews nothing and is not charged', async () => {
+    const t = await makeAccount();
+    await sql`delete from extensions where tenant_id = ${t.id}`;
+    await sql`update phone_numbers set status = 'released' where id = ${t.numberId}`;
+    const charges = stripe.charges.length;
+
+    await runBillingTick(deps, at('2026-10-12T00:30:00Z'));
+    const renewed = await sql`select kind from account_items where tenant_id = ${t.id} and paid_through = ${P2_END}`;
+    expect(renewed).toHaveLength(0);
+    // (The prepaid top-up every new account gets is not an invoice charge.)
+    expect(stripe.charges.slice(charges).filter((c) => c.customerId === t.customer && c.key.startsWith('invoice:'))).toHaveLength(0);
+    // Nothing renews any more: the next periods create no invoices either.
+    await runBillingTick(deps, at('2026-10-19T00:30:00Z'));
+    expect(await sql`select 1 from invoices where tenant_id = ${t.id} and period_start = '2026-10-19'`).toHaveLength(0);
   });
 });
 

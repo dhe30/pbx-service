@@ -136,6 +136,8 @@ async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Peri
     on conflict (tenant_id, period_start) do nothing
     returning id`;
 
+  await dropUnusedItems(tx, tenantId, next, now);
+
   // Renew every item that renews and is paid only up to the new period's start. The invoice and
   // the renewals commit together, so an existing invoice for this period (inv undefined) only
   // happens after manual edits: the items still move on (or this account would be picked again
@@ -214,6 +216,35 @@ async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Peri
       from (select coalesce(round(sum(amount) * 100), 0)::int as cents
               from invoice_lines where invoice_id = ${inv.id} and kind = 'usage') u
      where v.id = ${inv.id}`;
+}
+
+/**
+ * Before renewing, stop what the account no longer uses, so a renewal never bills for nothing:
+ * - extra extension slots beyond (extensions - included): the newest are cancelled;
+ * - an account with no extension and no number left (setup never finished, or everything was
+ *   released) renews nothing at all, plan included.
+ * Cancelled items keep their paid period (removed_at only stops the renewal), and the
+ * extension limit follows (syncSettings recounts extra_extensions).
+ */
+async function dropUnusedItems(tx: Db, tenantId: string, next: Period, now: Date): Promise<void> {
+  const [use] = await tx<{ exts: number; numbers: number; included: number }[]>`
+    select (select count(*)::int from extensions where tenant_id = ${tenantId}) as exts,
+           (select count(*)::int from phone_numbers where tenant_id = ${tenantId} and status = 'assigned') as numbers,
+           coalesce((select included_extensions from tenant_settings where tenant_id = ${tenantId}), 0) as included`;
+  if (!use) return;
+  if (use.exts === 0 && use.numbers === 0) {
+    await tx`
+      update account_items set removed_at = ${now}
+       where tenant_id = ${tenantId} and removed_at is null and paid_through <= ${next.start}`;
+  } else {
+    await tx`
+      update account_items set removed_at = ${now}
+       where id in (select id from account_items
+                     where tenant_id = ${tenantId} and kind = 'extension' and removed_at is null
+                     order by started_at, id
+                    offset ${Math.max(0, use.exts - use.included)})`;
+  }
+  await syncSettings(tx, tenantId, now);
 }
 
 const ITEM_LABEL: Record<string, string> = {

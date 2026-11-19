@@ -192,7 +192,7 @@ describe.skipIf(!db)('prepaid usage (Postgres)', () => {
 
   it('invoices postpaid usage before the switch only, and shows credit charged and usage deducted', async () => {
     // Period [10-05, 10-12); switched to prepaid on 10-08.
-    const t = await makeAccount({ prepaidSince: '2026-10-08T00:00:00Z' });
+    const t = await makeAccount({ prepaidSince: '2026-10-08T00:00:00Z', extensions: 1 });
     await sql`insert into account_items (tenant_id, kind, price_cents, paid_through)
               values (${t.id}, 'plan', ${PLAN.priceCents}, '2026-10-12T00:00:00Z')`;
     await addCdr(t.id, '2026-10-06T10:00:00Z', 0.25); // postpaid
