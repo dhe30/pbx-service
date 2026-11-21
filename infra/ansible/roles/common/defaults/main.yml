@@ -5,3 +5,7 @@
 # --tags ssh_keys). Make sure your own working key is in the folder before running, or you lock
 # yourself out.
 team_keys_exclusive: true
+
+# How long systemd-resolved keeps an expired DNS answer to serve when the upstream resolver fails
+# (tasks/main.yml "DNS"). Covers an outage like 2026-11-21 10:03-10:55 UTC with room to spare.
+resolved_stale_retention: 1d

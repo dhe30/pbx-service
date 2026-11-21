@@ -80,6 +80,31 @@
     enabled: true
     state: started
 
+# ---- DNS: keep answering from cache when the platform resolver fails -----------------------------
+# Every VM resolves through systemd-resolved -> the platform resolver 10.0.0.2. When that resolver
+# failed (2026-11-20 19:49 UTC, 2026-11-21 10:03-10:55 UTC), Kamailio logged
+# `failed to resolve "us-vendor..."` and the outbound call failed. StaleRetentionSec keeps expired
+# answers and serves them when the upstream lookup fails, so a known vendor address outlives an
+# outage. systemd >= 254 (Debian 13: 257). V-P13.
+- name: Drop-in directory for systemd-resolved
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: "0755"
+  when: "'systemd-resolved.service' in ansible_facts.services"
+
+- name: systemd-resolved serves stale answers when upstream DNS fails
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/pbx.conf
+    mode: "0644"
+    content: |
+      # Managed by Ansible (role common). See tasks/main.yml "DNS".
+      [Resolve]
+      Cache=yes
+      StaleRetentionSec={{ resolved_stale_retention }}
+  when: "'systemd-resolved.service' in ansible_facts.services"
+  notify: Restart systemd-resolved
+
 - name: Config directory for pbx services
   ansible.builtin.file:
     path: /etc/pbx
