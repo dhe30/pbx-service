@@ -22,6 +22,12 @@ defaults
     timeout connect 5s
     timeout client 60s
     timeout server 60s
+    # Idle keep-alive connections from clients. The course's API client (Node fetch/undici) reuses
+    # a connection after ~60 s idle; with only `timeout client 60s` HAProxy closed it at the same
+    # moment and the request failed "fetch failed (UND_ERR_SOCKET)" (call_records ticket,
+    # 2026-11-20 18:15). Keep idle connections longer than we tell clients (Keep-Alive header in
+    # frontend https), so the CLIENT always closes first.
+    timeout http-keep-alive 120s
     # WebSocket connections are long-lived; Kamailio pings every 30 s.
     timeout tunnel 1h
 
@@ -54,6 +60,10 @@ frontend https
     # Remember the prefix BEFORE stripping it: afterwards /api/ would look like / (a web path).
     http-request set-var(txn.api_prefix) bool(true) if api_prefix
     http-request replace-path ^/api(/.*)$ \1 if api_prefix
+
+    # Tell HTTP/1.1 clients how long an idle connection stays open (well below timeout
+    # http-keep-alive): undici/Node fetch and browsers then retire it before HAProxy closes it.
+    http-response set-header Keep-Alive "timeout=55" unless { status 101 }
 
     use_backend kamailio_ws if { path /ws }
     use_backend api if { var(txn.api_prefix) -m bool }

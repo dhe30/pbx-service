@@ -120,6 +120,13 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[RELAY]').indexOf('route(NH_TIMERS)')).toBeLessThan(block(kam, 'route[RELAY]').indexOf('t_relay()'));
       expect(block(kam, 'failure_route[PBX_FAILOVER]')).toMatch(/route\(NH_TIMERS\);\n\s*t_relay\(\);/);
     });
+    it('only 503 or a dead node marks a pbx node inactive; a 500 (one failed call) goes to the caller', () => {
+      // 2026-11-20 19:49: vendor DNS outage -> each failed PSTN call (500) marked every pbx node
+      // inactive in turn and other calls got 503 "no pbx node available".
+      const fo = block(kam, 'failure_route[PBX_FAILOVER]');
+      expect(fo).toContain('if (t_check_status("503") || (t_branch_timeout() && !t_branch_replied())) {');
+      expect(fo).not.toMatch(/t_check_status\("[^"]*500/);
+    });
     it('log lines end in a \\n escape, not a line break inside the string', () => {
       expect(kam).not.toMatch(/xlog\("L_[A-Z]+", "[^"\n]*\n"\)/);
     });
@@ -429,6 +436,14 @@ describe.skipIf(!rendered)('rendered configs', () => {
       const i = hap.indexOf(`\n${name}\n`) + 1;
       return hap.slice(i, hap.indexOf('\n\n', hap.indexOf('\n', i) + 1));
     };
+    it.skipIf(!hasHap)('clients are told to retire idle connections before HAProxy closes them', () => {
+      // 2026-11-20 18:15: the course's client reused a socket idle 60 s = timeout client ->
+      // "fetch failed (UND_ERR_SOCKET)".
+      const ka = Number(/timeout http-keep-alive (\d+)s/.exec(section('defaults'))?.[1]);
+      const told = Number(/http-response set-header Keep-Alive "timeout=(\d+)"/.exec(hap)?.[1]);
+      expect(told).toBeGreaterThan(0);
+      expect(ka).toBeGreaterThan(told + 30);
+    });
     it.skipIf(!hasHap)('/api/... is stripped and flagged BEFORE routing, and the flag picks the API', () => {
       const https = hap.slice(hap.indexOf('\nfrontend https\n'), hap.indexOf('\nbackend kamailio_ws\n'));
       const setVar = https.indexOf('http-request set-var(txn.api_prefix) bool(true) if api_prefix');

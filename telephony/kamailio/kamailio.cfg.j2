@@ -655,7 +655,12 @@ failure_route[PBX_FAILOVER] {
 	if (t_is_canceled()) exit;
 	# 503: ARI app down (dialplan Hangup(34)) or overloaded. Timeout: node dead.
 	# The SDP rewritten by rtpengine_offer in request_route is kept for the new branch.
-	if (t_check_status("500|503") || (t_branch_timeout() && !t_branch_replied())) {
+	# NOT 500: that is the ARI app failing ONE call (reason=failure, e.g. its vendor leg failed), and
+	# the node is fine. Until 2026-11-20 a 500 marked the node inactive too: during a 1-min DNS
+	# outage for us-vendor, each phone call to an external number marked all 3 pbx nodes inactive
+	# in turn (19:49-19:50, 5 times, ~3-4 s each) and every other call got 503 "no pbx node
+	# available" (docs/incidents/2026-11-20-support-tickets.md §2). The 500 goes to the caller.
+	if (t_check_status("503") || (t_branch_timeout() && !t_branch_replied())) {
 		xlog("L_WARN", "pbx $du failed ($T_reply_code), trying next\n");
 		ds_mark_dst("ip");   # inactive + probing until it answers OPTIONS again
 		if (ds_next_dst()) {
