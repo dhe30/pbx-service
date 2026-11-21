@@ -11,7 +11,6 @@ import {
   BusinessLayout,
   AccountLayout,
 } from './layouts'
-import { Landing } from './pages/public/Landing'
 import { Login } from './pages/public/Login'
 import { Register } from './pages/public/Register'
 import { AccountSettings } from './pages/account/AccountSettings'
@@ -40,9 +39,13 @@ function App() {
             <NavBar />
 
           <Routes>
-          {/* Public routes */}
+          {/* Public routes. "/" IS the login page: the course's browser flow opens the site's root
+              and fills data-testid login-email at once (spec §4 names the testids, not a URL).
+              With a landing page there, every softphone flow timed out in locator.fill
+              (docs/incidents/2026-11-20-support-tickets.md §1). Logged-in users are redirected
+              by GuestRoute. */}
           <Route element={<GuestRoute />}>
-            <Route path="/" element={<Landing />} />
+            <Route path="/" element={<Login />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
           </Route>

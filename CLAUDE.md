@@ -230,7 +230,7 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
   htable cache, view public.kamailio_did_tenant). Kamailio never writes to Postgres.
 - Dispatcher set 1 = pbx nodes; algorithm 7 hashes on the account id (auth_db load_credentials
   -> $avp(tenant) for phones; DID lookup for carrier calls), round-robin if unknown; failover with
-  ds_next_dst on 500/503/timeout.
+  ds_next_dst on 503/timeout (NOT 500: one failed call, 2026-11-20).
 - Routes: FROM_CARRIER (carrier_cidrs), FROM_DEVICE (digest auth 407; adds X-PBX-Src: device +
   X-PBX-User), TO_DEVICES (Asterisk -> lookup -> parallel fork; per-branch transport via branch
   flags; rtpengine via-branch=extra per branch), TO_VENDOR (Asterisk -> PSTN vendor host; Asterisk
