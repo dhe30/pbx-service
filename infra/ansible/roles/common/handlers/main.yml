@@ -3,6 +3,12 @@
   ansible.builtin.command: nft -f /etc/nftables.conf
   changed_when: true
 
+# Takes about a second and empties the cache; lookups in that second go straight upstream.
+- name: Restart systemd-resolved
+  ansible.builtin.service:
+    name: systemd-resolved
+    state: restarted
+
 - name: Restart node_exporter
   ansible.builtin.service:
     name: prometheus-node-exporter
