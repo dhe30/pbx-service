@@ -9,7 +9,10 @@ import type { IvrMenuCfg } from './tenant.js';
 // action, repeat." Exact semantics: IvrConfigSchema in services/shared/src/ivr-config.ts.
 
 const DEFAULT_MENU_PROMPT = 'sound:hello-world';
-const INVALID_OPTION_PROMPT = 'sound:option-is-invalid';
+// "That option is invalid. Please try again." From the CORE sound pack. The old
+// `option-is-invalid` is in the EXTRA pack, which the pbx nodes don't install: callers heard
+// silence there (294 failed playbacks on 2026-11-20; docs/incidents/2026-11-20-support-tickets.md §7).
+const INVALID_OPTION_PROMPT = 'sound:pm-invalid-option';
 export const DEFAULT_REPEAT_DIGIT = '*';
 
 /** Play the menu and return where the caller goes next (null = hang up). */
