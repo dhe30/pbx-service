@@ -180,7 +180,7 @@ describe('§3 IVR menus: digits route to an extension, ring group, menu, voicema
     const caller = h.ari.carrierCall(did, '+16315550000');
     await until(() => playsTo(h, caller).length > 0);
     h.ari.dtmf(caller, '7');
-    await until(() => playsTo(h, caller).includes('sound:option-is-invalid'));
+    await until(() => playsTo(h, caller).includes('sound:pm-invalid-option'));
     await until(() => playsTo(h, caller).filter((m) => m === 'sound:hello-world').length === 2, 2000, 'menu replayed');
     h.ari.dtmf(caller, '1');
     await bridged(h, caller);
