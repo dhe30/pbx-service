@@ -166,7 +166,8 @@ Made during implementation (change any of these if you disagree):
 13. **Asterisk prompts in u-law** (CORE-SOUNDS-EN-ULAW) and `rtp_timeout=60` on the trunks, so a
     call with dead media is hung up instead of staying open silently.
 14. **Default prompts** are stock Asterisk sounds (`hello-world`, `vm-intro`,
-    `option-is-invalid`, `vm-goodbye`) until tenants upload greetings.
+    `pm-invalid-option`, `vm-goodbye`) until tenants upload greetings. Only the CORE sound pack is
+    installed: a prompt from the extra pack (e.g. `option-is-invalid`) plays as silence.
 15. **Garage S3 key is imported from Vault** (`garage key import`), so a rebuilt store keeps the
     same credentials.
 16. **Carrier IPs may also REGISTER** (auth still required), so one test machine can be both the

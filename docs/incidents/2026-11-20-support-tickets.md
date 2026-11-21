@@ -123,8 +123,18 @@ caller's stream into Asterisk vs Asterisk's stream to the target (plan in
 
 ## 7. Smaller things seen
 
-- Missing prompts: `vm-nomore` (734 failed playbacks today) and `option-is-invalid` (300) aren't
-  installed on the pbx nodes; callers hear silence there.
-- 390 voicemail playbacks from `/var/lib/asterisk/sounds/cache/` failed right after the message was
-  recorded (16:43:37 for a file written at 16:43). Looks like a cache-write race.
-- Asterisk's `messages.log` on the pbx nodes is in UTC.
+Asterisk logs "Playback failed" both when a sound file is missing and when the caller hangs up
+mid-prompt. Each failed playback on 11-20 was matched to the time its call ended (all three pbx nodes):
+
+| Sound | Failed | Call ended within 1.5 s | Meaning |
+|---|---|---|---|
+| `vm-nomore` | 708 | 708 | caller hung up (*98 test ends after the last message); file is installed |
+| cached voicemail/greeting (`sounds/cache/<id>`) | 350 | 350 | caller hung up while it played. No cache race: the cache downloads to a temp file and renames it |
+| `option-is-invalid` | 294 | 0 | **file missing**: it's in Asterisk's EXTRA sound pack; only CORE is installed |
+
+`option-is-invalid` meant a caller who pressed an invalid IVR digit heard silence instead of the
+prompt, then the menu again. Routing still worked (e.g. Oakwood 17:28: digit 9 invalid, then 1,
+routed correctly), and no ticket since 11-15 mentions the prompt or invalid input.
+**Fix:** `ivr.ts` plays core `pm-invalid-option` ("That option is invalid. Please try again.").
+
+Asterisk's `messages.log` on the pbx nodes is in UTC.
