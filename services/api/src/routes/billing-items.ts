@@ -2,7 +2,7 @@ import { withRetry, type Sql } from '@pbx/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
-import { BUYABLE, ITEM_PRICE_CENTS, buyItem, cancelItem, listItems } from '../billing/items.js';
+import { BUYABLE, buyItem, cancelItem, listItems } from '../billing/items.js';
 import { IDEMPOTENCY_KEY_DOC, IdempotencyKeyHeader } from '../billing/purchase-requests.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { HttpError } from '../errors.js';
@@ -72,8 +72,8 @@ const docs = {
     summary: 'Buy an additional extension or an add-on',
     description:
       `Charges the saved card the item's price prorated to the end of the current billing period, then activates it. ` +
-      `Prices per period (also in GET /billing/prices): extension ${ITEM_PRICE_CENTS.extension}, intl_calling ` +
-      `${ITEM_PRICE_CENTS.intl_calling}, recording ${ITEM_PRICE_CENTS.recording} cents. An additional extension raises the ` +
+      `The price is the one GET /billing/prices shows at the moment of purchase, and the item renews at that price. ` +
+      `An additional extension raises the ` +
       'extension limit by one (GET /billing). Buying a cancelled add-on that is still paid for renews it again at no charge. ' +
       '**Idempotent:** send a unique Idempotency-Key per purchase and reuse it for retries; it never charges twice.',
     headers: { 'Idempotency-Key': { description: IDEMPOTENCY_KEY_DOC, required: true } },

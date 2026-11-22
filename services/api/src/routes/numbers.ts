@@ -324,7 +324,7 @@ export const numberRoutes: FastifyPluginAsync<{ sql: Sql; stripe: StripeClient; 
     const offers = await searchWithFallback(provider, q, req.log);
     // Our cost (incomingCostPerMin) stays internal; customers see our prices (GET /billing/prices).
     return offers.map(({ skuId: _sku, incomingCostPerMin: _cost, ...o }) => {
-      const priceCents = numberPriceCents(o.kind);
+      const priceCents = numberPriceCents(o.kind, now);
       const due = proratedCents(priceCents, period, now);
       return { ...o, priceCents, dueNowCents: due < 50 ? 0 : due };
     });

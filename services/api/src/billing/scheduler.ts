@@ -2,7 +2,7 @@ import { billingPeriod, withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
 import { cleanupOrphanVoicemailMedia } from '../maintenance.js';
 import type { MediaStore } from '../object-store.js';
-import { MIN_CHARGE_CENTS } from './catalog.js';
+import { MIN_CHARGE_CENTS, callPricingAt, inAltWindow, altPricingEnabled } from './catalog.js';
 import { rechargeNext } from './credit.js';
 import { syncSettings } from './items.js';
 import type { StripeClient } from './stripe.js';
@@ -56,8 +56,32 @@ export interface TickResult {
   topUpsFailed: number;
 }
 
+/**
+ * Per-minute prices (catalog.ts): sets the call_pricing row to the list in force at
+ * `now`. Writes only when it differs, so the call_pricing_notify reload fires twice a day, not
+ * every tick; every API process may run it, they all write the same values. Off with
+ * ALT_PRICING=off (the row then keeps what the migrations set).
+ */
+export async function applyCallPricing(sql: Sql, now = new Date()): Promise<boolean> {
+  if (!altPricingEnabled()) return false;
+  const p = callPricingAt(now);
+  const changed = await sql`
+    update call_pricing
+       set us_per_min = ${p.usPerMin}, toll_free_in_per_min = ${p.tollFreeInPerMin}, intl_multiplier = ${p.intlMultiplier}
+     where (us_per_min, toll_free_in_per_min, intl_multiplier)
+           is distinct from (${p.usPerMin}::numeric, ${p.tollFreeInPerMin}::numeric, ${p.intlMultiplier}::numeric)
+    returning 1`;
+  return changed.length > 0;
+}
+
 export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<TickResult> {
   const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0, orphansDeleted: 0, toppedUp: 0, topUpsFailed: 0 };
+  // First, and on its own: a failure here must not stop billing.
+  try {
+    if (await applyCallPricing(d.sql, now)) d.log.info({ alt: inAltWindow(now), ...callPricingAt(now) }, 'per-minute prices switched');
+  } catch (err) {
+    d.log.error({ err }, 'per-minute price switch failed');
+  }
   for (let i = 0; i < BATCH; i++) {
     const outcome = await rechargeNext(d, now);
     if (outcome === null) break;

@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole, setAuthCookies, type AuthUser } from '../auth.js';
 import { startCardSetup, type CardSetup } from '../billing/account.js';
-import { PLAN } from '../billing/catalog.js';
+import { planAt } from '../billing/catalog.js';
 import type { StripeClient } from '../billing/stripe.js';
 import { HttpError } from '../errors.js';
 import { withDoc, type OperationDoc } from '../openapi/document.js';
@@ -73,9 +73,12 @@ export const businessRoutes: FastifyPluginAsync<BusinessOptions> = async (
 
           const [created] = await tx<{ id: string }[]>`
             insert into tenants (name, timezone) values (${body.name}, ${body.timezone}) returning id`;
+          // The list in force now; the plan charge (billing/account.ts) sets them again from the
+          // plan actually bought.
+          const plan = planAt();
           await tx`
             insert into tenant_settings (tenant_id, included_extensions, included_us_minutes)
-            values (${created!.id}, ${PLAN.includedExtensions}, ${PLAN.includedUsMinutes})`;
+            values (${created!.id}, ${plan.includedExtensions}, ${plan.includedUsMinutes})`;
           const [owner] = await tx<{ id: string }[]>`
             update users set tenant_id = ${created!.id}, role = 'owner'
              where id = ${userId} and tenant_id is null and role = 'unassigned'
