@@ -72,34 +72,15 @@ export const ALT_PRICES: ItemPrices = {
   recordingCents: 50,
 };
 
-/** Per-minute prices (the call_pricing row). Costs: US $0.006/min, incoming toll-free $0.025/min. */
-export interface CallPricingSet {
-  usPerMin: number;
-  tollFreeInPerMin: number;
-  intlMultiplier: number;
-}
-export const CALL_PRICING: { standard: CallPricingSet; alt: CallPricingSet } = {
-  standard: { usPerMin: 0.0066, tollFreeInPerMin: 0.012, intlMultiplier: 1.1 },
-  alt: { usPerMin: 0.005, tollFreeInPerMin: 0.01, intlMultiplier: 1.0 },
-};
+import { inAltWindow } from '@pbx/shared';
 
-/** When the alternate list applies: [startHour, endHour) in timeZone. */
-export const ALT_WINDOW = { timeZone: 'America/New_York', startHour: 1, endHour: 6 } as const;
-
-const hourIn = new Intl.DateTimeFormat('en-US', { timeZone: ALT_WINDOW.timeZone, hour: 'numeric', hourCycle: 'h23' });
-
-export const altPricingEnabled = (): boolean => process.env.ALT_PRICING !== 'off';
-
-/** True while the alternate list applies (never with ALT_PRICING=off). */
-export function inAltWindow(now: Date = new Date()): boolean {
-  if (!altPricingEnabled()) return false;
-  const h = Number(hourIn.format(now));
-  return h >= ALT_WINDOW.startHour && h < ALT_WINDOW.endHour;
-}
+// Per-minute prices (the call_pricing row) and the window are shared with the ARI app, which rates
+// each leg by the list in effect when it ended (@pbx/shared billing.ts).
+// Costs: US $0.006/min, incoming toll-free $0.025/min.
+export { ALT_WINDOW, CALL_PRICING, altPricingEnabled, callPricingAt, inAltWindow, type CallPricingSet } from '@pbx/shared';
 
 export const planAt = (now: Date = new Date()): Plan => (inAltWindow(now) ? ALT_PLAN : STANDARD_PLAN);
 export const pricesAt = (now: Date = new Date()): ItemPrices => (inAltWindow(now) ? ALT_PRICES : STANDARD_PRICES);
-export const callPricingAt = (now: Date = new Date()): CallPricingSet => (inAltWindow(now) ? CALL_PRICING.alt : CALL_PRICING.standard);
 
 /** The standard list. Code that sells something uses planAt / pricesAt instead. */
 export const PLAN = STANDARD_PLAN;
