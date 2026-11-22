@@ -189,11 +189,11 @@ describe('callPricingForLeg', () => {
     vi.stubEnv('ALT_PRICING', 'on');
     try {
       const row = { ...DEFAULT_CALL_PRICING, ...CALL_PRICING.alt }; // row not switched back yet
-      // Ended 06:00:53 New York (EST): standard list, though the row still holds the alternate one.
-      const after = callPricingForLeg(row, new Date('2026-11-22T11:00:53Z'));
+      // Ended 08:00:53 New York (EST): standard list, though the row still holds the alternate one.
+      const after = callPricingForLeg(row, new Date('2026-11-22T13:00:53Z'));
       expect(after).toEqual({ ...DEFAULT_CALL_PRICING, ...CALL_PRICING.standard });
-      // Ended 01:00:10: alternate list, though the row still holds the standard one.
-      const inside = callPricingForLeg(DEFAULT_CALL_PRICING, new Date('2026-11-22T06:00:10Z'));
+      // Ended 00:00:10: alternate list, though the row still holds the standard one.
+      const inside = callPricingForLeg(DEFAULT_CALL_PRICING, new Date('2026-11-22T05:00:10Z'));
       expect(inside).toEqual({ ...DEFAULT_CALL_PRICING, ...CALL_PRICING.alt });
       expect(inside.tollFreeInCostPerMin).toBe(DEFAULT_CALL_PRICING.tollFreeInCostPerMin);
     } finally {

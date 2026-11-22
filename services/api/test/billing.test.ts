@@ -68,15 +68,15 @@ describe('catalog', () => {
   it('alternate list inside ALT_WINDOW (EST and EDT); none with ALT_PRICING=off', () => {
     vi.stubEnv('ALT_PRICING', 'on');
     try {
-      // EST (UTC-5): 01:00 NY = 06:00Z, 06:00 NY = 11:00Z.
-      expect(inAltWindow(new Date('2026-11-23T05:59:59Z'))).toBe(false);
-      expect(inAltWindow(new Date('2026-11-23T06:00:00Z'))).toBe(true);
-      expect(inAltWindow(new Date('2026-11-23T10:59:59Z'))).toBe(true);
-      expect(inAltWindow(new Date('2026-11-23T11:00:00Z'))).toBe(false);
-      // EDT (UTC-4): 01:00 NY = 05:00Z, 06:00 NY = 10:00Z.
-      expect(inAltWindow(new Date('2026-07-01T05:00:00Z'))).toBe(true);
-      expect(inAltWindow(new Date('2026-07-01T09:59:59Z'))).toBe(true);
-      expect(inAltWindow(new Date('2026-07-01T10:00:00Z'))).toBe(false);
+      // EST (UTC-5): 00:00 NY = 05:00Z, 08:00 NY = 13:00Z.
+      expect(inAltWindow(new Date('2026-11-23T04:59:59Z'))).toBe(false);
+      expect(inAltWindow(new Date('2026-11-23T05:00:00Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-11-23T12:59:59Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-11-23T13:00:00Z'))).toBe(false);
+      // EDT (UTC-4): 00:00 NY = 04:00Z, 08:00 NY = 12:00Z.
+      expect(inAltWindow(new Date('2026-07-01T04:00:00Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-07-01T11:59:59Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-07-01T12:00:00Z'))).toBe(false);
       const inside = new Date('2026-11-23T07:00:00Z');
       const outside = new Date('2026-11-23T15:00:00Z');
       expect(planAt(inside)).toBe(ALT_PLAN);
