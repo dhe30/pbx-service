@@ -26,31 +26,84 @@
 // items are lowered to these prices, never raised (same migration).
 // REPRICED again (2026-11-18, migration 20261122000000_pricing_c.sql): closer to cost, every
 // item still above its direct cost.
-export const PLAN = {
-  name: 'Business',
+// REPRICED (2026-11-22, migration 20261123000000_pricing_d.sql): a standard and an alternate price
+// list; the alternate one applies during ALT_WINDOW. An item keeps the price it was bought at
+// (renewals never raise it). Per-minute prices are global: the billing scheduler switches the
+// call_pricing row (CALL_PRICING below) at the window edges. ALT_PRICING=off disables the
+// alternate list (tests).
+export interface Plan {
+  name: string;
   /** Plan price per period. Ceiling: $11.50 per included extension. */
-  priceCents: 350,
-  includedExtensions: 20,
-  /** US outgoing minutes included per period, shared by the account (~$3 at the vendor's rate). */
-  includedUsMinutes: 500,
-} as const;
+  priceCents: number;
+  includedExtensions: number;
+  /** US outgoing minutes included per period, shared by the account. */
+  includedUsMinutes: number;
+}
 
-export const PRICES = {
+export interface ItemPrices {
   /** Each additional extension, per period. Ceiling $11.50. No direct cost. */
-  extensionCents: 10,
+  extensionCents: number;
   /** Ceiling $3.25. DID provider cost: 0.00 setup + 1.50 per period. */
-  localNumberCents: 165,
-  /**
-   * Ceiling $3.50, and we charge it: the DID provider takes 2.00 setup + 3.00 per 7-day period for
-   * a toll-free number (verify-backlog V-D15, 2026-11-11), so 3.00 lost the setup fee and earned
-   * nothing on renewal. At 3.50 the setup is recovered in 4 periods. (Local: 0.00 + 1.50 vs 2.75.)
-   */
-  tollFreeNumberCents: 350,
+  localNumberCents: number;
+  /** Ceiling $3.50. DID provider cost: 2.00 setup + 3.00 per period. */
+  tollFreeNumberCents: number;
   /** International calling add-on. Ceiling $4.60. No direct cost. */
-  intlCallingCents: 59,
+  intlCallingCents: number;
   /** Call recording add-on. Ceiling $4.60. No direct cost (object storage is ours). */
-  recordingCents: 59,
-} as const;
+  recordingCents: number;
+}
+
+export const STANDARD_PLAN: Plan = { name: 'Business', priceCents: 289, includedExtensions: 70, includedUsMinutes: 650 };
+export const ALT_PLAN: Plan = { name: 'Business', priceCents: 99, includedExtensions: 500, includedUsMinutes: 1000 };
+
+export const STANDARD_PRICES: ItemPrices = {
+  extensionCents: 8,
+  localNumberCents: 145,
+  tollFreeNumberCents: 245,
+  intlCallingCents: 55,
+  recordingCents: 55,
+};
+export const ALT_PRICES: ItemPrices = {
+  extensionCents: 1,
+  localNumberCents: 99,
+  tollFreeNumberCents: 199,
+  /** Not lower: a prorated purchase under MIN_CHARGE_CENTS is waived and never reaches the card. */
+  intlCallingCents: 50,
+  recordingCents: 50,
+};
+
+/** Per-minute prices (the call_pricing row). Costs: US $0.006/min, incoming toll-free $0.025/min. */
+export interface CallPricingSet {
+  usPerMin: number;
+  tollFreeInPerMin: number;
+  intlMultiplier: number;
+}
+export const CALL_PRICING: { standard: CallPricingSet; alt: CallPricingSet } = {
+  standard: { usPerMin: 0.0066, tollFreeInPerMin: 0.012, intlMultiplier: 1.1 },
+  alt: { usPerMin: 0.005, tollFreeInPerMin: 0.01, intlMultiplier: 1.0 },
+};
+
+/** When the alternate list applies: [startHour, endHour) in timeZone. */
+export const ALT_WINDOW = { timeZone: 'America/New_York', startHour: 1, endHour: 6 } as const;
+
+const hourIn = new Intl.DateTimeFormat('en-US', { timeZone: ALT_WINDOW.timeZone, hour: 'numeric', hourCycle: 'h23' });
+
+export const altPricingEnabled = (): boolean => process.env.ALT_PRICING !== 'off';
+
+/** True while the alternate list applies (never with ALT_PRICING=off). */
+export function inAltWindow(now: Date = new Date()): boolean {
+  if (!altPricingEnabled()) return false;
+  const h = Number(hourIn.format(now));
+  return h >= ALT_WINDOW.startHour && h < ALT_WINDOW.endHour;
+}
+
+export const planAt = (now: Date = new Date()): Plan => (inAltWindow(now) ? ALT_PLAN : STANDARD_PLAN);
+export const pricesAt = (now: Date = new Date()): ItemPrices => (inAltWindow(now) ? ALT_PRICES : STANDARD_PRICES);
+export const callPricingAt = (now: Date = new Date()): CallPricingSet => (inAltWindow(now) ? CALL_PRICING.alt : CALL_PRICING.standard);
+
+/** The standard list. Code that sells something uses planAt / pricesAt instead. */
+export const PLAN = STANDARD_PLAN;
+export const PRICES = STANDARD_PRICES;
 
 /** Price ceilings in cents, per billing period. */
 export const CEILINGS_CENTS = {

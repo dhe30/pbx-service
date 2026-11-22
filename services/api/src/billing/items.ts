@@ -1,7 +1,7 @@
 import { withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
 import { HttpError } from '../errors.js';
-import { PRICES } from './catalog.js';
+import { pricesAt } from './catalog.js';
 import { chargeProrated } from './charge.js';
 import { assertCanBuy, claimPurchase, failPurchase, releaseLease } from './purchase-requests.js';
 import type { StripeClient } from './stripe.js';
@@ -24,12 +24,11 @@ export type ItemKind = 'plan' | 'extension' | 'number' | 'intl_calling' | 'recor
 export const BUYABLE = ['extension', 'intl_calling', 'recording'] as const;
 export type BuyableKind = (typeof BUYABLE)[number];
 
-/** Price per 7-day period (src/billing/catalog.ts, under the course ceilings). */
-export const ITEM_PRICE_CENTS: Record<BuyableKind, number> = {
-  extension: PRICES.extensionCents,
-  intl_calling: PRICES.intlCallingCents,
-  recording: PRICES.recordingCents,
-};
+/** Price per 7-day period at `now` (src/billing/catalog.ts, under the ceilings). */
+export function itemPriceCents(kind: BuyableKind, now: Date = new Date()): number {
+  const p = pricesAt(now);
+  return { extension: p.extensionCents, intl_calling: p.intlCallingCents, recording: p.recordingCents }[kind];
+}
 
 const LABEL: Record<ItemKind, string> = {
   plan: 'Plan',
@@ -127,6 +126,8 @@ export async function buyItem(
   if (claimed.status === 'failed') throw new HttpError(TERMINAL[claimed.errorCode!] ?? 400, claimed.errorCode!, claimed.errorMessage!);
 
   const chargeKey = `item:${key}`;
+  // One price for the charge and the item, fixed when the purchase starts.
+  const priceCents = itemPriceCents(p.kind, now);
   try {
     const outcome = await withRetry(() =>
       sql.begin(async (tx) => {
@@ -157,13 +158,13 @@ export async function buyItem(
 
         const charge = await chargeProrated(
           { sql: tx, stripe: d.stripe },
-          { tenantId: p.tenantId, chargeKey, priceCents: ITEM_PRICE_CENTS[p.kind], purpose: p.kind, description: `${LABEL[p.kind]} (prorated)` },
+          { tenantId: p.tenantId, chargeKey, priceCents, purpose: p.kind, description: `${LABEL[p.kind]} (prorated)` },
           now,
         );
         if (!charge.ok) return { ok: false as const, code: 'payment_failed', message: `The card was declined: ${charge.message}. Nothing was bought.` };
         const [item] = await tx<{ id: string }[]>`
           insert into account_items (tenant_id, kind, price_cents, paid_through)
-          values (${p.tenantId}, ${p.kind}, ${ITEM_PRICE_CENTS[p.kind]}, ${charge.paidUntil})
+          values (${p.tenantId}, ${p.kind}, ${priceCents}, ${charge.paidUntil})
           returning id`;
         await syncSettings(tx, p.tenantId);
         await completePurchase(tx, key, item!.id, charge.cents);

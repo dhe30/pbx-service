@@ -1,21 +1,77 @@
 import { randomUUID } from 'node:crypto';
 import { billingPeriod, type Sql } from '@pbx/shared';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ACCESS_COOKIE } from '../src/auth.js';
-import { CEILINGS_CENTS, PLAN, PRICES, proratedCents, topUpCents } from '../src/billing/catalog.js';
+import {
+  CALL_PRICING,
+  CEILINGS_CENTS,
+  STANDARD_PLAN,
+  STANDARD_PRICES,
+  ALT_PLAN,
+  ALT_PRICES,
+  PLAN,
+  PRICES,
+  callPricingAt,
+  inAltWindow,
+  planAt,
+  pricesAt,
+  proratedCents,
+  topUpCents,
+} from '../src/billing/catalog.js';
 import { FakeStripe, build, connectTestDb } from './helpers.js';
 
 // Signup card + first plan charge + extension limit (docs/billing-flows.md §1, §3).
 
 describe('catalog', () => {
-  it('every price is under the course ceilings (cards decline anything above)', () => {
-    expect(PLAN.priceCents).toBeLessThanOrEqual(CEILINGS_CENTS.perIncludedExtension * PLAN.includedExtensions);
-    expect(PRICES.extensionCents).toBeLessThanOrEqual(CEILINGS_CENTS.extension);
-    expect(PRICES.localNumberCents).toBeLessThanOrEqual(CEILINGS_CENTS.localNumber);
-    expect(PRICES.tollFreeNumberCents).toBeLessThanOrEqual(CEILINGS_CENTS.tollFreeNumber);
-    expect(PRICES.intlCallingCents).toBeLessThanOrEqual(CEILINGS_CENTS.intlCalling);
-    expect(PRICES.recordingCents).toBeLessThanOrEqual(CEILINGS_CENTS.recording);
+  it('every price is under the course ceilings (cards decline anything above), both lists', () => {
+    for (const [plan, prices] of [[STANDARD_PLAN, STANDARD_PRICES], [ALT_PLAN, ALT_PRICES]] as const) {
+      expect(plan.priceCents).toBeLessThanOrEqual(CEILINGS_CENTS.perIncludedExtension * plan.includedExtensions);
+      expect(prices.extensionCents).toBeLessThanOrEqual(CEILINGS_CENTS.extension);
+      expect(prices.localNumberCents).toBeLessThanOrEqual(CEILINGS_CENTS.localNumber);
+      expect(prices.tollFreeNumberCents).toBeLessThanOrEqual(CEILINGS_CENTS.tollFreeNumber);
+      expect(prices.intlCallingCents).toBeLessThanOrEqual(CEILINGS_CENTS.intlCalling);
+      expect(prices.recordingCents).toBeLessThanOrEqual(CEILINGS_CENTS.recording);
+    }
+    expect(PLAN).toBe(STANDARD_PLAN);
+    expect(PRICES).toBe(STANDARD_PRICES);
+  });
+
+  it('the alternate list is better than the standard list on every line', () => {
+    expect(ALT_PLAN.priceCents).toBeLessThan(STANDARD_PLAN.priceCents);
+    expect(ALT_PLAN.includedExtensions).toBeGreaterThan(STANDARD_PLAN.includedExtensions);
+    expect(ALT_PLAN.includedUsMinutes).toBeGreaterThan(STANDARD_PLAN.includedUsMinutes);
+    for (const k of Object.keys(STANDARD_PRICES) as (keyof typeof STANDARD_PRICES)[]) expect(ALT_PRICES[k]).toBeLessThan(STANDARD_PRICES[k]);
+    for (const k of Object.keys(CALL_PRICING.standard) as (keyof typeof CALL_PRICING.standard)[]) {
+      expect(CALL_PRICING.alt[k]).toBeLessThan(CALL_PRICING.standard[k]);
+    }
+  });
+
+  it('alternate list inside ALT_WINDOW (EST and EDT); none with ALT_PRICING=off', () => {
+    vi.stubEnv('ALT_PRICING', 'on');
+    try {
+      // EST (UTC-5): 01:00 NY = 06:00Z, 06:00 NY = 11:00Z.
+      expect(inAltWindow(new Date('2026-11-23T05:59:59Z'))).toBe(false);
+      expect(inAltWindow(new Date('2026-11-23T06:00:00Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-11-23T10:59:59Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-11-23T11:00:00Z'))).toBe(false);
+      // EDT (UTC-4): 01:00 NY = 05:00Z, 06:00 NY = 10:00Z.
+      expect(inAltWindow(new Date('2026-07-01T05:00:00Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-07-01T09:59:59Z'))).toBe(true);
+      expect(inAltWindow(new Date('2026-07-01T10:00:00Z'))).toBe(false);
+      const inside = new Date('2026-11-23T07:00:00Z');
+      const outside = new Date('2026-11-23T15:00:00Z');
+      expect(planAt(inside)).toBe(ALT_PLAN);
+      expect(pricesAt(inside)).toBe(ALT_PRICES);
+      expect(callPricingAt(inside)).toBe(CALL_PRICING.alt);
+      expect(planAt(outside)).toBe(STANDARD_PLAN);
+      expect(callPricingAt(outside)).toBe(CALL_PRICING.standard);
+      vi.stubEnv('ALT_PRICING', 'off');
+      expect(inAltWindow(inside)).toBe(false);
+      expect(planAt(inside)).toBe(STANDARD_PLAN);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('prorates linearly to the period end, never above the full price', () => {

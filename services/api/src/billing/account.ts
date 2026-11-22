@@ -2,7 +2,7 @@ import { billingPeriod, withRetry, type Db, type Sql } from '@pbx/shared';
 import { randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import { HttpError } from '../errors.js';
-import { MIN_CHARGE_CENTS, PLAN, proratedCents } from './catalog.js';
+import { MIN_CHARGE_CENTS, planAt, proratedCents } from './catalog.js';
 import { rechargeNext } from './credit.js';
 import { payOverdue } from './scheduler.js';
 import type { StripeClient } from './stripe.js';
@@ -158,7 +158,9 @@ async function chargeFirstPeriod(
   const [t] = await withRetry(() => sql<{ timezone: string; createdAt: Date }[]>`
     select timezone, created_at from tenants where id = ${tenantId}`);
   const period = billingPeriod(t!.timezone, t!.createdAt, now);
-  const amountCents = proratedCents(PLAN.priceCents, period, now);
+  // The plan in force now (catalog.ts), fixed here for the charge, the plan item and the allowances.
+  const plan = planAt(now);
+  const amountCents = proratedCents(plan.priceCents, period, now);
   // Per period AND card: retrying with the same card reuses Stripe's result (never charges twice);
   // a new card after a decline gets a new attempt (Stripe would replay the cached decline).
   const key = `plan:${tenantId}:${period.startDate}:${paymentMethodId}`;
@@ -184,7 +186,12 @@ async function chargeFirstPeriod(
         if (updated.length === 0) return;
         await tx`
           insert into account_items (tenant_id, kind, price_cents, paid_through)
-          values (${tenantId}, 'plan', ${PLAN.priceCents}, ${period.end})`;
+          values (${tenantId}, 'plan', ${plan.priceCents}, ${period.end})`;
+        // The plan bought decides the allowances (signup stored the list current at that moment).
+        await tx`
+          update tenant_settings
+             set included_extensions = ${plan.includedExtensions}, included_us_minutes = ${plan.includedUsMinutes}
+           where tenant_id = ${tenantId}`;
       }),
     );
 
@@ -196,7 +203,7 @@ async function chargeFirstPeriod(
   }
 
   const result = await stripe.charge(
-    { customerId, paymentMethodId, amountCents, description: `${PLAN.name} plan, first period (prorated)`, tenantId },
+    { customerId, paymentMethodId, amountCents, description: `${plan.name} plan, first period (prorated)`, tenantId },
     key,
   );
   if (!result.ok) {

@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../auth.js';
 import { saveCard, startCardSetup } from '../billing/account.js';
-import { BILLING_MODEL, PLAN, PREPAID, PRICES } from '../billing/catalog.js';
+import { BILLING_MODEL, PREPAID, planAt, pricesAt } from '../billing/catalog.js';
 import { creditState } from '../billing/credit.js';
 import { listRates, loadPricing, rateForNumber } from '../billing/rates.js';
 import type { StripeClient } from '../billing/stripe.js';
@@ -297,11 +297,13 @@ export const billingRoutes: FastifyPluginAsync<BillingOptions> = async (app, opt
 
   app.get('/billing/prices', withDoc({}, docs.prices), async () => {
     const p = await withRetry(() => loadPricing(sql));
+    // The list in force now (catalog.ts); per-minute from the live call_pricing row.
+    const now = new Date();
     return {
       currency: 'usd',
       billingPeriodDays: 7,
-      plan: { ...PLAN },
-      ...PRICES,
+      plan: { ...planAt(now) },
+      ...pricesAt(now),
       perMinute: {
         usPerMin: p.usPerMin,
         tollFreeInPerMin: p.tollFreeInPerMin,

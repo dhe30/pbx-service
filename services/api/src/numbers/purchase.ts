@@ -1,6 +1,6 @@
 import { withRetry, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
-import { PRICES } from '../billing/catalog.js';
+import { pricesAt } from '../billing/catalog.js';
 import { chargeProrated } from '../billing/charge.js';
 import { assertCanBuy, claimPurchase, failPurchase, releaseLease } from '../billing/purchase-requests.js';
 import type { StripeClient } from '../billing/stripe.js';
@@ -31,7 +31,11 @@ import { NumberUnavailable, type DidProvider, type NumberKind } from './provider
 // Only one attempt per key runs at a time (updated_at is a short lease). The generic part of this
 // lives in src/billing/purchase-requests.ts (shared with add-on purchases).
 
-export const numberPriceCents = (kind: NumberKind) => (kind === 'toll_free' ? PRICES.tollFreeNumberCents : PRICES.localNumberCents);
+/** Price per period at `now` (src/billing/catalog.ts). */
+export const numberPriceCents = (kind: NumberKind, now: Date = new Date()) => {
+  const p = pricesAt(now);
+  return kind === 'toll_free' ? p.tollFreeNumberCents : p.localNumberCents;
+};
 
 export interface PurchaseDeps {
   sql: Sql;
@@ -135,7 +139,7 @@ export async function purchaseNumber(
 
     // ---- 4. charge -------------------------------------------------------------------------------
     const kind = row.numberKind ?? 'local';
-    const priceCents = numberPriceCents(kind);
+    const priceCents = numberPriceCents(kind, now);
     const charge = await chargeProrated(
       d,
       {
