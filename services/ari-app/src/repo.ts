@@ -359,14 +359,19 @@ export class Repo {
 
   // ---- voicemail access (*98) -----------------------------------------------------------------
 
-  /** New (heard=false) or saved (heard=true) messages, oldest first. */
+  /**
+   * New (heard=false) messages newest first, saved (heard=true) oldest first. New ones were
+   * oldest first until 2026-11-22: a caller who left a message and then dialed *98 and pressed 3
+   * deleted an OLDER message, theirs stayed on the web, and unheard messages piled up (35 in one
+   * mailbox).
+   */
   async listVoicemails(tenantId: string, mailboxId: string, heard: boolean): Promise<VoicemailMsg[]> {
     const rows = await withRetry(
       () => this.sql<VoicemailMsg[]>`
         select v.id, v.media_id, m.object_key, v.caller_number, v.created_at
           from voicemails v join media m on m.id = v.media_id
          where v.tenant_id = ${tenantId} and v.mailbox_id = ${mailboxId} and v.heard = ${heard}
-         order by v.created_at, v.id`,
+         order by ${heard ? this.sql`v.created_at, v.id` : this.sql`v.created_at desc, v.id desc`}`,
     );
     return [...rows];
   }
