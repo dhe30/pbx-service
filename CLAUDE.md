@@ -241,7 +241,7 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
   codec-transcode=PCMU); toward carrier/vendor/UDP/TLS phones also PCMA, G729, G723, opus offered;
   toward browsers PCMU (no transcoding), ICE + DTLS-SRTP.
 - SIP history: sipdump writes every SIP message each edge receives or sends (all transports, TLS/WS
-  decrypted) to hourly pcaps in /var/log/pbx/sipdump, kept 24 h; search with loadtest/diag/sip-history.py.
+  decrypted) to hourly pcaps in /var/log/pbx/sipdump, kept 12 h and at most 10 GB (pbx-sipdump-prune timer, 2026-11-22); search with loadtest/diag/sip-history.py.
 - Security: X-PBX-* headers stripped from outside; pike + UA blacklist for untrusted sources only
   (trusted_tester_cidrs = course simulators exempt, B2).
 

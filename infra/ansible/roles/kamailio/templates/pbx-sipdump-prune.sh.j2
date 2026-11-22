@@ -1,0 +1,28 @@
+#!/bin/sh
+# Managed by Ansible (role kamailio). Hourly cleanup of the SIP history (kamailio.cfg sipdump),
+# run by pbx-sipdump-prune.timer. Needs no Kamailio restart, unlike sipdump's own fage.
+#   1. delete files older than {{ kamailio_sipdump_keep_hours }} h
+#   2. while the folder is over {{ kamailio_sipdump_max_gb }} GB, delete the oldest hour (pcap + meta)
+# The newest pcap is the one sipdump is writing and is never deleted.
+# 2026-11-22: edge-2 reached 69 % (18 GB of pcaps, ~0.9 GB/h, 95 % REGISTER + DMQ).
+set -eu
+
+dir='{{ kamailio_sipdump_dir }}'
+keep_min={{ kamailio_sipdump_keep_hours * 60 }}
+max_kb={{ kamailio_sipdump_max_gb * 1024 * 1024 }}
+
+[ -d "$dir" ] || exit 0
+newest=$(ls -t "$dir"/sip-*.pcap 2>/dev/null | head -n 1)
+
+# 1. age
+find "$dir" -maxdepth 1 -type f -name 'sip-*' -mmin +"$keep_min" ! -path "${newest:-/nonexistent}" -delete
+
+# 2. size cap, oldest first
+while [ "$(du -sk "$dir" | cut -f1)" -gt "$max_kb" ]; do
+  oldest=$(ls -tr "$dir"/sip-*.pcap 2>/dev/null | head -n 1)
+  if [ -z "$oldest" ] || [ "$oldest" = "$newest" ]; then
+    break
+  fi
+  echo "over ${max_kb} KB: deleting $oldest"
+  rm -f -- "$oldest" "${oldest%.pcap}.meta"
+done
