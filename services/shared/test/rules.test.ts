@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  CALL_PRICING,
   DEFAULT_CALL_PRICING,
   PRICE_CEILINGS,
   PrefixTable,
   billableSeconds,
   billingPeriod,
+  callPricingForLeg,
   classifyE164,
   intlCeilingPerMin,
   intlRetailPerMin,
@@ -179,5 +181,33 @@ describe('§3 Business hours in the account time zone', () => {
     expect(isOpen(night, tz, new Date('2026-11-07T01:30:00Z'))).toBe(true); // Sat 01:30
     expect(isOpen(night, tz, new Date('2026-11-07T02:00:00Z'))).toBe(false);
     expect(isOpen({ intervals: [{ day: 3, start: '00:00', end: '24:00' }] }, tz, new Date('2026-11-04T23:59:00Z'))).toBe(true);
+  });
+});
+
+describe('callPricingForLeg', () => {
+  it('rates a leg by the list in effect when it ended, not by the row', () => {
+    vi.stubEnv('ALT_PRICING', 'on');
+    try {
+      const row = { ...DEFAULT_CALL_PRICING, ...CALL_PRICING.alt }; // row not switched back yet
+      // Ended 06:00:53 New York (EST): standard list, though the row still holds the alternate one.
+      const after = callPricingForLeg(row, new Date('2026-11-22T11:00:53Z'));
+      expect(after).toEqual({ ...DEFAULT_CALL_PRICING, ...CALL_PRICING.standard });
+      // Ended 01:00:10: alternate list, though the row still holds the standard one.
+      const inside = callPricingForLeg(DEFAULT_CALL_PRICING, new Date('2026-11-22T06:00:10Z'));
+      expect(inside).toEqual({ ...DEFAULT_CALL_PRICING, ...CALL_PRICING.alt });
+      expect(inside.tollFreeInCostPerMin).toBe(DEFAULT_CALL_PRICING.tollFreeInCostPerMin);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps the row unchanged with ALT_PRICING=off', () => {
+    vi.stubEnv('ALT_PRICING', 'off');
+    try {
+      const row = { ...DEFAULT_CALL_PRICING, usPerMin: 0.02 };
+      expect(callPricingForLeg(row, new Date('2026-11-22T07:00:00Z'))).toBe(row);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

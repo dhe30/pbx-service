@@ -44,7 +44,7 @@ export interface CallPricing {
 }
 
 // Mirrors the call_pricing row's standard values (migration 20261123000000_pricing_d.sql); the API's
-// billing scheduler may switch the row to its alternate list (catalog.ts).
+// billing scheduler switches the row to the alternate list during ALT_WINDOW.
 // Costs: US vendor $0.006/min (Alaska $0.015), incoming toll-free $0.025/min.
 export const DEFAULT_CALL_PRICING: CallPricing = {
   usPerMin: 0.0066,
@@ -53,6 +53,44 @@ export const DEFAULT_CALL_PRICING: CallPricing = {
   intlMinPerMin: 0.01,
   tollFreeInCostPerMin: 0.025,
 };
+
+/** The per-minute prices that change with the price list. */
+export interface CallPricingSet {
+  usPerMin: number;
+  tollFreeInPerMin: number;
+  intlMultiplier: number;
+}
+export const CALL_PRICING: { standard: CallPricingSet; alt: CallPricingSet } = {
+  standard: { usPerMin: 0.0066, tollFreeInPerMin: 0.012, intlMultiplier: 1.1 },
+  alt: { usPerMin: 0.005, tollFreeInPerMin: 0.01, intlMultiplier: 1.0 },
+};
+
+/** When the alternate list applies: [startHour, endHour) in timeZone. */
+export const ALT_WINDOW = { timeZone: 'America/New_York', startHour: 1, endHour: 6 } as const;
+
+const altHourIn = new Intl.DateTimeFormat('en-US', { timeZone: ALT_WINDOW.timeZone, hour: 'numeric', hourCycle: 'h23' });
+
+/** ALT_PRICING=off disables the alternate list (tests). */
+export const altPricingEnabled = (): boolean => process.env.ALT_PRICING !== 'off';
+
+/** True while the alternate list applies (never with ALT_PRICING=off). */
+export function inAltWindow(now: Date = new Date()): boolean {
+  if (!altPricingEnabled()) return false;
+  const h = Number(altHourIn.format(now));
+  return h >= ALT_WINDOW.startHour && h < ALT_WINDOW.endHour;
+}
+
+export const callPricingAt = (now: Date = new Date()): CallPricingSet => (inAltWindow(now) ? CALL_PRICING.alt : CALL_PRICING.standard);
+
+/**
+ * The prices for a leg that ended at `endedAt`: the list in effect at that moment, from the clock.
+ * The call_pricing row follows the list only once a minute (billing scheduler), so a leg ending
+ * just after a switch would otherwise be rated with the previous list. The other fields come from
+ * `base` (the row). With ALT_PRICING=off, `base` unchanged.
+ */
+export function callPricingForLeg(base: CallPricing, endedAt: Date): CallPricing {
+  return altPricingEnabled() ? { ...base, ...callPricingAt(endedAt) } : base;
+}
 
 export const PRICE_CEILINGS = {
   usPerMin: 0.06,

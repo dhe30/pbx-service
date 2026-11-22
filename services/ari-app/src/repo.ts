@@ -3,6 +3,7 @@ import {
   ForwardDestinationSchema,
   PrefixTable,
   WeeklyScheduleSchema,
+  callPricingForLeg,
   parseDestination,
   parseIvrConfig,
   rateLeg,
@@ -282,7 +283,8 @@ export class Repo {
                where tenant_id = ${c.tenantId} and period_start = ${c.periodStart} for update`;
             remaining = Math.max(0, c.includedAllowanceSec - Number(u?.includedSecUsed ?? 0));
           }
-          const r = rateLeg({ chargeClass: c.chargeClass, answeredSec, costPerMin: c.costPerMin }, pricing, remaining);
+          const legPricing = callPricingForLeg(pricing, new Date(c.endedAt));
+          const r = rateLeg({ chargeClass: c.chargeClass, answeredSec, costPerMin: c.costPerMin }, legPricing, remaining);
           if (r.includedSec > 0) {
             await tx`update usage_periods set included_sec_used = included_sec_used + ${r.includedSec}
                       where tenant_id = ${c.tenantId} and period_start = ${c.periodStart}`;
