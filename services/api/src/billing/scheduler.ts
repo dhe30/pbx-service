@@ -2,7 +2,7 @@ import { billingPeriod, withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
 import { cleanupOrphanVoicemailMedia } from '../maintenance.js';
 import type { MediaStore } from '../object-store.js';
-import { MIN_CHARGE_CENTS, callPricingAt, inAltWindow, altPricingEnabled } from './catalog.js';
+import { MIN_CHARGE_CENTS, altPricingEnabled, callPricingAt, inAltWindow, planAt, pricesAt } from './catalog.js';
 import { rechargeNext } from './credit.js';
 import { syncSettings } from './items.js';
 import type { StripeClient } from './stripe.js';
@@ -151,6 +151,25 @@ async function invoiceNextAccount(d: BillingDeps, now: Date): Promise<boolean> {
 
 type Period = ReturnType<typeof billingPeriod>;
 
+/** The list price at `now` of an account item kind (null: not a list item). */
+export function listPriceCents(kind: string, numberKind: string | null, now: Date): number | null {
+  const p = pricesAt(now);
+  switch (kind) {
+    case 'plan':
+      return planAt(now).priceCents;
+    case 'extension':
+      return p.extensionCents;
+    case 'intl_calling':
+      return p.intlCallingCents;
+    case 'recording':
+      return p.recordingCents;
+    case 'number':
+      return numberKind === 'toll_free' ? p.tollFreeNumberCents : p.localNumberCents;
+    default:
+      return null;
+  }
+}
+
 async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Period, now: Date): Promise<void> {
   const [inv] = await tx<{ id: string }[]>`
     insert into invoices (tenant_id, period_start, period_start_at, period_end_at, usage_from, usage_to,
@@ -166,13 +185,16 @@ async function createInvoice(tx: Db, tenantId: string, next: Period, ended: Peri
   // the renewals commit together, so an existing invoice for this period (inv undefined) only
   // happens after manual edits: the items still move on (or this account would be picked again
   // forever), but nothing is billed twice.
-  const renewed = await tx<{ id: string; kind: string; priceCents: number; phoneNumberId: string | null; did: string | null }[]>`
+  const locked = await tx<{ id: string; kind: string; priceCents: number; phoneNumberId: string | null; did: string | null; numberKind: string | null }[]>`
     update account_items i set paid_through = ${next.end}
-      from (select a.id, n.did from account_items a left join phone_numbers n on n.id = a.phone_number_id
+      from (select a.id, n.did, n.kind as number_kind from account_items a left join phone_numbers n on n.id = a.phone_number_id
              where a.tenant_id = ${tenantId} and a.removed_at is null and a.paid_through <= ${next.start}
              for update of a) r
      where i.id = r.id
-    returning i.id, i.kind, i.price_cents, i.phone_number_id, r.did`;
+    returning i.id, i.kind, i.price_cents, i.phone_number_id, r.did, r.number_kind`;
+  // A renewal never costs more than the list in force right now (catalog.ts): the item keeps its
+  // own price otherwise.
+  const renewed = locked.map((r) => ({ ...r, priceCents: Math.min(r.priceCents, listPriceCents(r.kind, r.numberKind, now) ?? r.priceCents) }));
   const numberIds = renewed.filter((r) => r.phoneNumberId).map((r) => r.phoneNumberId!);
   if (numberIds.length) {
     await tx`update phone_numbers set paid_until = ${next.end} where id = any(${numberIds}::uuid[]) and status = 'assigned'`;

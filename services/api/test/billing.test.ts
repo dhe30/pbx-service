@@ -19,6 +19,7 @@ import {
   proratedCents,
   topUpCents,
 } from '../src/billing/catalog.js';
+import { listPriceCents } from '../src/billing/scheduler.js';
 import { FakeStripe, build, connectTestDb } from './helpers.js';
 
 // Signup card + first plan charge + extension limit (docs/billing-flows.md §1, §3).
@@ -35,6 +36,23 @@ describe('catalog', () => {
     }
     expect(PLAN).toBe(STANDARD_PLAN);
     expect(PRICES).toBe(STANDARD_PRICES);
+  });
+
+  it('renewals are capped at the list price in force (listPriceCents)', () => {
+    vi.stubEnv('ALT_PRICING', 'on');
+    try {
+      const inside = new Date('2026-11-23T07:00:00Z');
+      const outside = new Date('2026-11-23T15:00:00Z');
+      expect(listPriceCents('plan', null, inside)).toBe(ALT_PLAN.priceCents);
+      expect(listPriceCents('plan', null, outside)).toBe(STANDARD_PLAN.priceCents);
+      expect(listPriceCents('extension', null, outside)).toBe(STANDARD_PRICES.extensionCents);
+      expect(listPriceCents('number', 'local', inside)).toBe(ALT_PRICES.localNumberCents);
+      expect(listPriceCents('number', 'toll_free', outside)).toBe(STANDARD_PRICES.tollFreeNumberCents);
+      expect(listPriceCents('recording', null, inside)).toBe(ALT_PRICES.recordingCents);
+      expect(listPriceCents('something_else', null, inside)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('the alternate list is better than the standard list on every line', () => {
