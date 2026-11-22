@@ -148,8 +148,9 @@ describe('§3 *98: Cisco Unity standard conversation', () => {
     await a.extension({ number: '101' });
     const mb = a.ext['101']!.mailboxId!;
     const t0 = Date.now() - 60_000;
-    const m1 = await a.voicemail(mb, false, new Date(t0));
-    const m2 = await a.voicemail(mb, false, new Date(t0 + 1000));
+    // New messages play newest first: m1 (left last) is the first one played, then m2.
+    const m2 = await a.voicemail(mb, false, new Date(t0));
+    const m1 = await a.voicemail(mb, false, new Date(t0 + 1000));
     const s1 = await a.voicemail(mb, true, new Date(t0 + 2000));
     const call = () => h.ari.deviceCall(a.ext['101']!.sip, '*98');
     return { h, a, mb, m1, m2, s1, call };
@@ -160,13 +161,15 @@ describe('§3 *98: Cisco Unity standard conversation', () => {
     until(() => h.ari.plays.filter((p) => p.channelId === ch && p.media === media).length >= n, 3000, `${media} x${n}`);
   const msgPlays = (h: Harness, ch: string) => h.ari.plays.filter((p) => p.channelId === ch && p.media.startsWith('sound:/cache/')).map((p) => p.media);
 
-  it('main menu says how many new messages; 1 plays NEW messages oldest first', async () => {
-    const { h, call } = await mailbox();
+  it('main menu says how many new messages; 1 plays NEW messages newest first (the one just left)', async () => {
+    const { h, m1, call } = await mailbox();
     const ch = call();
     await heardPrompt(h, ch, 'sound:vm-onefor');
     expect(h.ari.plays.filter((p) => p.channelId === ch).map((p) => p.media)).toContain('number:2');
     h.ari.dtmf(ch, '1');
     await until(() => msgPlays(h, ch).length === 1);
+    const [newest] = await db.sql<{ mediaId: string }[]>`select media_id from voicemails where id = ${m1}`;
+    expect(msgPlays(h, ch)[0]).toBe(`sound:/cache/${newest!.mediaId}`);
     h.ari.remoteHangup(ch);
     await h.settle();
     expect(h.ari.channels.has(ch)).toBe(false);
