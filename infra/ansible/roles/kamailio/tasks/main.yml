@@ -69,11 +69,12 @@
 
 # SIP history (kamailio.cfg sipdump): every SIP message the edge receives or sends, TLS and WebSocket
 # included (written after decryption), as hourly pcap files. Kamailio removes files older than
-# kamailio_sipdump_keep_hours itself (fage); the tmpfiles rule creates the folder at boot and
-# removes anything 12 h older than that, in case fage doesn't. Search: loadtest/diag/sip-history.py.
+# kamailio_sipdump_keep_hours itself (fage, read at start); the hourly pbx-sipdump-prune timer
+# enforces the same age plus a size cap (kamailio_sipdump_max_gb) without a restart; the tmpfiles
+# rule creates the folder at boot and is the last backstop. Search: loadtest/diag/sip-history.py.
 - name: SIP history folder
   ansible.builtin.file:
-    path: "{{ kamailio_sipdump_dir | default('/var/log/pbx/sipdump') }}"
+    path: "{{ kamailio_sipdump_dir }}"
     state: directory
     owner: kamailio
     group: kamailio
@@ -84,8 +85,55 @@
     dest: /etc/tmpfiles.d/pbx-sipdump.conf
     content: |
       # Managed by Ansible (role kamailio): SIP history pcaps, see kamailio.cfg sipdump.
-      d {{ kamailio_sipdump_dir | default('/var/log/pbx/sipdump') }} 0750 kamailio kamailio {{ (kamailio_sipdump_keep_hours | default(24)) + 12 }}h
+      d {{ kamailio_sipdump_dir }} 0750 kamailio kamailio {{ kamailio_sipdump_keep_hours + 12 }}h
     mode: "0644"
+
+- name: SIP history prune script (age + size cap)
+  ansible.builtin.template:
+    src: pbx-sipdump-prune.sh.j2
+    dest: /usr/local/sbin/pbx-sipdump-prune
+    mode: "0755"
+
+- name: SIP history prune service + hourly timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "0644"
+  loop:
+    - name: pbx-sipdump-prune.service
+      content: |
+        # Managed by Ansible (role kamailio). Deletes old SIP history pcaps, see the script.
+        [Unit]
+        Description=Prune SIP history pcaps (sipdump)
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/pbx-sipdump-prune
+        Nice=10
+        IOSchedulingClass=idle
+    - name: pbx-sipdump-prune.timer
+      content: |
+        # Managed by Ansible (role kamailio). sipdump rotates hourly; prune a few minutes later.
+        [Unit]
+        Description=Prune SIP history pcaps hourly
+
+        [Timer]
+        OnCalendar=*-*-* *:10:00
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: sipdump_prune_units
+
+# Starting/enabling the timer never touches Kamailio.
+- name: SIP history prune timer enabled
+  ansible.builtin.systemd:
+    name: pbx-sipdump-prune.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ sipdump_prune_units.changed }}"
 
 - name: Kamailio config (contains the DB password)
   ansible.builtin.template:

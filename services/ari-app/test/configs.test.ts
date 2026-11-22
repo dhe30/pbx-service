@@ -270,13 +270,13 @@ describe.skipIf(!rendered)('rendered configs', () => {
   });
 
   describe('SIP history (sipdump, 2026-11-15)', () => {
-    it('every SIP message, all transports, to hourly pcaps with the real transport, kept 24 h', () => {
+    it('every SIP message, all transports, to hourly pcaps with the real transport, kept 12 h', () => {
       expect(kam).toMatch(/^loadmodule "sipdump\.so"$/m);
       expect(kam).toMatch(/modparam\("sipdump", "enable", 1\)/);
       expect(kam).toMatch(/modparam\("sipdump", "mode", 12\)/); // 4 pcap + 8 P-KSR-SIPDump header
       expect(kam).toMatch(/modparam\("sipdump", "rotate", 3600\)/);
       expect(kam).toMatch(/modparam\("sipdump", "folder", "\/var\/log\/pbx\/sipdump"\)/);
-      expect(kam).toMatch(/modparam\("sipdump", "fage", 86400\)/);
+      expect(kam).toMatch(/modparam\("sipdump", "fage", 43200\)/);
       // Not the default 100 µs: the writer would wake 10,000 times a second on a 1-vCPU edge.
       expect(kam).toMatch(/modparam\("sipdump", "wait", 10000\)/);
     });

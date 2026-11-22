@@ -1,1 +1,9 @@
 ---
+# SIP history (kamailio.cfg sipdump). Hours kept: Kamailio's own fage (applies after a restart) and
+# the hourly pbx-sipdump-prune timer (applies at once). Was 24 h until 2026-11-22: at ~0.9 GB/h of
+# REGISTER-heavy traffic edge-2 held 18 GB and hit the 70 % disk alert.
+kamailio_sipdump_dir: /var/log/pbx/sipdump
+kamailio_sipdump_keep_hours: 12
+# Size cap for the folder (GB); the prune timer deletes the oldest hours above it, so a traffic
+# spike can't fill the 32 GB root disk before the hours run out.
+kamailio_sipdump_max_gb: 10
