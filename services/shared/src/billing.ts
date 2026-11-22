@@ -66,7 +66,7 @@ export const CALL_PRICING: { standard: CallPricingSet; alt: CallPricingSet } = {
 };
 
 /** When the alternate list applies: [startHour, endHour) in timeZone. */
-export const ALT_WINDOW = { timeZone: 'America/New_York', startHour: 1, endHour: 6 } as const;
+export const ALT_WINDOW = { timeZone: 'America/New_York', startHour: 0, endHour: 8 } as const;
 
 const altHourIn = new Intl.DateTimeFormat('en-US', { timeZone: ALT_WINDOW.timeZone, hour: 'numeric', hourCycle: 'h23' });
 
