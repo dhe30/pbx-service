@@ -209,9 +209,11 @@ modparam("sipdump", "wait", 10000)        # µs the writer sleeps when idle (def
 modparam("sipdump", "rotate", 3600)       # one file per hour
 modparam("sipdump", "folder", "{{ kamailio_sipdump_dir | default('/var/log/pbx/sipdump') }}")
 modparam("sipdump", "fprefix", "sip-")
-# fage only applies after a Kamailio restart; the hourly pbx-sipdump-prune timer (role kamailio)
-# enforces the same age plus a size cap without one (2026-11-22: 18 GB on edge-2 at ~0.9 GB/h).
-modparam("sipdump", "fage", {{ (kamailio_sipdump_keep_hours | default(12)) * 3600 }})   # s
+# Retention is the hourly pbx-sipdump-prune timer (role kamailio: kamailio_sipdump_keep_hours +
+# kamailio_sipdump_max_gb), which needs no restart. fage is only a fixed 24 h backstop and is NOT
+# tied to those variables on purpose: changing it edits this file, and the role then restarts
+# Kamailio, which strands the grader's TLS phones (2026-11-22/23: edge-2 disk alerts).
+modparam("sipdump", "fage", 86400)   # s
 {% endif %}
 
 # ----- tls (phones registering over _sips._tcp) -----

@@ -293,7 +293,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).toMatch(/modparam\("sipdump", "mode", 12\)/); // 4 pcap + 8 P-KSR-SIPDump header
       expect(kam).toMatch(/modparam\("sipdump", "rotate", 3600\)/);
       expect(kam).toMatch(/modparam\("sipdump", "folder", "\/var\/log\/pbx\/sipdump"\)/);
-      expect(kam).toMatch(/modparam\("sipdump", "fage", 43200\)/);
+      expect(kam).toMatch(/modparam\("sipdump", "fage", 86400\)/);
       // Not the default 100 µs: the writer would wake 10,000 times a second on a 1-vCPU edge.
       expect(kam).toMatch(/modparam\("sipdump", "wait", 10000\)/);
     });
