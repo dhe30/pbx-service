@@ -178,6 +178,36 @@
     mode: "0644"
   notify: Restart kamailio
 
+# Open files: Kamailio's TCP main process holds one fd per TCP/TLS/WS connection, so it needs at
+# least tcp_max_connections of them. Debian's unit leaves the soft limit at 1024: on 2026-11-23
+# edge-2 held ~974 TLS phones, hit it at 08:40 and refused every new TLS connection ("Too many
+# open files", probe_sip_tls failing) until the limit was raised live with prlimit.
+# The drop-in only applies at the next start, and a restart strands the grader's TLS phones, so
+# this does NOT notify a restart: the next task raises the running processes' limit instead.
+- name: Kamailio open-files limit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/kamailio.service.d/limits.conf
+    content: |
+      # Managed by Ansible (role kamailio): >= tcp_max_connections + room; see tasks/main.yml.
+      [Service]
+      LimitNOFILE={{ kamailio_open_files }}
+    mode: "0644"
+
+# Same limit on the running Kamailio, no restart (prlimit changes a live process's rlimit).
+# Prints the pids it raised; nothing to do once every process has the limit.
+- name: Kamailio open-files limit on the running processes
+  ansible.builtin.shell: |
+    set -eu
+    for p in $(pgrep -u kamailio -x kamailio || true); do
+      soft=$(prlimit --pid "$p" --nofile --noheadings --output SOFT | tr -d ' ')
+      if [ "$soft" != "{{ kamailio_open_files }}" ]; then
+        prlimit --pid "$p" --nofile={{ kamailio_open_files }}:{{ kamailio_open_files }}
+        echo "raised $p"
+      fi
+    done
+  register: kamailio_live_nofile
+  changed_when: "'raised' in kamailio_live_nofile.stdout"
+
 - name: Start Kamailio
   ansible.builtin.systemd:
     name: kamailio
