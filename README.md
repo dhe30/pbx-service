@@ -191,6 +191,19 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   list and Kamailio's internal hops: Kamailio restarts, one edge at a time) and `--limit mon`.
   Adding a node re-hashes which node each account's calls go to (dispatcher algorithm 7): for a
   few minutes an attended transfer between a call from before and one from after may cross nodes.
+  **Without restarting anything** (peak hours, or an edge holding TLS phones that won't reconnect):
+  `patroni-config.yml` instead of `--limit db` (only Patroni's config + live reload; the full data
+  tier play also downloads etcd/Garage and can restart them), and `dispatcher.yml` instead of
+  `--limit edge` (only the dispatcher list + `kamcmd dispatcher.reload`). What stays stale until the
+  next edge deploy: `private_hops` in kamailio.cfg (100 ms retransmits toward that node). Done this
+  way for pbx-4/pbx-5 on 2026-11-23.
+  Traps seen that day: (1) an interrupted run can leave `/etc/nftables.conf` written but never
+  loaded, and later runs report "ok": compare `nft list set inet filter cluster` with the file;
+  (2) new VMs may reach only the Debian mirror: copy `/usr/src/asterisk-<version>` (the role then
+  skips the download), the `nodejs` package files (the ari_app role skips NodeSource when the right
+  Node major is installed) and `/root/.npm` (+ `prefer-offline=true` in `/root/.npmrc`) from a
+  running pbx node; (3) when SSH to the public IPs is lossy, run Ansible from mon-1 (private
+  network) instead of from a laptop.
 - **Adding media nodes** (rtpengine off the edges; the edges' CPU is mostly rtpengine). Kamailio
   then has two rtpengine sets: set 0 = the edges (where calls in progress live), set 1 = the media
   nodes, and a live switch decides which set NEW calls use. In this order:
@@ -201,6 +214,10 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   3. `ansible-playbook firewall.yml --ask-vault-pass --limit 'pbx:app:db:mon:edge'`: only the
      host firewalls change (the media IPs join `@cluster`), nothing restarts. **Before step 4**, or
      the pbx nodes drop the media nodes' RTP. (Not `site.yml`: it would also deploy the pbx roles.)
+     If existing media nodes are included, their reload now puts rtpengine's kernel-forwarding rules
+     back (`rtpengine --nftables-start`); before 2026-11-23 it silently deleted them (`flush
+     ruleset`) and their media ran in userspace until rtpengine restarted. Check afterwards:
+     `nft list ruleset | grep -c 'jump rtpengine'` should be 2 on every media node.
   4. `--limit edge`: Kamailio with both sets, switch OFF, restarted one edge at a time (TLS and
      browser phones reconnect and re-register; calls in progress keep their media).
   5. **First** check that every set-1 node is up on both edges: `kamcmd rtpengine.show all` must

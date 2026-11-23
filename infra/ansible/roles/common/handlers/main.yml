@@ -1,6 +1,19 @@
 ---
+# nftables.conf starts with `flush ruleset`, which also deletes the rules rtpengine adds for in-kernel
+# forwarding (tables ip/ip6 filter, chain rtpengine_0). Without them every stream on a running
+# rtpengine falls back to userspace (much more CPU) until rtpengine restarts: 2026-11-23 media-3 ran
+# like that 16:20-17:20 UTC after a firewall run. `--nftables-start` only adds those rules back and
+# exits; the running daemon and its calls are untouched.
 - name: Reload nftables
-  ansible.builtin.command: nft -f /etc/nftables.conf
+  ansible.builtin.shell: |
+    set -e
+    nft -f /etc/nftables.conf
+    if systemctl is-active -q rtpengine-daemon && grep -qE '^table *= *[0-9]' /etc/rtpengine/rtpengine.conf; then
+      rtpengine --config-file /etc/rtpengine/rtpengine.conf --nftables-start
+      echo "rtpengine kernel-forwarding rules restored"
+    fi
+  args:
+    executable: /bin/bash
   changed_when: true
 
 # Takes about a second and empties the cache; lookups in that second go straight upstream.
