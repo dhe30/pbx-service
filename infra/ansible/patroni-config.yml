@@ -1,0 +1,37 @@
+# Rewrite ONLY Patroni's config on the db nodes (pg_hba + everything else rendered from the
+# inventory, e.g. a new node's private IP in `cluster_ips`) and reload it live (SIGHUP, no Postgres
+# restart, no failover). Use after adding a node when the full data-tier play is not wanted: it
+# also runs etcd/Garage tasks that download from the internet and can restart those services.
+#   ansible-playbook patroni-config.yml --ask-vault-pass --check --diff    # see the change first
+#   ansible-playbook patroni-config.yml --ask-vault-pass
+# Settings that need a Postgres restart show up as "pending_restart" in `patronictl list`.
+- name: Patroni config only (reload, no restart)
+  hosts: db
+  become: true
+  serial: 1
+  vars_files:
+    - roles/postgres_patroni/defaults/main.yml
+  tasks:
+    - name: Patroni config (contains passwords)
+      ansible.builtin.template:
+        src: roles/postgres_patroni/templates/patroni.yml.j2
+        dest: "{{ patroni_config }}"
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      register: patroni_cfg
+
+    - name: Reload patroni
+      ansible.builtin.systemd:
+        name: patroni
+        state: reloaded
+      when: patroni_cfg.changed and not ansible_check_mode
+
+    - name: Patroni REST API answers after the reload
+      ansible.builtin.uri:
+        url: "http://{{ private_ip }}:{{ patroni_restapi_port }}/health"
+      register: patroni_health
+      retries: 6
+      delay: 5
+      until: patroni_health.status == 200
+      when: not ansible_check_mode
