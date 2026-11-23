@@ -286,6 +286,8 @@ modparam("auth_db", "use_domain", 0)
 
 # ----- htable: DID -> account cache (for pbx-node affinity of carrier calls) -----
 modparam("htable", "htable", "didt=>size=12;autoexpire=300;")
+# vendor host -> last IPv4 that resolved, and <host>::at = time of the last lookup (route[VENDOR_DST])
+modparam("htable", "htable", "vdns=>size=4;autoexpire=0;")
 
 # ----- dispatcher: set 1 = pbx (Asterisk) nodes -----
 modparam("dispatcher", "list_file", "/etc/kamailio/dispatcher.list")
@@ -790,6 +792,7 @@ route[LEG_TAG] {
 route[TO_VENDOR] {
 	route(LEG_TAG);
 	if (is_present_hf("Route")) loose_route();   # our own pre-loaded Route from Asterisk
+	route(VENDOR_DST);
 {% if MEDIA %}
 	route(RTP_SET_NEW);
 	route(RTP_SET_RR);
@@ -805,6 +808,46 @@ route[TO_VENDOR] {
 	t_on_failure("VENDOR_FAILURE");
 	route(SEND_PUBLIC);
 	route(RELAY);
+}
+
+# Where a vendor leg goes: $du = sip:<IPv4>:5060, so t_relay never resolves the vendor host on the
+# call path. The Request-URI keeps the host name. Why: when the platform resolver 10.0.0.2 fails,
+# Kamailio's own lookup gives up after ~2 s and answers Asterisk 478 Unresolvable destination
+# (2026-11-23 07:43-07:52 UTC: ~60 legs, grader `us` 12 failures/min; also 11-20 and 11-21).
+# systemd-resolved's serve-stale (V-P13) served nothing during that outage.
+#   - At most one lookup per host every {{ vendor_dns_recheck_sec }} s (htable vdns, shared by all
+#     workers), so an address change is picked up within a minute, and during an outage only the
+#     call that does the lookup waits for it; every other call uses the stored address at once.
+#   - A failed lookup keeps the last address that resolved. If none has resolved since Kamailio
+#     started, the deploy-time address (vendor_fallback_ips) is used.
+#   - The vendors publish no SRV records (_sip._udp: NXDOMAIN), so an A lookup + port 5060 is what
+#     t_relay resolved before.
+route[VENDOR_DST] {
+	if ($du != $null && $du != "") return;
+	$var(vh) = $rd;
+	if ($sht(vdns=>$var(vh)::at) == $null || $Ts - $sht(vdns=>$var(vh)::at) >= {{ vendor_dns_recheck_sec }}) {
+		$sht(vdns=>$var(vh)::at) = $Ts;   # before the lookup: concurrent calls don't all look up
+		if (dns_query("$var(vh)", "vd")) {
+			if ($dns(vd=>type[0]) == 4) {
+				$sht(vdns=>$var(vh)) = $dns(vd=>addr[0]);
+			} else if ($dns(vd=>type[1]) == 4) {
+				$sht(vdns=>$var(vh)) = $dns(vd=>addr[1]);
+			}
+		} else {
+			xlog("L_WARN", "vendor dns: lookup of $var(vh) failed, keeping $sht(vdns=>$var(vh)) [ci=$ci]\n");
+		}
+	}
+	if ($sht(vdns=>$var(vh)) != $null) {
+		$var(vip) = $sht(vdns=>$var(vh));
+	} else {
+		$var(vip) = "";
+{% for v in vendor_fallback_ips %}
+		if ($var(vh) == "{{ v.host }}") $var(vip) = "{{ v.ip }}";
+{% endfor %}
+		if ($var(vip) != "") xlog("L_WARN", "vendor dns: no address for $var(vh) yet, using deploy-time $var(vip) [ci=$ci]\n");
+	}
+	if ($var(vip) == "") return;   # unknown vendor host and no lookup yet: t_relay resolves it
+	$du = "sip:" + $var(vip) + ":5060";
 }
 
 failure_route[VENDOR_FAILURE] {

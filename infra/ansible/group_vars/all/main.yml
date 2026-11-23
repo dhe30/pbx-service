@@ -31,6 +31,15 @@ trusted_tester_cidrs: ["130.245.136.0/24"]
 vendor_us_host: "us-vendor.cse356.compas.cs.stonybrook.edu"
 vendor_intl_host: "intl-vendor.cse356.compas.cs.stonybrook.edu"
 vendor_hosts: ["{{ vendor_us_host }}", "{{ vendor_intl_host }}"]
+# Kamailio sends vendor legs to an address it resolved itself (route[VENDOR_DST]), re-checked every
+# vendor_dns_recheck_sec. When the platform resolver fails (2026-11-20, -21, -23) it keeps the last
+# address that resolved; these are used only if no lookup has succeeded since Kamailio started.
+# Both vendors resolved to the course services host 130.245.136.142 (2026-11-23). A list, not a
+# dict keyed by host: Ansible doesn't template dict keys.
+vendor_fallback_ips:
+  - { host: "{{ vendor_us_host }}", ip: "130.245.136.142" }
+  - { host: "{{ vendor_intl_host }}", ip: "130.245.136.142" }
+vendor_dns_recheck_sec: 60
 # How the dialed number goes in the vendor Request-URI user: e164 (+12015550123) or e164_noplus.
 vendor_number_format: "e164"
 
