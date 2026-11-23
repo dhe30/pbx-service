@@ -7,3 +7,8 @@ kamailio_sipdump_keep_hours: 12
 # Size cap for the folder (GB); the prune timer deletes the oldest hours above it, so a traffic
 # spike can't fill the 32 GB root disk before the hours run out.
 kamailio_sipdump_max_gb: 10
+
+# Open files for every Kamailio process (systemd LimitNOFILE + prlimit on the running ones). The
+# TCP main process needs one per connection: keep this well above kamailio_tcp_max_connections
+# (16384). Debian's default soft limit of 1024 took TLS down on edge-2 on 2026-11-23.
+kamailio_open_files: 65536
