@@ -205,6 +205,23 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[TO_VENDOR]')).toMatch(/add_rr_param\(";leg=vendor"\)/);
       expect(block(kam, 'failure_route[VENDOR_FAILURE]')).toMatch(/t_check_status\("401\|407"\)/);
     });
+    it('vendor legs go to a stored address, not a DNS lookup per call (2026-11-23 478 Unresolvable destination)', () => {
+      // TO_VENDOR picks the destination before rtpengine/relay; SEND_PUBLIC then reads its transport.
+      const tv = block(kam, 'route[TO_VENDOR]');
+      expect(tv.indexOf('route(VENDOR_DST);')).toBeGreaterThan(tv.indexOf('loose_route()'));
+      expect(tv.indexOf('route(VENDOR_DST);')).toBeLessThan(tv.indexOf('route(SEND_PUBLIC);'));
+      expect(kam).toMatch(/modparam\("htable", "htable", "vdns=>size=4;autoexpire=0;"\)/);
+      const vd = block(kam, 'route[VENDOR_DST] {');
+      // re-resolve at most once a minute, keep the last good address when a lookup fails
+      expect(vd).toMatch(/\$Ts - \$sht\(vdns=>\$var\(vh\)::at\) >= 60\)/);
+      expect(vd).toMatch(/dns_query\("\$var\(vh\)", "vd"\)/);
+      // deploy-time address only when nothing resolved yet, one per vendor host
+      expect(vd).toContain('if ($var(vh) == "us-vendor.cse356.compas.cs.stonybrook.edu") $var(vip) = "130.245.136.142";');
+      expect(vd).toContain('if ($var(vh) == "intl-vendor.cse356.compas.cs.stonybrook.edu") $var(vip) = "130.245.136.142";');
+      expect(vd).toMatch(/\$du = "sip:" \+ \$var\(vip\) \+ ":5060";/);
+      // an existing $du (a Route to another hop) is left alone
+      expect(vd).toMatch(/^route\[VENDOR_DST\] \{\n\tif \(\$du != \$null && \$du != ""\) return;/);
+    });
     it('the vendor endpoints the ARI app dials exist in pjsip.conf with digest auth via that edge', () => {
       const pjsip = read('pbx-1', 'pjsip.conf');
       const cfg = loadConfig({ ARI_USER: 'x', ARI_PASSWORD: 'x', DATABASE_URL: 'x', S3_ENDPOINT: 'http://s', S3_BUCKET: 'b', S3_ACCESS_KEY_ID: 'k', S3_SECRET_ACCESS_KEY: 's' });

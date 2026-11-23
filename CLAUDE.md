@@ -233,7 +233,7 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
   ds_next_dst on 503/timeout (NOT 500: one failed call, 2026-11-20).
 - Routes: FROM_CARRIER (carrier_cidrs), FROM_DEVICE (digest auth 407; adds X-PBX-Src: device +
   X-PBX-User), TO_DEVICES (Asterisk -> lookup -> parallel fork; per-branch transport via branch
-  flags; rtpengine via-branch=extra per branch), TO_VENDOR (Asterisk -> PSTN vendor host; Asterisk
+  flags; rtpengine via-branch=extra per branch), TO_VENDOR (Asterisk -> PSTN vendor host, sent to the last address that resolved: route[VENDOR_DST], V-P14; Asterisk
   answers the vendor's 401/407), FROM_PEER (deliver for a peer edge), WITHINDLG/INDLG_SDP
   (re-INVITE flags from the leg=carrier|vendor|staff_udp|staff_tls|staff_ws Record-Route param +
   whether Asterisk sent it).
