@@ -11,10 +11,10 @@
 # A failure after the drain leaves the node DRAINED (state d) for a human; before it, the node is put
 # back. Runbook (when, order, rollback): README §2.4 "Resizing pbx nodes".
 #
-#   ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1 -e resize_vcpus=6
-#   ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1:pbx-2:pbx-3 -e resize_vcpus=6
+#   ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1 -e resize_vcpus=8
+#   ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1:pbx-2:pbx-3 -e resize_vcpus=8
 #
-# resize_vcpus: the vCPU count of the target plan (Clanode 16G = 6 on Linode's plan table; read it
+# resize_vcpus: the vCPU count of the target plan (Clanode 16G = 8; read it
 # off the resize page). Run it on mon-1 (memory: SSH from the laptop to our public IPs is lossy).
 - name: Resize pbx nodes (drain -> Clanode resize -> maxcalls -> back in service)
   hosts: pbx
@@ -29,7 +29,7 @@
     - name: resize_vcpus is required
       ansible.builtin.assert:
         that: resize_vcpus is defined and (resize_vcpus | int) > 0
-        fail_msg: "Pass -e resize_vcpus=<vCPUs of the target plan> (16G = 6 on Linode's table)."
+        fail_msg: "Pass -e resize_vcpus=<vCPUs of the target plan> (Clanode 16G = 8)."
       run_once: true
 
     - name: Already resized?
@@ -134,7 +134,7 @@
 
               {{ inventory_hostname }} ({{ private_ip }}) is drained and has 0 calls.
               Now, in Clanode (https://clanode.compas.cs.stonybrook.edu/linodes):
-                {{ inventory_hostname }} -> Resize -> the plan with {{ resize_vcpus }} vCPUs (16G) -> Resize.
+                {{ inventory_hostname }} -> Resize -> the plan with {{ resize_vcpus }} vCPUs -> Resize.
               Wait until it shows Running again, then press Enter here.
               (Ctrl+C then A aborts; the node stays drained, see README 2.4 for putting it back.)
 
