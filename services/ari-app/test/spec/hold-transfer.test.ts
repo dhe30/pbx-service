@@ -248,9 +248,18 @@ describe('§3 Attended transfer', () => {
     await until(() => h.ari.channels.get(caller)!.moh);
     const consult = h.ari.deviceCall(a.ext['101']!.sip, '102');
     const target = await until(() => h.ari.peerOf(consult), 2000, 'consult connected');
+    // What the target finds when it joins: never the transferring phone, never hold music
+    // (live 2026-11-24: "225 heard the transferring extension for 3.0 s").
+    const add = h.ari.addToBridge.bind(h.ari);
+    let onJoin: { members: string[]; callerMoh: boolean } | null = null;
+    h.ari.addToBridge = async (bridgeId: string, ids: string[]) => {
+      if (ids.includes(target)) onJoin = { members: [...(h.ari.bridges.get(bridgeId) ?? [])], callerMoh: h.ari.channels.get(caller)!.moh };
+      return add(bridgeId, ids);
+    };
     // softphone-transfer-complete: REFER on the first call, Replaces = the consult call
     h.ari.referAttended(agent, consult);
     await until(() => h.ari.peerOf(caller) === target, 2000, 'caller joined with 102');
+    expect(onJoin).toEqual({ members: [caller], callerMoh: false });
     expect(h.ari.channels.get(caller)!.moh).toBe(false);
     await until(() => !h.ari.channels.has(agent) && !h.ari.channels.has(consult), 2000, 'agent legs dropped');
     expect(h.ari.transferProgressLog).toContainEqual({ channelId: agent, state: 'channel_answered' });
