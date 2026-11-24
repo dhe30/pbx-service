@@ -54,6 +54,18 @@ export interface PendingCdr {
   includedAllowanceSec: number;
 }
 
+/**
+ * The order insertCdrs rates a batch in: by (account, billing period), legs of the same period
+ * keeping their batch order (stable sort, so included minutes still go to the earlier legs).
+ * Rating a leg row-locks its usage_periods row until the transaction ends; with batches in batch
+ * order, two pbx nodes holding legs of the same accounts locked them in opposite orders and
+ * deadlocked (db-1, 2026-11-24). One global order on every node makes that impossible.
+ */
+export function usageLockOrder<T extends Pick<PendingCdr, 'tenantId' | 'periodStart'>>(batch: readonly T[]): T[] {
+  const cmp = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  return [...batch].sort((a, b) => cmp(a.tenantId, b.tenantId) || cmp(a.periodStart, b.periodStart));
+}
+
 export interface VoicemailMsg {
   id: string;
   mediaId: string;
@@ -263,15 +275,17 @@ export class Repo {
    * insert-only). Idempotent: legs already in `cdrs` (a replayed spool file) are skipped, so
    * included minutes are never consumed twice. US legs consume the account's included seconds for
    * the leg's billing period under a row lock, so two pbx nodes can't both spend the same minutes.
+   * The legs are processed in usageLockOrder, so every batch takes those locks in the same order.
    */
   async insertCdrs(batch: PendingCdr[], pricing: CallPricing): Promise<void> {
     if (batch.length === 0) return;
+    const ordered = usageLockOrder(batch);
     await withRetry(() =>
       this.sql.begin(async (tx) => {
         const existing = await tx<{ id: string }[]>`select id from cdrs where id = any(${batch.map((c) => c.id)})`;
         const skip = new Set(existing.map((r) => r.id));
         const rows = [];
-        for (const c of batch) {
+        for (const c of ordered) {
           if (skip.has(c.id)) continue;
           const answeredSec = c.answeredAt ? Math.max(0, (Date.parse(c.endedAt) - Date.parse(c.answeredAt)) / 1000) : 0;
           let remaining = 0;
