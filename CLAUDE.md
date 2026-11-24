@@ -389,6 +389,8 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 - All clients (API, ARI app, Kamailio) must retry/reconnect across a 10–30 s failover.
 - Object store: S3-compatible, self-hosted on db-1..3 with replication factor 3
   (candidates: Garage or SeaweedFS — evaluate; code only uses the S3 API). [VERIFY]
+  Since 2026-11-23 new blocks go to a 250 GB Volume per db node (/var/lib/garage/data2,
+  garage_volume_data_dir); the root-disk dir is read_only (docs/incidents/2026-11-23-db-disks-full.md).
 - Backups: nightly base backup + WAL archiving (pgBackRest or wal-g) to storage NOT on the db
   nodes (e.g., mon-1 volume). Restore must be tested.
 
@@ -511,7 +513,8 @@ Still open:
 - Platform: VM quota, floating/shared IPs, NodeBalancers, API access, outbound internet,
   A records / cert issuance for the group domain (needed for TLS/WSS).
 - Are external services allowed (GitHub Actions, ghcr.io, Let's Encrypt, public STUN)?
-- Retention requirements for recordings/voicemail?
+- Retention: ANSWERED 2026-11-23 — recordings 7 days (API scheduler deletes them after 7 d + 1 h);
+  voicemail kept until deleted.
 
 ---------------------------------------------------------------------------------------------
 ## 19. Hold + call waiting (added 2026-10-27, implemented in phase 1 on 2026-10-28)

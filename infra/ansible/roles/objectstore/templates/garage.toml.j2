@@ -1,6 +1,16 @@
 # Garage config. Reference: https://garagehq.deuxfleurs.fr/documentation/reference-manual/configuration/
 metadata_dir = "/var/lib/garage/meta"
+{% if garage_volume_data_dir %}
+# New blocks go to the Volume; the root-disk dir stays readable (read_only: no new blocks there).
+# Garage moves old blocks over with `garage repair rebalance`. Removing the Volume entry would
+# make every block on it invisible: keep this list as it is once data was written.
+data_dir = [
+  { path = "/var/lib/garage/data", read_only = true },
+  { path = "{{ garage_volume_data_dir }}", capacity = "{{ garage_volume_capacity }}" },
+]
+{% else %}
 data_dir = "/var/lib/garage/data"
+{% endif %}
 db_engine = "lmdb"
 
 # Copies of every object. 1 on the all-in-one VM, 3 across db-1..3.

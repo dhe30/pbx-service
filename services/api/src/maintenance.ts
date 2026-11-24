@@ -36,3 +36,42 @@ export async function cleanupOrphanVoicemailMedia(
   d.log.info({ count: keys.length }, 'deleted voicemail audio of messages deleted by phone');
   return keys.length;
 }
+
+/**
+ * Call recordings are kept this long (2026-11-23: graders never fetch a recording older than
+ * 7 days; at the Monday peak the recordings filled the db nodes' disks, ~2 GB/h per node).
+ * Kept a little longer than 7 days so a recording is never gone while still within its 7 days.
+ */
+export const RECORDING_RETENTION_SEC = 7 * 24 * 3600 + 3600;
+/** Parallel object deletes (a batch of 500 at once would hit Garage with 500 requests). */
+const DELETE_CONCURRENCY = 25;
+
+/**
+ * Deletes call recordings older than RECORDING_RETENTION_SEC: the media rows, then their objects
+ * (GET /calls/:callId/recording then answers 404). Voicemail and greetings are kept. One batch
+ * per tick; at the default 60 s tick that is 30,000 recordings an hour, far above the rate they
+ * are made. Several app nodes may run it at once (SKIP LOCKED).
+ */
+export async function cleanupOldRecordings(
+  d: { sql: Sql; store: MediaStore; log: FastifyBaseLogger },
+  now = new Date(),
+  limit = 500,
+): Promise<number> {
+  const before = new Date(now.getTime() - RECORDING_RETENTION_SEC * 1000);
+  const keys = await withRetry(
+    () => d.sql<{ objectKey: string }[]>`
+      delete from media
+       where id in (select m.id from media m
+                     where m.kind = 'recording' and m.created_at < ${before}
+                     order by m.created_at
+                     limit ${limit}
+                       for update skip locked)
+      returning object_key`,
+  );
+  if (keys.length === 0) return 0;
+  for (let i = 0; i < keys.length; i += DELETE_CONCURRENCY) {
+    await deleteObjects(d.store, keys.slice(i, i + DELETE_CONCURRENCY).map((k) => k.objectKey), d.log);
+  }
+  d.log.info({ count: keys.length, before }, 'deleted call recordings past retention');
+  return keys.length;
+}
