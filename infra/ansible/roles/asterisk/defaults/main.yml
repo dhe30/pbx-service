@@ -1,7 +1,10 @@
 ---
 asterisk_sip_port: 5060
 # asterisk.conf maxcalls: refuse new calls above this many active calls (see the template).
-asterisk_maxcalls: "{{ (ansible_processor_vcpus | default(1) | int) * 80 }}"
+# The per-vCPU figure is set in group_vars/all/main.yml (asterisk_calls_per_vcpu); 80 here is only
+# the fallback when that file is not loaded.
+asterisk_calls_per_vcpu: 80
+asterisk_maxcalls: "{{ (ansible_processor_vcpus | default(1) | int) * (asterisk_calls_per_vcpu | int) }}"
 # Kernel UDP receive buffer for new sockets (Asterisk's RTP sockets use the default), bytes.
 asterisk_udp_rmem_default: 1048576
 asterisk_udp_rmem_max: 4194304

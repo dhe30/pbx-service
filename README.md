@@ -220,6 +220,16 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   If the drain times out, the run lists the calls still up (channel, caller, seconds up) before it
   puts the node back: wait longer (`-e pbx_drain_wait_min=90`) or hang the stuck one up
   (`asterisk -rx 'channel request hangup <channel>'`).
+- **Changing maxcalls** (no resize): the cap is `asterisk_calls_per_vcpu` x vCPUs
+  (`group_vars/all/main.yml`, 80). Asterisk reads it only at startup, so every node needs a drain
+  and a restart. Change the value in `group_vars` (commit it, so a later `site.yml` doesn't put the
+  old one back), then `ansible-playbook pbx-resize.yml --ask-vault-pass -e maxcalls_apply=true`,
+  off-peak: one node at a time, the same guards as a resize, only nodes whose `asterisk.conf`
+  would change are drained, and each is put back after `/health` and the new limit check. A drain
+  that times out puts the node back with the old cap. Raise it only when media can carry the
+  calls: at the 2026-11-24 05:46 peak pbx-1..3 were at 640 with 61-67 % CPU while media-1..3 ran
+  92-99 %; the cap is what turns overload into a 503 instead of silent audio. 100 per vCPU once
+  every media node has 8 vCPU.
 - **Resizing db nodes** (Postgres + Patroni, etcd and Garage on each; 1 vCPU saturated at the
   2026-11-24 05:40 ramp): `db-resize.yml`, one node at a time, off-peak (same 11-23 UTC guard and
   override). Never two db nodes down at once: that loses the etcd and Garage quorums and Patroni

@@ -1,0 +1,85 @@
+# Drain one pbx node (included by pbx-resize.yml): guards first (nothing changed), then dispatcher
+# state d on every edge and a wait for 0 calls. Sets rs_drained before the first change, so the
+# caller's rescue knows to put the node back (tasks/pbx-drain-undo.yml).
+# Needs: pbx_ds_uri, resize_peak_utc, resize_max_others_full; optional resize_allow_peak,
+# pbx_drain_wait_min (45).
+- name: Refuse during the peak
+  ansible.builtin.assert:
+    that: >-
+      (resize_allow_peak | default(false) | bool) or
+      not (rs_hour >= resize_peak_utc[0] and rs_hour <= resize_peak_utc[1])
+    fail_msg: >-
+      It is {{ rs_hour }}h UTC, inside the peak ({{ resize_peak_utc[0] }}-{{ resize_peak_utc[1] }} UTC).
+      Draining a node now pushes its calls onto the others. Re-run off-peak, or with -e resize_allow_peak=true.
+  vars:
+    rs_hour: "{{ now(utc=true).hour | int }}"
+
+- name: Is this node in the dispatcher list of every edge?
+  ansible.builtin.shell: |
+    kamcmd dispatcher.list | grep -cF 'URI: {{ pbx_ds_uri }}' || true
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['edge'] }}"
+  register: rs_known
+  changed_when: false
+
+- name: The edges must route to this node (else there is nothing to drain)
+  ansible.builtin.assert:
+    that: (rs_known.results | map(attribute='stdout') | map('int') | select('gt', 0) | list | length) == (groups['edge'] | length)
+    fail_msg: "{{ inventory_hostname }} is missing from some edge's dispatcher list; check `kamcmd dispatcher.list`."
+
+- name: Other pbx nodes in service, per edge
+  ansible.builtin.shell: |
+    set -o pipefail
+    kamcmd dispatcher.list | grep -E 'URI|FLAGS' | paste - - | grep -v '{{ pbx_ds_uri }}' | grep -c 'FLAGS: A' || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['edge'] }}"
+  register: rs_others
+  changed_when: false
+
+- name: Refuse to drain the last pbx node in service
+  ansible.builtin.assert:
+    that: rs_others.results | selectattr('stdout', 'equalto', '0') | list | length == 0
+    fail_msg: "No other pbx node is in service on some edge. Put one back first (kamcmd dispatcher.set_state a 1 sip:<ip>:5060)."
+
+# "N of M max active calls" on every OTHER pbx node: is there room for this node's calls?
+- name: Calls on the other pbx nodes
+  ansible.builtin.command: asterisk -rx 'core show channels count'
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['pbx'] | difference([inventory_hostname]) }}"
+  register: rs_load
+  changed_when: false
+  failed_when: false
+
+- name: Room on the other nodes
+  ansible.builtin.set_fact:
+    rs_used: "{{ rs_load.results | map(attribute='stdout') | map('regex_search', '[0-9]+(?= of [0-9]+ max active call)') | map('default', '0', true) | map('int') | sum }}"
+    rs_cap: "{{ rs_load.results | map(attribute='stdout') | map('regex_search', '(?<= of )[0-9]+(?= max active call)') | map('default', '0', true) | map('int') | sum }}"
+
+- name: Refuse if the other nodes are already nearly full
+  ansible.builtin.assert:
+    that: (rs_cap | int) > 0 and ((rs_used | int) / (rs_cap | int)) <= (resize_max_others_full | float)
+    fail_msg: >-
+      The other pbx nodes run {{ rs_used }} of {{ rs_cap }} calls
+      (> {{ (resize_max_others_full | float * 100) | int }} %). Draining {{ inventory_hostname }} now would
+      overflow them. Wait for less traffic.
+    success_msg: "Other nodes: {{ rs_used }} of {{ rs_cap }} calls."
+
+- name: Mark the drain as started (from here a failure must put the node back)
+  ansible.builtin.set_fact:
+    rs_drained: true
+
+- name: "Drain {{ inventory_hostname }} on every edge (dispatcher state d)"
+  ansible.builtin.command: kamcmd dispatcher.set_state d 1 {{ pbx_ds_uri }}
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['edge'] }}"
+  changed_when: true
+
+- name: "Waiting for 0 calls (up to {{ pbx_drain_wait_min | default(45) }} min)"
+  ansible.builtin.command: asterisk -rx 'core show channels count'
+  register: rs_calls
+  until: (((rs_calls.stdout | regex_search('[0-9]+(?= active call| of [0-9]+ max active call)')) or '1') | int) == 0
+  retries: "{{ ((pbx_drain_wait_min | default(45) | int) * 60 / 15) | int }}"
+  delay: 15
+  changed_when: false
