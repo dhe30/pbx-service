@@ -13,3 +13,9 @@ kamailio_sipdump_max_gb: 10
 # TCP main process needs one per connection: keep this well above kamailio_tcp_max_connections
 # (16384). Debian's default soft limit of 1024 took TLS down on edge-2 on 2026-11-23.
 kamailio_open_files: 65536
+
+# UDP receive buffer per Kamailio socket (bytes): net.core.rmem_default + kamailio.cfg maxbuffer.
+# 208 KB (kernel default) overflowed at the 2026-11-24 morning peak (tasks/udp-buffers.yml).
+# 4 MB holds a few thousand SIP packets. Takes effect at Kamailio's next restart.
+kamailio_udp_rcvbuf: 4194304
+kamailio_udp_rmem_max: 8388608

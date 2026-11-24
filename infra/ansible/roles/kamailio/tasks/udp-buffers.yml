@@ -1,0 +1,29 @@
+---
+# UDP receive buffers for Kamailio's sockets. Included by main.yml and by kamailio-config.yml
+# (before its restart), so either deploy path sets them.
+#
+# Kamailio's UDP sockets had the kernel default of 208 KB. At the 2026-11-24 08:38-08:50 UTC peak
+# both edges overflowed them: up to ~1,000 dropped packets/s on edge-1 (RcvbufErrors) at only ~40 %
+# CPU. Nearly all on the internal socket :5070 (edge-1 601,627 drops vs 1,775 on :5060 since its
+# restart), which carries DMQ registration replication (KDMQ + 200s) and Asterisk's traffic: a
+# lost KDMQ leaves the peer edge without that registration.
+#
+# A socket gets rmem_default when it is created, so this only reaches Kamailio's sockets at its
+# next restart (kamailio.cfg also sets maxbuffer to the same size). Other new UDP sockets on the
+# edge (rtpengine) get it too; it is a cap on queued data, not memory allocated up front.
+# A different file from the asterisk role's 90-pbx-udp-buffers.conf; on a host with both roles
+# (phase-1 all-in-one) this one is read later and wins.
+- name: Larger UDP receive buffers for Kamailio
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/91-kamailio-udp-buffers.conf
+    content: |
+      # Managed by Ansible (role kamailio, tasks/udp-buffers.yml).
+      net.core.rmem_default = {{ kamailio_udp_rcvbuf }}
+      net.core.rmem_max = {{ kamailio_udp_rmem_max }}
+    mode: "0644"
+  register: kamailio_udp_buffers
+
+- name: Apply the UDP buffer settings now
+  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/91-kamailio-udp-buffers.conf
+  when: kamailio_udp_buffers.changed
+  changed_when: true

@@ -125,6 +125,11 @@ children={{ kamailio_children | default(16) }}
 tcp_children={{ kamailio_tcp_children | default(16) }}
 tcp_max_connections={{ kamailio_tcp_max_connections | default(16384) }}
 tls_max_connections={{ kamailio_tcp_max_connections | default(16384) }}
+# UDP receive buffer: upper bound for Kamailio's auto-probing of SO_RCVBUF (default 256 KB). The
+# sockets start at the kernel's net.core.rmem_default, which the kamailio role raises to the same
+# value (roles/kamailio/tasks/udp-buffers.yml): 208 KB overflowed at the 2026-11-24 peak, mostly on
+# the internal socket (DMQ + Asterisk).
+maxbuffer={{ kamailio_udp_rcvbuf | default(4194304) }}
 
 # Pick the outgoing socket by routing table when the public address is its own interface.
 mhomed=1

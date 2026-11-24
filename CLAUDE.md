@@ -248,6 +248,10 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
 - Private-network phones (2026-11-23): the course sends part of its phones' traffic to our PRIVATE
   IPs. A device source in private_device_cidrs (10.0.0.0/16, after our own nodes) is trusted (no pike)
   and gets rtpengine's private media address (FLT_PRIVNET / FLB_PRIV, Record-Route ;pn=1). V-A9.
+- Private-network carrier (2026-11-24): the DIDWW trunk also delivers from 10.0.2.214 (group-4's
+  address) -> carrier_cidrs; signaling only, carrier media keeps rtpengine's public address.
+- UDP receive buffers 4 MB (net.core.rmem_default + maxbuffer, roles/kamailio/tasks/udp-buffers.yml):
+  208 KB overflowed on :5070 (DMQ + Asterisk) at the 2026-11-24 peak.
 
 ---------------------------------------------------------------------------------------------
 ## 8. rtpengine

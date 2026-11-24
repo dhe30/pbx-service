@@ -49,6 +49,12 @@
           register: before
           changed_when: false
 
+        # Before the restart: Kamailio's new sockets take net.core.rmem_default (kamailio.cfg maxbuffer).
+        - name: UDP receive buffers
+          ansible.builtin.include_role:
+            name: kamailio
+            tasks_from: udp-buffers.yml
+
         - name: Keep the old config
           ansible.builtin.copy:
             src: /etc/kamailio/kamailio.cfg
