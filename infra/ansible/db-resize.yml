@@ -1,0 +1,357 @@
+# Resize db nodes (more vCPUs/RAM) one at a time without losing the primary for more than a
+# switchover (~5 s of write pause). The resize itself is a click in the Clanode UI (it powers the VM
+# off); this playbook does everything around it, per node (serial: 1, inventory order):
+#   0. skip a node that already has >= resize_vcpus vCPUs (re-runs resume where they stopped)
+#   1. guards, nothing changed yet: all db members in Patroni (one Leader, the others streaming and
+#      caught up), etcd healthy on every member, Garage sees every node, Garage Volume mounted,
+#      services enabled at boot; refuse during the peak (11-23 UTC) unless -e resize_allow_peak=true
+#   2. if this node is the Leader: patronictl switchover to the sync standby, wait until it leads
+#   3. tag nosync (Patroni moves synchronous replication to the other replica, so no COMMIT waits
+#      on a node that is about to power off), then stop Patroni (Postgres shuts down cleanly)
+#   4. PAUSE: you resize the VM in Clanode, wait until it shows Running, press Enter
+#   5. wait for SSH; check vCPUs, address, Garage Volume; wait for etcd, Patroni (streaming) and Garage
+#   6. patroni.yml rendered again: shared_buffers / effective_cache_size follow the new RAM, nosync
+#      back to false. Refuses if anything else in the file would change (-e resize_allow_config_diff=true
+#      after reading the diff). Postgres restarts once, as a replica, to apply shared_buffers.
+# Order: inventory order is fine (a Leader is switched away first); with today's roles
+# (db-1 replica, db-2 sync standby, db-3 leader) it does the leader last, with one switchover.
+# A failure before the resize puts the node back (tag off, Patroni started); after it, the node is
+# left for a human: a stopped replica costs nothing while the other two run.
+#
+#   ansible-playbook db-resize.yml --ask-vault-pass --limit db-1 -e resize_vcpus=2
+#   ansible-playbook db-resize.yml --ask-vault-pass -e resize_vcpus=2           # all three, in order
+#
+# resize_vcpus: the vCPU count of the target plan (read it off Clanode's resize page). Never resize
+# two db nodes at once: each is an etcd member and a Garage replica, and two down loses both quorums
+# (Patroni then demotes the primary and every write stops). Runbook: README §2.4 "Resizing db nodes".
+- name: Resize db nodes (switchover -> nosync -> Clanode resize -> memory settings)
+  hosts: db
+  become: true
+  serial: 1
+  gather_facts: true
+  vars_files:
+    # patroni.yml.j2 needs the role defaults (memory settings are computed from ansible_memtotal_mb,
+    # which is re-read after the resize) and etcd's client port.
+    - roles/postgres_patroni/defaults/main.yml
+    - roles/etcd/defaults/main.yml
+  vars:
+    resize_peak_utc: [11, 23]          # [first, last] UTC hour of the grader's business-hours peak
+    resize_max_lag_mb: 16              # replicas further behind than this: wait, don't resize
+    rs_db_ips: "{{ groups['db'] | map('extract', hostvars, 'private_ip') | list }}"
+    rs_etcd_endpoints: "{{ rs_db_ips | map('regex_replace', '$', ':' ~ (etcd_client_port | string)) | join(',') }}"
+    # Lines of patroni.yml this playbook is allowed to change (memory follows RAM; nosync tag).
+    rs_allowed_diff: "shared_buffers:|effective_cache_size:|nosync:"
+  tasks:
+    - name: resize_vcpus is required
+      ansible.builtin.assert:
+        that: resize_vcpus is defined and (resize_vcpus | int) > 0
+        fail_msg: "Pass -e resize_vcpus=<vCPUs of the target plan>."
+      run_once: true
+
+    - name: Already resized?
+      ansible.builtin.set_fact:
+        resize_needed: "{{ (ansible_processor_vcpus | int) < (resize_vcpus | int) }}"
+
+    - name: Nothing to do
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} already has {{ ansible_processor_vcpus }} vCPUs; only the memory settings are checked."
+      when: not (resize_needed | bool)
+
+    - name: Resize one node
+      when: resize_needed | bool
+      block:
+        # ---- 1. guards (nothing changed yet) --------------------------------------------------
+        - name: Refuse during the peak
+          ansible.builtin.assert:
+            that: >-
+              (resize_allow_peak | default(false) | bool) or
+              not (rs_hour >= resize_peak_utc[0] and rs_hour <= resize_peak_utc[1])
+            fail_msg: >-
+              It is {{ rs_hour }}h UTC, inside the peak ({{ resize_peak_utc[0] }}-{{ resize_peak_utc[1] }} UTC).
+              A switchover pauses writes for seconds and a replica down leaves no spare. Re-run off-peak,
+              or with -e resize_allow_peak=true.
+          vars:
+            rs_hour: "{{ now(utc=true).hour | int }}"
+
+        - name: Patroni cluster state
+          ansible.builtin.command: patronictl list -f json
+          register: rs_pl
+          changed_when: false
+
+        - name: Every member is up, one Leader, replicas streaming and caught up
+          ansible.builtin.assert:
+            that:
+              - rs_members | length == groups['db'] | length
+              - rs_members | selectattr('Role', 'equalto', 'Leader') | list | length == 1
+              - rs_replicas | rejectattr('State', 'equalto', 'streaming') | list | length == 0
+              - rs_replicas | map(attribute='Lag in MB') | map('int') | select('gt', resize_max_lag_mb | int) | list | length == 0
+            fail_msg: "The Patroni cluster is not healthy enough to take a member out:\n{{ rs_members | to_nice_json }}"
+          vars:
+            rs_members: "{{ rs_pl.stdout | from_json }}"
+            rs_replicas: "{{ rs_members | rejectattr('Role', 'equalto', 'Leader') | list }}"
+
+        - name: etcd healthy on every member
+          ansible.builtin.command: etcdctl --endpoints={{ rs_etcd_endpoints }} endpoint health
+          environment:
+            ETCDCTL_API: "3"
+          register: rs_etcd
+          changed_when: false
+          failed_when: rs_etcd.rc != 0 or (rs_etcd.stdout | regex_findall('is healthy') | length) != (groups['db'] | length)
+
+        - name: Garage status
+          ansible.builtin.command: garage status
+          register: rs_garage
+          changed_when: false
+
+        - name: Garage sees every db node and none failed
+          ansible.builtin.assert:
+            that:
+              - "'FAILED NODES' not in rs_garage.stdout"
+              - (rs_garage.stdout | regex_findall(':3901') | length) >= (groups['db'] | length)
+            fail_msg: "Garage is not complete, taking a node out now could lose write quorum:\n{{ rs_garage.stdout }}"
+
+        - name: Garage Volume mounted (else Garage writes to the root disk after the reboot)
+          ansible.builtin.command: mountpoint -q {{ garage_volume_data_dir }}
+          changed_when: false
+          when: garage_volume_data_dir | default('') | length > 0
+
+        - name: Services start at boot
+          ansible.builtin.command: systemctl is-enabled {{ item }}
+          loop: [patroni, etcd, garage]
+          changed_when: false
+
+        # ---- 2. leader? switch it over first ---------------------------------------------------
+        - name: Roles before the resize
+          ansible.builtin.set_fact:
+            rs_was_leader: "{{ (rs_pl.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first).Role == 'Leader' }}"
+            rs_candidate: >-
+              {{ ((rs_pl.stdout | from_json | selectattr('Role', 'equalto', 'Sync Standby') | list)
+                  + (rs_pl.stdout | from_json | selectattr('Role', 'equalto', 'Replica') | list))
+                 | map(attribute='Member') | first | default('') }}
+
+        - name: Switch the primary to {{ rs_candidate }} (about 5 s of write pause)
+          ansible.builtin.command: >-
+            patronictl switchover {{ patroni_scope }} --leader {{ inventory_hostname }}
+            --candidate {{ rs_candidate }} --force
+          when: rs_was_leader | bool
+          changed_when: true
+
+        - name: Wait until {{ rs_candidate }} leads and this node streams from it
+          ansible.builtin.command: patronictl list -f json
+          register: rs_after_sw
+          until: >-
+            (rs_after_sw.stdout | from_json | selectattr('Member', 'equalto', rs_candidate) | map(attribute='Role') | first | default('')) == 'Leader'
+            and (rs_after_sw.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | map(attribute='State') | first | default('')) == 'streaming'
+          retries: 36
+          delay: 5
+          changed_when: false
+          when: rs_was_leader | bool
+
+        # ---- 3. move sync replication off this node, then stop Patroni ---------------------------
+        - name: From here a failure puts the node back
+          ansible.builtin.set_fact:
+            rs_touched: true
+
+        - name: Tag nosync (Patroni picks another sync standby)
+          ansible.builtin.replace:
+            path: "{{ patroni_config }}"
+            regexp: '^(\s*nosync:)\s*false\s*$'
+            replace: '\1 true'
+
+        - name: Reload Patroni (tags are re-read without a restart)
+          ansible.builtin.systemd:
+            name: patroni
+            state: reloaded
+
+        - name: Wait until another member is the sync standby
+          ansible.builtin.command: patronictl list -f json
+          register: rs_sync
+          until: >-
+            (rs_sync.stdout | from_json | selectattr('Role', 'equalto', 'Sync Standby')
+             | rejectattr('Member', 'equalto', inventory_hostname) | list | length) >= 1
+          retries: 24
+          delay: 5
+          changed_when: false
+
+        - name: Stop Patroni (Postgres shuts down cleanly; the cluster runs on the other two)
+          ansible.builtin.systemd:
+            name: patroni
+            state: stopped
+
+        # ---- 4. the resize (by hand) -------------------------------------------------------------
+        - name: Resize in Clanode
+          ansible.builtin.pause:
+            prompt: |
+
+              {{ inventory_hostname }} ({{ private_ip }}) is out of the Patroni cluster (Postgres stopped, nosync).
+              {{ 'Its primary role moved to ' ~ rs_candidate ~ '. ' if rs_was_leader | bool else '' }}Now, in Clanode
+              (https://clanode.compas.cs.stonybrook.edu/linodes):
+                {{ inventory_hostname }} -> Resize -> the plan with {{ resize_vcpus }} vCPUs -> Resize.
+              Keep its Volume attached. Wait until it shows Running again, then press Enter here.
+              (Ctrl+C then A aborts; the playbook does NOT put it back then: run
+               `systemctl start patroni` on it, then this playbook again.)
+
+        - name: Resized (from here a failure leaves the node for a human)
+          ansible.builtin.set_fact:
+            rs_resized: true
+
+        # ---- 5. back up, right size, same address, cluster whole again ------------------------------
+        - name: Wait for SSH after the resize reboot
+          ansible.builtin.wait_for_connection:
+            delay: 5
+            timeout: 1800
+
+        - name: Re-read the hardware
+          ansible.builtin.setup:
+            gather_subset: [hardware, network]
+
+        - name: Check vCPUs and address
+          ansible.builtin.assert:
+            that:
+              - (ansible_processor_vcpus | int) >= (resize_vcpus | int)
+              - ansible_default_ipv4.address == private_ip
+            fail_msg: >-
+              After the resize {{ inventory_hostname }} has {{ ansible_processor_vcpus }} vCPUs and address
+              {{ ansible_default_ipv4.address }} (expected >= {{ resize_vcpus }} and {{ private_ip }}).
+
+        - name: Garage Volume mounted after the reboot
+          ansible.builtin.command: mountpoint -q {{ garage_volume_data_dir }}
+          changed_when: false
+          when: garage_volume_data_dir | default('') | length > 0
+
+      rescue:
+        # Not resized yet (a guard failed, the switchover or the sync move timed out): undo the tag
+        # and make sure Patroni runs, so the node is a normal replica again.
+        - name: Put the node back (nothing was resized)
+          when:
+            - rs_touched | default(false) | bool
+            - not (rs_resized | default(false) | bool)
+          block:
+            - name: Tag nosync off again
+              ansible.builtin.replace:
+                path: "{{ patroni_config }}"
+                regexp: '^(\s*nosync:)\s*true\s*$'
+                replace: '\1 false'
+
+            - name: Patroni running with the restored tags
+              ansible.builtin.systemd:
+                name: patroni
+                state: restarted
+
+        - name: Stop
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }}: stopped at "{{ ansible_failed_task.name }}".
+              {% if not (rs_touched | default(false) | bool) %}Nothing was changed{% if rs_was_leader | default(false) | bool %} (a switchover may have run: check `patronictl list`){% endif %}.
+              {% elif not (rs_resized | default(false) | bool) %}It is back as a replica (Patroni restarted, nosync off); nothing was resized.
+              {% else %}It was resized; Patroni may still be stopped with nosync on. Fix it, then re-run this
+              playbook for it: it sees the new size and finishes steps 5-6.{% endif %}
+
+    # ---- 5b. cluster whole again (also on a re-run of an already-resized node) ------------------------
+    - name: Patroni started
+      ansible.builtin.systemd:
+        name: patroni
+        state: started
+
+    - name: Wait for etcd on every member
+      ansible.builtin.command: etcdctl --endpoints={{ rs_etcd_endpoints }} endpoint health
+      environment:
+        ETCDCTL_API: "3"
+      register: rs_etcd2
+      until: rs_etcd2.rc == 0 and (rs_etcd2.stdout | regex_findall('is healthy') | length) == (groups['db'] | length)
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    # ---- 6. memory settings for the new RAM, nosync back to false ---------------------------------------
+    - name: What patroni.yml would change (check mode)
+      ansible.builtin.template:
+        src: roles/postgres_patroni/templates/patroni.yml.j2
+        dest: "{{ patroni_config }}"
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      check_mode: true
+      diff: true
+      register: rs_cfg_check
+
+    - name: Only the memory lines and the nosync tag may differ
+      ansible.builtin.assert:
+        that: >-
+          (resize_allow_config_diff | default(false) | bool) or not rs_cfg_check.changed or
+          ((rs_cfg_check.diff | first).before.splitlines() | reject('search', rs_allowed_diff) | list)
+          == ((rs_cfg_check.diff | first).after.splitlines() | reject('search', rs_allowed_diff) | list)
+        fail_msg: >-
+          Rendering patroni.yml on {{ inventory_hostname }} would change more than shared_buffers /
+          effective_cache_size / nosync: the repo or the inventory differs from what was last deployed.
+          Run `ansible-playbook site.yml --check --diff --limit {{ inventory_hostname }}` to see it, then re-run
+          with -e resize_allow_config_diff=true if the change is wanted.
+
+    - name: patroni.yml for this size
+      ansible.builtin.template:
+        src: roles/postgres_patroni/templates/patroni.yml.j2
+        dest: "{{ patroni_config }}"
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      register: rs_cfg
+
+    - name: Reload Patroni (re-reads patroni.yml, writes postgresql.conf)
+      ansible.builtin.systemd:
+        name: patroni
+        state: reloaded
+      when: rs_cfg.changed
+
+    - name: Wait until this node streams again (caught up)
+      ansible.builtin.command: patronictl list -f json
+      register: rs_me
+      until: >-
+        (rs_me.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | list | length) == 1
+        and (rs_me.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first).State in ['streaming', 'running']
+        and ((rs_me.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first)['Lag in MB'] | default(0) | int) <= (resize_max_lag_mb | int)
+      retries: 120
+      delay: 5
+      changed_when: false
+
+    - name: This node's role now
+      ansible.builtin.set_fact:
+        rs_role_now: "{{ (rs_me.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first).Role }}"
+
+    # shared_buffers needs a Postgres restart. Only on a replica (this playbook switched the leader
+    # away before the resize; a re-run on a node that leads again would need a switchover first).
+    - name: Restart Postgres on this replica for the new shared_buffers
+      ansible.builtin.command: patronictl restart {{ patroni_scope }} {{ inventory_hostname }} --force
+      when: rs_cfg.changed and rs_role_now != 'Leader'
+      changed_when: true
+
+    - name: Leader with new settings pending
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is the Leader, so Postgres was not restarted: shared_buffers takes effect at the
+          next restart. Do it off-peak: `patronictl switchover`, then `patronictl restart {{ patroni_scope }} {{ inventory_hostname }}`.
+      when: rs_cfg.changed and rs_role_now == 'Leader'
+
+    - name: Wait until this node streams again after the restart
+      ansible.builtin.command: patronictl list -f json
+      register: rs_me2
+      until: >-
+        (rs_me2.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first).State in ['streaming', 'running']
+        and ((rs_me2.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first)['Lag in MB'] | default(0) | int) <= (resize_max_lag_mb | int)
+      retries: 120
+      delay: 5
+      changed_when: false
+
+    - name: Garage sees every node again
+      ansible.builtin.command: garage status
+      register: rs_garage2
+      until: "'FAILED NODES' not in rs_garage2.stdout and (rs_garage2.stdout | regex_findall(':3901') | length) >= (groups['db'] | length)"
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ ansible_processor_vcpus }} vCPUs, {{ ansible_memtotal_mb }} MB
+          (shared_buffers {{ patroni_shared_buffers_mb }} MB), {{ rs_role_now }}.
+          Cluster: {{ rs_me2.stdout | from_json | map(attribute='Member') | zip(rs_me2.stdout | from_json | map(attribute='Role')) | map('join', '=') | join(', ') }}

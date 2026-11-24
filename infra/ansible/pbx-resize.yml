@@ -163,6 +163,27 @@
               It stays drained.
 
       rescue:
+        # Drain timed out: show what is still up (2026-11-24: one 55-min internal call held pbx-1), so
+        # the next run can be planned (wait longer with -e pbx_drain_wait_min=N, or hang that call up:
+        # asterisk -rx 'channel request hangup <channel>').
+        - name: Calls still up after the drain wait (channel, state, caller, seconds up)
+          ansible.builtin.shell: |
+            set -o pipefail
+            asterisk -rx 'core show channels concise' | cut -d'!' -f1,5,8,12 | sort -t'!' -k4 -nr | head -20
+          args:
+            executable: /bin/bash
+          register: rs_left
+          changed_when: false
+          failed_when: false
+          when:
+            - rs_drained | default(false) | bool
+            - not (rs_resized | default(false) | bool)
+
+        - name: Show them
+          ansible.builtin.debug:
+            var: rs_left.stdout_lines
+          when: rs_left.stdout_lines | default([]) | length > 0
+
         # Drained but not resized yet (drain timed out, or aborted at the pause): the node runs as
         # before, so it can take calls again. After the resize: leave it drained for a human.
         - name: Put the node back in service (nothing was resized)
