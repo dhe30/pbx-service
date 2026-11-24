@@ -6,7 +6,7 @@ import { DEFAULT_CALL_PRICING } from '@pbx/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CdrWriter } from '../../src/cdr.js';
 import { log } from '../../src/log.js';
-import type { PendingCdr } from '../../src/repo.js';
+import { usageLockOrder, type PendingCdr } from '../../src/repo.js';
 import { Account, makeHarness, nextDid, startDb, until, type Db } from '../harness/env.js';
 
 // Course spec §5 "Call records and billing":
@@ -91,6 +91,32 @@ describe('§5 Rating', () => {
       { periodStart: '2026-11-02', includedSecUsed: 120 },
       { periodStart: '2026-11-09', includedSecUsed: 30 },
     ]);
+  });
+
+  it('row locks in one global order: a batch is rated by (account, period), legs keep their order within one', () => {
+    // Two pbx nodes flushing batches with legs of the same accounts in opposite orders deadlocked on
+    // the usage_periods row locks (db-1, 2026-11-24). Both batches must lock in the same order.
+    const l = (tenantId: string, periodStart: string, id: string) => ({ tenantId, periodStart, id });
+    const node1 = [l('b', '2026-11-02', '1'), l('a', '2026-11-09', '2'), l('a', '2026-11-02', '3'), l('b', '2026-11-02', '4')];
+    const node2 = [l('a', '2026-11-02', '5'), l('b', '2026-11-02', '6'), l('a', '2026-11-09', '7')];
+    const keys = (b: typeof node1) => usageLockOrder(b).map((c) => `${c.tenantId}/${c.periodStart}`);
+    expect(keys(node1)).toEqual(['a/2026-11-02', 'a/2026-11-09', 'b/2026-11-02', 'b/2026-11-02']);
+    expect(keys(node2)).toEqual(['a/2026-11-02', 'a/2026-11-09', 'b/2026-11-02']);
+    expect(usageLockOrder(node1).filter((c) => c.tenantId === 'b').map((c) => c.id)).toEqual(['1', '4']);
+    expect(node1.map((c) => c.id)).toEqual(['1', '2', '3', '4']); // input untouched
+  });
+
+  it('interleaved accounts in one batch: each account’s included minutes go to its legs in order', async () => {
+    const a = await new Account(db.sql).create({ includedUsMinutes: 1 });
+    const b = await new Account(db.sql).create({ includedUsMinutes: 1 });
+    const at = (i: number) => {
+      const s = new Date(Date.UTC(2026, 10, 4, 15, i));
+      return { startedAt: s.toISOString(), answeredAt: s.toISOString(), endedAt: new Date(s.getTime() + 1000).toISOString(), includedAllowanceSec: 60 };
+    };
+    const w = writer();
+    for (let i = 0; i < 6; i++) await w.submit(leg(i % 2 ? b : a, at(i))); // a, b, a, b, a, b: 30 s each
+    await w.drain();
+    for (const acct of [a, b]) expect((await acct.cdrs()).map((r) => r.includedSec)).toEqual([30, 30, 0]);
   });
 
   it('a leg partly covered by included minutes is charged only for the rest', async () => {
