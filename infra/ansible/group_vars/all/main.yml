@@ -26,14 +26,19 @@ sip_domain: "group-4.cse356.compas.cs.stonybrook.edu"
 carrier_cidrs: ["130.245.136.142/32"]
 # Sources of the course's simulated phones/customers: never rate-limited by pike (B2).
 # [VERIFY] the real ranges from Kamailio logs once traffic is on; 130.245.136.0/24 holds the carrier.
-trusted_tester_cidrs: ["130.245.136.0/24"]
+# 10.0.0.0/16: the simulators also reach us from the private network; trusted here (no pike)
+# while the private-media path below is off.
+trusted_tester_cidrs: ["130.245.136.0/24", "10.0.0.0/16"]
 # The platform's private network. Since 2026-11-23 the course's simulated phones send some REGISTERs
 # (and other requests) straight to our edges' PRIVATE IPs, bypassing the public NAT router that
 # was dropping their small packets (seen: 10.0.0.38/.140/.153/.242, 10.0.1.11/.100, 10.0.3.38/.243). A device request
 # from here (not one of our own nodes, which CLASSIFY recognises first) is trusted like
 # trusted_tester_cidrs (no pike) and gets rtpengine's PRIVATE media address in its SDP, so its
 # audio stays off the NAT path too (Record-Route ;pn=1, route[CLASSIFY] / route[DEV_BRANCH]).
-private_device_cidrs: ["10.0.0.0/16"]
+# OFF since 2026-11-24 03:07 UTC: deployed on edge-1, every new call through it got no audio
+# (no_audio tickets from 15 s after the restart, all codecs, TLS and UDP); rolled back at ~03:24.
+# Re-enable only after a test call from a private-network phone has audio both ways.
+private_device_cidrs: []
 # PSTN vendors (Course Services tab). Asterisk sends vendor legs through the edge to these hosts.
 vendor_us_host: "us-vendor.cse356.compas.cs.stonybrook.edu"
 vendor_intl_host: "intl-vendor.cse356.compas.cs.stonybrook.edu"
