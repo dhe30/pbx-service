@@ -281,6 +281,13 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
      done 2026-11-15). It takes effect at the next edge deploy, which is a Kamailio restart; until
      then the live value holds. The edges' rtpengine stays as the fallback (switch back to 0).
 
+- **Draining one media node** (e.g. before resizing it): `kamcmd rtpengine.enable udp:<ip>:2223 0`
+  on BOTH edges. New calls skip it; with `rtpengine_allow_op` (since 2026-11-24, needs the edges
+  restarted with it) its calls in progress keep using it until they end. Wait until its sessions
+  reach 0 (rtpengine journal "Closing call" lines stop / Prometheus `rtpengine` sessions), then
+  work on it; back in: the same with `1`. Before `allow_op` was live, this command broke every call
+  on the node at its next re-INVITE (2026-11-24 09:52, V-T24).
+
 ### 2.5 Testing
 
 ```bash
