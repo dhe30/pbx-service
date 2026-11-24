@@ -67,10 +67,15 @@
             group: kamailio
             mode: "0640"
 
+        # daemon_reload: pick up drop-ins written since the last reload (limits.conf: LimitNOFILE).
+        # Without it the restart kept the old open-files limit: edge-2 restarted 2026-11-24 03:51
+        # UTC, then at the 04:45 burst ~1,400 TLS phones hit "Too many open files" and Kamailio
+        # spun at 100 % CPU for 25 min (REGISTER failures).
         - name: Restart Kamailio
           ansible.builtin.systemd:
             name: kamailio
             state: restarted
+            daemon_reload: true
 
         - name: Wait for RPC
           ansible.builtin.command: kamcmd core.uptime
