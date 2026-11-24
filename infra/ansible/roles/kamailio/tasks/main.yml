@@ -24,6 +24,9 @@
       - kamailio-utils-modules
     update_cache: true
 
+- name: UDP receive buffers
+  ansible.builtin.include_tasks: udp-buffers.yml
+
 - name: Dispatcher list (pbx nodes)
   ansible.builtin.template:
     src: "{{ repo_root }}/telephony/kamailio/dispatcher.list.j2"

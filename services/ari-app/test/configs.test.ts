@@ -54,6 +54,23 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).toMatch(/^children=16$/m);
       expect(kam).toMatch(/^tcp_children=16$/m);
     });
+    it('UDP receive buffer 4 MB (208 KB overflowed on :5070 at the 2026-11-24 peak)', () => {
+      expect(kam).toMatch(/^maxbuffer=4194304$/m);
+    });
+  });
+
+  describe('carrier on the private network (2026-11-24)', () => {
+    it('10.0.2.214 is a carrier source like 130.245.136.142 (UDP)', () => {
+      const cls = block(kam, 'route[CLASSIFY]');
+      expect(cls).toContain('if (is_in_subnet("$si", "10.0.2.214/32") && $pr == "udp") {');
+      expect(cls).toContain('if (is_in_subnet("$si", "130.245.136.142/32") && $pr == "udp") {');
+    });
+    it('in-dialog requests (re-INVITE, BYE) are relayed with no source check', () => {
+      // Other groups 403'd the carrier's re-INVITEs from its private address after the switch.
+      const dlg = block(kam, 'route[WITHINDLG]');
+      expect(dlg).not.toMatch(/\$si|403|FLT_CARRIER|is_in_subnet/);
+      expect(dlg).toMatch(/route\(RELAY\)/);
+    });
   });
 
   describe('§3 "Any number of phones register"; "rings all of an extension\'s devices"', () => {
