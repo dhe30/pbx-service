@@ -23,7 +23,10 @@ sip_domain: "group-4.cse356.compas.cs.stonybrook.edu"
 # Entries: "IP", "IP/bits", optionally ":port" to accept carrier calls only from that source port
 # (needed when the fake carrier and test phones run on the same machine, e.g. "192.168.56.1:5062").
 # Local testing: add the public IP of the machine running SIPp / your test softphone.
-carrier_cidrs: ["130.245.136.142/32"]
+# 10.0.2.214 (2026-11-24): the same DIDWW trunk delivering over the platform's private network to
+# our edges' private IPs (course announcement, address per group; ours = group-4). Signaling only:
+# carrier media still uses rtpengine's public address (F.plain), the private-media path is off.
+carrier_cidrs: ["130.245.136.142/32", "10.0.2.214/32"]
 # Sources of the course's simulated phones/customers: never rate-limited by pike (B2).
 # [VERIFY] the real ranges from Kamailio logs once traffic is on; 130.245.136.0/24 holds the carrier.
 # 10.0.0.0/16: the simulators also reach us from the private network; trusted here (no pike)
