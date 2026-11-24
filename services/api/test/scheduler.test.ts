@@ -276,4 +276,39 @@ describe.skipIf(!db)('voicemail audio cleanup (Postgres)', () => {
       await sql.end({ timeout: 2 });
     }
   });
+
+  it('deletes call recordings past retention and their objects, and nothing else', async () => {
+    const sql = (await connectTestDb())!;
+    const { MemoryStore } = await import('./helpers.js');
+    const { cleanupOldRecordings, RECORDING_RETENTION_SEC } = await import('../src/maintenance.js');
+    const store = new MemoryStore();
+    const log = pino({ level: 'silent' });
+    const [t] = await sql<{ id: string }[]>`insert into tenants (name) values ('Retention test') returning id`;
+    try {
+      const media = async (kind: string, age: number) => {
+        const key = `t/${randomUUID()}.wav`;
+        await store.put(key, Buffer.from('RIFF'), 'audio/wav');
+        const [m] = await sql<{ id: string }[]>`
+          insert into media (tenant_id, kind, object_key, format, duration_ms, created_at)
+          values (${t!.id}, ${kind}, ${key}, 'wav', 1000, now() - make_interval(secs => ${age})) returning id`;
+        return m!.id;
+      };
+      const old = RECORDING_RETENTION_SEC + 60;
+      const expired = [await media('recording', old), await media('recording', old + 86400)];
+      const recent = await media('recording', 7 * 24 * 3600 - 60); // still within its 7 days
+      const oldVoicemail = await media('voicemail', old);
+      const oldGreeting = await media('greeting', old);
+
+      // limit 1: one batch per call; the second call takes the rest, the third finds nothing.
+      expect(await cleanupOldRecordings({ sql, store, log }, new Date(), 1)).toBe(1);
+      expect(await cleanupOldRecordings({ sql, store, log })).toBeGreaterThanOrEqual(1);
+      const left = (await sql<{ id: string }[]>`select id from media where tenant_id = ${t!.id}`).map((r) => r.id);
+      expect(left.sort()).toEqual([recent, oldVoicemail, oldGreeting].sort());
+      for (const id of expired) expect(left).not.toContain(id);
+      expect(store.objects.size).toBe(3);
+    } finally {
+      await sql`delete from tenants where id = ${t!.id}`;
+      await sql.end({ timeout: 2 });
+    }
+  });
 });
