@@ -367,22 +367,25 @@ export class Repo {
    * deleted an OLDER message, theirs stayed on the web, and unheard messages piled up (35 in one
    * mailbox).
    */
-  async listVoicemails(tenantId: string, mailboxId: string, heard: boolean): Promise<VoicemailMsg[]> {
+  /** `before`: only messages left up to then (the *98 call's start), see vm-access.ts. */
+  async listVoicemails(tenantId: string, mailboxId: string, heard: boolean, before?: Date): Promise<VoicemailMsg[]> {
     const rows = await withRetry(
       () => this.sql<VoicemailMsg[]>`
         select v.id, v.media_id, m.object_key, v.caller_number, v.created_at
           from voicemails v join media m on m.id = v.media_id
          where v.tenant_id = ${tenantId} and v.mailbox_id = ${mailboxId} and v.heard = ${heard}
+           ${before ? this.sql`and v.created_at <= ${before}` : this.sql``}
          order by ${heard ? this.sql`v.created_at, v.id` : this.sql`v.created_at desc, v.id desc`}`,
     );
     return [...rows];
   }
 
-  async countVoicemails(tenantId: string, mailboxId: string): Promise<{ new: number; saved: number }> {
+  async countVoicemails(tenantId: string, mailboxId: string, before?: Date): Promise<{ new: number; saved: number }> {
     const [r] = await withRetry(
       () => this.sql<{ newCount: string; savedCount: string }[]>`
         select count(*) filter (where not heard) as new_count, count(*) filter (where heard) as saved_count
-          from voicemails where tenant_id = ${tenantId} and mailbox_id = ${mailboxId}`,
+          from voicemails where tenant_id = ${tenantId} and mailbox_id = ${mailboxId}
+           ${before ? this.sql`and created_at <= ${before}` : this.sql``}`,
     );
     return { new: Number(r?.newCount ?? 0), saved: Number(r?.savedCount ?? 0) };
   }

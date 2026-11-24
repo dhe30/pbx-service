@@ -37,6 +37,12 @@ type ListResult = 'main' | 'hangup';
 
 export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: string | null): Promise<void> {
   const t = s.tenant!;
+  // The call only offers messages left before it started. A busy mailbox gets new messages every
+  // few seconds; newest-first then played (and a 3 deleted) one that arrived during the call, and
+  // the caller's checklist ("one of the messages that were there before the call is gone") failed:
+  // 2026-11-24 tickets "all 3 new messages from before the call are still listed", Oakwood ext 101
+  // receiving a message every ~20 s. The caller's own just-left message still plays first.
+  const asOf = new Date();
   await s.ensureAnswered(ctx.ari);
   if (!mailboxId || !t.mailboxes.has(mailboxId)) {
     s.step('vm: no mailbox', { mailbox: mailboxId });
@@ -47,7 +53,7 @@ export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: strin
   try {
     let timeouts = 0;
     for (;;) {
-      const c = await ctx.repo.countVoicemails(t.id, mailboxId);
+      const c = await ctx.repo.countVoicemails(t.id, mailboxId, asOf);
       s.step('vm: main menu', { mailbox: mailboxId, new: c.new });
       const prompts = [P.youHave, `number:${c.new}`, P.newMsgs, P.messages, P.mainMenu];
       const d = await reader.prompt(prompts, MENU_WAIT_SEC);
@@ -60,11 +66,11 @@ export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: strin
       let r: ListResult = 'main';
       if (d === '1') {
         s.step('vm: key', { menu: 'main', digit: d });
-        r = await playList(ctx, s, reader, mailboxId, false);
+        r = await playList(ctx, s, reader, mailboxId, false, asOf);
       } else if (d === '3') {
         const d2 = await reader.digit(MENU_WAIT_SEC);
         s.step('vm: key', { menu: 'main', digit: d, then: d2 });
-        if (d2 === '1') r = await playList(ctx, s, reader, mailboxId, true);
+        if (d2 === '1') r = await playList(ctx, s, reader, mailboxId, true, asOf);
       } else {
         s.step('vm: key', { menu: 'main', digit: d });
         if (d === '*') break;
@@ -78,9 +84,10 @@ export async function voicemailAccess(ctx: Ctx, s: CallSession, mailboxId: strin
 }
 
 /** Play the new (saved=false) or saved messages one by one with the Unity keys. */
-async function playList(ctx: Ctx, s: CallSession, reader: DigitReader, mailboxId: string, saved: boolean): Promise<ListResult> {
+async function playList(ctx: Ctx, s: CallSession, reader: DigitReader, mailboxId: string, saved: boolean, asOf: Date): Promise<ListResult> {
   const t = s.tenant!;
-  const msgs = await ctx.repo.listVoicemails(t.id, mailboxId, saved);
+  // New messages: only those left before the call (asOf). Saved ones were all heard before.
+  const msgs = await ctx.repo.listVoicemails(t.id, mailboxId, saved, saved ? undefined : asOf);
   s.step('vm: list', { list: saved ? 'saved' : 'new', count: msgs.length });
   if (msgs.length === 0) {
     await playOnce(ctx, s, P.noMessages);
