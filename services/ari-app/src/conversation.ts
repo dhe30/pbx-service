@@ -246,13 +246,16 @@ export class Conversation {
       if (ctx.conversations.get(transferer) === this) ctx.conversations.delete(transferer);
       this.sub?.unwatch(chKey(transferer));
       this.sub?.watch(chKey(target));
-      await ctx.ari.addToBridge(this.bridgeId, [target]);
-      await this.enableAriTransfer(target);
+      // The transferring phone leaves and the music stops BEFORE the target joins: joining first
+      // put the target in a 3-way bridge with the transferring phone (live 2026-11-24, Hussain
+      // Notary: "225 heard the transferring extension for 3.0 s and the caller for 0.9 s").
+      await ctx.ari.removeFromBridge(this.bridgeId, [transferer]).catch(() => {});
       for (const p of [remaining, target]) {
         if (this.moh.delete(p)) await ctx.ari.stopMoh(p).catch(() => {});
       }
+      await ctx.ari.addToBridge(this.bridgeId, [target]);
+      await this.enableAriTransfer(target);
       await ctx.ari.transferProgress(transferer, 'channel_answered').catch(() => {});
-      await ctx.ari.removeFromBridge(this.bridgeId, [transferer]).catch(() => {});
       await ctx.ari.hangupQuietly(transferer).catch(() => {});
       return null; // keep driving the joined call
     }
