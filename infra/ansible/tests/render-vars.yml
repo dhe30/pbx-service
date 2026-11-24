@@ -10,3 +10,6 @@ vault_vendor_intl_user: test-intl-user
 vault_vendor_intl_password: test-intl-pw
 vault_grafana_admin_password: test-grafana-admin-pw
 vault_discord_webhook_url: "https://discord.com/api/webhooks/0/test"
+# The private-network media path is OFF in production (group_vars: private_device_cidrs: []);
+# render it here anyway so its routing code stays tested.
+private_device_cidrs: ["10.0.0.0/16"]
