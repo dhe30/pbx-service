@@ -24,6 +24,13 @@
     - /var/lib/garage/data
     - /usr/local/lib/garage
 
+# Without this check Garage would write the Volume's share onto the root disk when the Volume
+# isn't mounted (nofail lets the VM boot without it), and the root disk would fill again.
+- name: Garage Volume is mounted
+  ansible.builtin.command: mountpoint -q {{ garage_volume_data_dir }}
+  changed_when: false
+  when: garage_volume_data_dir | length > 0
+
 - name: Download Garage {{ garage_version }}
   ansible.builtin.get_url:
     url: "https://garagehq.deuxfleurs.fr/_releases/{{ garage_version }}/x86_64-unknown-linux-musl/garage"

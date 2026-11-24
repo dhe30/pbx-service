@@ -1,0 +1,102 @@
+# Update ONLY kamailio.cfg on the edges and restart Kamailio, one edge at a time, without the rest
+# of the edge play (rtpengine, HAProxy, packages, firewall). For config changes that need a restart
+# (new routing logic) when a full `--limit edge` run is more than you want during the grading window.
+#
+#   ansible-playbook kamailio-config.yml --ask-vault-pass --limit edge-1                # diff only
+#   ansible-playbook kamailio-config.yml --ask-vault-pass --limit edge-1 -e apply=true  # restart
+#
+# Without apply=true it renders the new config next to the live one (kamailio.cfg.new, checked with
+# `kamailio -c`) and prints the diff with the DB URL masked; the live config is untouched. With
+# apply=true it keeps the old file as kamailio.cfg.prev, restarts and waits until Kamailio answers
+# RPC, has pulled the registrations from the peer edge (dmq_usrloc sync) and sees the pbx nodes.
+# The restart closes every TLS/WS connection on that edge: phones and browsers must reconnect.
+# Roll back: cp /etc/kamailio/kamailio.cfg.prev /etc/kamailio/kamailio.cfg && systemctl restart kamailio
+- name: Kamailio config only (restart, one edge at a time)
+  hosts: edge
+  become: true
+  serial: 1
+  vars:
+    apply: false
+  tasks:
+    - name: Render the new config next to the live one (validated)
+      ansible.builtin.template:
+        src: "{{ repo_root }}/telephony/kamailio/kamailio.cfg.j2"
+        dest: /etc/kamailio/kamailio.cfg.new
+        owner: root
+        group: kamailio
+        mode: "0640"
+        validate: kamailio -c -f %s
+
+    - name: Diff against the live config (DB URL masked)
+      ansible.builtin.shell: |
+        diff -u /etc/kamailio/kamailio.cfg /etc/kamailio/kamailio.cfg.new \
+          | sed -E 's#postgres://[^"]*#postgres://***#g'
+      register: cfg_diff
+      changed_when: false
+      failed_when: cfg_diff.rc > 1
+
+    - name: Changes
+      ansible.builtin.debug:
+        msg: "{{ cfg_diff.stdout_lines if cfg_diff.stdout else ['no change'] }}"
+
+    - name: Apply and restart
+      when: apply | bool and cfg_diff.stdout != ""
+      block:
+        - name: Registrations and active pbx nodes before
+          ansible.builtin.shell: |
+            kamcmd stats.get_statistics usrloc:registered_users | awk '{print $3}'
+            kamcmd dispatcher.list | grep -c 'FLAGS: AP' || true
+          register: before
+          changed_when: false
+
+        - name: Keep the old config
+          ansible.builtin.copy:
+            src: /etc/kamailio/kamailio.cfg
+            dest: /etc/kamailio/kamailio.cfg.prev
+            remote_src: true
+            owner: root
+            group: kamailio
+            mode: "0640"
+
+        - name: Install the new config
+          ansible.builtin.copy:
+            src: /etc/kamailio/kamailio.cfg.new
+            dest: /etc/kamailio/kamailio.cfg
+            remote_src: true
+            owner: root
+            group: kamailio
+            mode: "0640"
+
+        - name: Restart Kamailio
+          ansible.builtin.systemd:
+            name: kamailio
+            state: restarted
+
+        - name: Wait for RPC
+          ansible.builtin.command: kamcmd core.uptime
+          register: up
+          retries: 15
+          delay: 2
+          until: up.rc == 0
+          changed_when: false
+
+        - name: Wait for the registrations from the peer edge (DMQ sync)
+          ansible.builtin.shell: kamcmd stats.get_statistics usrloc:registered_users | awk '{print $3}'
+          register: ul_after
+          retries: 15
+          delay: 2
+          until: (ul_after.stdout | int) >= ((before.stdout_lines[0] | int) * 0.8) | int
+          changed_when: false
+
+        # As many as before the restart (a node that was already down stays down).
+        - name: Wait for the pbx nodes to be active
+          ansible.builtin.shell: "kamcmd dispatcher.list | grep -c 'FLAGS: AP' || true"
+          register: ds_up
+          retries: 15
+          delay: 2
+          until: (ds_up.stdout | int) >= (before.stdout_lines[1] | int)
+          changed_when: false
+
+        - name: After the restart
+          ansible.builtin.debug:
+            msg: "registered users {{ before.stdout_lines[0] }} -> {{ ul_after.stdout }}, active pbx nodes {{ before.stdout_lines[1] }} -> {{ ds_up.stdout }}"

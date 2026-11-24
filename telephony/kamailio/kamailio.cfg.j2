@@ -10,6 +10,10 @@
 #   peer edge -> udp private:{{ kamailio_internal_port }}   INVITE for a phone connected there; DMQ      (FLT_PEER)
 #   phones    -> udp public:5060    REGISTER / INVITE (desk phones, _sip._udp SRV)
 #   phones    -> tls public:{{ kamailio_tls_port }}   REGISTER / INVITE (_sips._tcp SRV), SRTP-SDES media
+#   phones    -> the same public sockets, but from the platform's PRIVATE network
+#                (private_device_cidrs, FLT_PRIVNET): the course moved part of its simulated
+#                phones' traffic off the NAT router (2026-11-23). Media for them uses rtpengine's
+#                private address (Record-Route ;pn=1), so their audio skips the router too.
 #   browsers  -> ws  private:{{ kamailio_ws_port }}   via HAProxy (which terminates wss:// TLS)
 #   vendors   <- udp public:5060    outgoing PSTN legs (Asterisk -> us -> vendor; digest auth by Asterisk)
 #
@@ -42,10 +46,12 @@
 #!define FLT_PEER 3
 #!define FLT_DEVICE_SRC 4
 #!define FLT_TRUSTED 6
+#!define FLT_PRIVNET 7
 
 # Branch flags (per forked branch toward a phone)
 #!define FLB_WS 1
 #!define FLB_TLS 2
+#!define FLB_PRIV 3
 
 #!define DBURL_RO "{{ kamailio_db_ro_url }}"
 
@@ -85,6 +91,20 @@
     'far_answer':  BASE ~ " ICE=force DTLS=passive SDES-off rtcp-mux-accept RTP/SAVPF",
     'pbx_offer':   "direction=internal direction=external " ~ BASE ~ " ICE=force DTLS=passive SDES-off rtcp-mux-offer generate-mid RTP/SAVPF",
     'pbx_answer':  BASE ~ " ICE=remove DTLS=off rtcp-mux-demux RTP/AVP",
+  },
+} %}
+{# Same flags for a phone on the platform's private network: its side of the stream also uses
+   rtpengine's internal (private) interface, so the SDP we send it carries a private address and
+   neither direction of its audio crosses the public NAT. Only the direction= of the offers
+   differs (answers carry none). Browsers always arrive through HAProxy, so no ws variant. #}
+{% set FP = {
+  'plain': {
+    'far_offer': F.plain.far_offer | replace('direction=external', 'direction=internal'),
+    'pbx_offer': F.plain.pbx_offer | replace('direction=external', 'direction=internal'),
+  },
+  'tls': {
+    'far_offer': F.tls.far_offer | replace('direction=external', 'direction=internal'),
+    'pbx_offer': F.tls.pbx_offer | replace('direction=external', 'direction=internal'),
   },
 } %}
 {# far_*: the request came from the carrier/vendor/phone side and goes to Asterisk.
@@ -463,7 +483,8 @@ reply_route {
 	}
 }
 
-# Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_DEVICE_SRC (+ FLT_TRUSTED).
+# Who sent this request? Sets FLT_CARRIER / FLT_PBX / FLT_PEER / FLT_DEVICE_SRC (+ FLT_TRUSTED,
+# FLT_PRIVNET).
 route[CLASSIFY] {
 {# carrier_cidrs / trusted_tester_cidrs entries: "IP", "IP/bits", optionally ":port" (carrier only).
    A port pins the carrier to one source port, so phones on the SAME machine (local testing: SIPp
@@ -487,6 +508,17 @@ route[CLASSIFY] {
 	if ($si == "{{ ip }}" && $pr == "udp") {
 		setflag(FLT_PEER);
 		return;
+	}
+{% endfor %}
+	# A device on the platform's private network (our own nodes matched above). Since 2026-11-23
+	# the course's simulators send part of their phones' REGISTERs and calls to our private IPs:
+	# pike blocked 4,647 requests from 4 of those hosts in 8 minutes (REGISTER failures).
+	# Their media then uses rtpengine's private address (;pn=1). [VERIFY V-A9]
+{% for entry in private_device_cidrs | default([]) %}
+	# (WebSocket requests come from HAProxy on an edge: trusted, but browsers keep their own flags.)
+	if (is_in_subnet("$si", "{{ net(entry) }}")) {
+		setflag(FLT_TRUSTED);
+		if ($pr != "ws" && $pr != "wss") setflag(FLT_PRIVNET);
 	}
 {% endfor %}
 	setflag(FLT_DEVICE_SRC);
@@ -664,9 +696,20 @@ failure_route[PBX_FAILOVER] {
 	# outage for us-vendor, each phone call to an external number marked all 3 pbx nodes inactive
 	# in turn (19:49-19:50, 5 times, ~3-4 s each) and every other call got 503 "no pbx node
 	# available" (docs/incidents/2026-11-20-support-tickets.md §2). The 500 goes to the caller.
+	#
+	# Only a node that did not answer at all is marked inactive (until it answers OPTIONS again).
+	# A 503 moves THIS call to the next node and leaves the node in service: it is usually
+	# Asterisk at maxcalls, which frees a slot with the next hangup. Until 2026-11-24 a 503 marked
+	# the node inactive too: at the 11-23 Monday peak every pbx node sat at its cap, each 503 took
+	# a whole node out for 5-10 s, its freed slots went unused, and the failed_503s piled up
+	# (~150/min). Marking gained nothing for the other 503s either: an ARI-app-down node still
+	# answers OPTIONS, so probing switched it back on within seconds anyway, and inbound.ts's
+	# deliberate 503 (`congestion`, one carrier call failing before answer) is a per-call retry.
 	if (t_check_status("503") || (t_branch_timeout() && !t_branch_replied())) {
 		xlog("L_WARN", "pbx $du failed ($T_reply_code), trying next\n");
-		ds_mark_dst("ip");   # inactive + probing until it answers OPTIONS again
+		if (!t_check_status("503")) {
+			ds_mark_dst("ip");   # timeout: inactive + probing until it answers OPTIONS again
+		}
 		if (ds_next_dst()) {
 			route(PBX_TIMERS);
 			route(NH_TIMERS);
@@ -754,14 +797,26 @@ route[FROM_DEVICE] {
 		$avp(rtp_answer) = "{{ F.ws.far_answer }}";
 	} else if ($pr == "tls") {
 		add_rr_param(";leg=staff_tls");
-		record_route();
-		rtpengine_offer("{{ F.tls.far_offer }}");
+		if (isflagset(FLT_PRIVNET)) {
+			add_rr_param(";pn=1");
+			record_route();
+			rtpengine_offer("{{ FP.tls.far_offer }}");
+		} else {
+			record_route();
+			rtpengine_offer("{{ F.tls.far_offer }}");
+		}
 		$var(ok) = $rc;
 		$avp(rtp_answer) = "{{ F.tls.far_answer }}";
 	} else {
 		add_rr_param(";leg=staff_udp");
-		record_route();
-		rtpengine_offer("{{ F.plain.far_offer }}");
+		if (isflagset(FLT_PRIVNET)) {
+			add_rr_param(";pn=1");
+			record_route();
+			rtpengine_offer("{{ FP.plain.far_offer }}");
+		} else {
+			record_route();
+			rtpengine_offer("{{ F.plain.far_offer }}");
+		}
 		$var(ok) = $rc;
 		$avp(rtp_answer) = "{{ F.plain.far_answer }}";
 	}
@@ -925,6 +980,14 @@ branch_route[DEV_BRANCH] {
 	}
 	if ($var(tp) =~ "^wss?$") setbflag(FLB_WS);
 	else if ($var(tp) =~ "^tls$") setbflag(FLB_TLS);
+	# The phone registered from the platform's private network (its address in Path ;received):
+	# private media address toward it, as in FROM_DEVICE.
+	if ($var(rcv) != "" && !isbflagset(FLB_WS)) {
+		$var(rh) = $(var(rcv){uri.host});
+{% for entry in private_device_cidrs | default([]) %}
+		if (is_in_subnet("$var(rh)", "{{ net(entry) }}")) setbflag(FLB_PRIV);
+{% endfor %}
+	}
 	xlog("L_INFO", "devices: branch $T_branch_idx of $rU -> $ru via $du ($var(tp)) [ci=$ci]\n");
 
 	if ($var(rcv) != "" && $(du{uri.host}) == "{{ private_ip }}") {
@@ -949,12 +1012,24 @@ branch_route[DEV_BRANCH] {
 		if (!rtpengine_offer("via-branch=extra {{ F.ws.pbx_offer }}")) drop;
 	} else if (isbflagset(FLB_TLS)) {
 		add_rr_param(";leg=staff_tls");
-		record_route();
-		if (!rtpengine_offer("via-branch=extra {{ F.tls.pbx_offer }}")) drop;
+		if (isbflagset(FLB_PRIV)) {
+			add_rr_param(";pn=1");
+			record_route();
+			if (!rtpengine_offer("via-branch=extra {{ FP.tls.pbx_offer }}")) drop;
+		} else {
+			record_route();
+			if (!rtpengine_offer("via-branch=extra {{ F.tls.pbx_offer }}")) drop;
+		}
 	} else {
 		add_rr_param(";leg=staff_udp");
-		record_route();
-		if (!rtpengine_offer("via-branch=extra {{ F.plain.pbx_offer }}")) drop;
+		if (isbflagset(FLB_PRIV)) {
+			add_rr_param(";pn=1");
+			record_route();
+			if (!rtpengine_offer("via-branch=extra {{ FP.plain.pbx_offer }}")) drop;
+		} else {
+			record_route();
+			if (!rtpengine_offer("via-branch=extra {{ F.plain.pbx_offer }}")) drop;
+		}
 	}
 }
 
@@ -1090,13 +1165,24 @@ route[WITHINDLG] {
 # "From Asterisk" = FLT_PBX; anything else (carrier, vendor, phone, a peer edge relaying a phone's
 # request) is the far side.
 route[INDLG_SDP] {
-{% for leg, fs in [('carrier', F.plain), ('vendor', F.plain), ('staff_udp', F.plain), ('staff_tls', F.tls), ('staff_ws', F.ws)] %}
+{% for leg, fs, fp in [('carrier', F.plain, None), ('vendor', F.plain, None), ('staff_udp', F.plain, FP.plain), ('staff_tls', F.tls, FP.tls), ('staff_ws', F.ws, None)] %}
 	{% if not loop.first %}} else {% endif %}if (check_route_param("leg={{ leg }}")) {
 		if (isflagset(FLT_PBX)) {
+{% if fp %}
+			# ;pn=1: the phone is on the private network (initial INVITE): keep its private address.
+			if (check_route_param("pn=1")) rtpengine_offer("{{ fp.pbx_offer }}");
+			else rtpengine_offer("{{ fs.pbx_offer }}");
+{% else %}
 			rtpengine_offer("{{ fs.pbx_offer }}");
+{% endif %}
 			$avp(rtp_answer) = "{{ fs.pbx_answer }}";
 		} else {
+{% if fp %}
+			if (check_route_param("pn=1")) rtpengine_offer("{{ fp.far_offer }}");
+			else rtpengine_offer("{{ fs.far_offer }}");
+{% else %}
 			rtpengine_offer("{{ fs.far_offer }}");
+{% endif %}
 			$avp(rtp_answer) = "{{ fs.far_answer }}";
 		}
 		t_on_reply("RTP_REPLY");

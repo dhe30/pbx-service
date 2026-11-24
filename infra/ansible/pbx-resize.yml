@@ -1,0 +1,283 @@
+# Resize pbx nodes (more vCPUs) one at a time without dropping calls. The resize itself is a click
+# in the Clanode UI (it reboots the VM); this playbook does everything around it:
+#   0. skip a node that already has >= resize_vcpus vCPUs (re-runs resume where they stopped)
+#   1. refuse during the peak (11-23 UTC) unless -e resize_allow_peak=true, refuse if no OTHER pbx
+#      node is in service on some edge, refuse if the other nodes are already > 70 % full
+#   2. drain: dispatcher state d on every edge, wait for 0 calls (up to pbx_drain_wait_min, 45)
+#   3. PAUSE: you resize the VM in Clanode, wait until it shows Running, press Enter
+#   4. wait for SSH, check vCPUs and that the private IP is unchanged
+#   5. asterisk.conf maxcalls = 80 x vCPUs, restart Asterisk + call app, wait for /health
+#   6. dispatcher state a on every edge
+# A failure after the drain leaves the node DRAINED (state d) for a human; before it, the node is put
+# back. Runbook (when, order, rollback): README §2.4 "Resizing pbx nodes".
+#
+#   ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1 -e resize_vcpus=6
+#   ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1:pbx-2:pbx-3 -e resize_vcpus=6
+#
+# resize_vcpus: the vCPU count of the target plan (Clanode 16G = 6 on Linode's plan table; read it
+# off the resize page). Run it on mon-1 (memory: SSH from the laptop to our public IPs is lossy).
+- name: Resize pbx nodes (drain -> Clanode resize -> maxcalls -> back in service)
+  hosts: pbx
+  become: true
+  serial: 1
+  gather_facts: true
+  vars:
+    pbx_ds_uri: "sip:{{ private_ip }}:{{ asterisk_sip_port | default(5060) }}"
+    resize_peak_utc: [11, 23]          # [first, last] UTC hour of the grader's business-hours peak
+    resize_max_others_full: 0.70       # refuse if the other nodes are fuller than this (calls / maxcalls)
+  tasks:
+    - name: resize_vcpus is required
+      ansible.builtin.assert:
+        that: resize_vcpus is defined and (resize_vcpus | int) > 0
+        fail_msg: "Pass -e resize_vcpus=<vCPUs of the target plan> (16G = 6 on Linode's table)."
+      run_once: true
+
+    - name: Already resized?
+      ansible.builtin.set_fact:
+        resize_needed: "{{ (ansible_processor_vcpus | int) < (resize_vcpus | int) }}"
+
+    - name: Nothing to do
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} already has {{ ansible_processor_vcpus }} vCPUs; only maxcalls is checked."
+      when: not (resize_needed | bool)
+
+    - name: Resize one node
+      when: resize_needed | bool
+      block:
+        # ---- 1. guards (nothing changed yet) --------------------------------------------------
+        - name: Refuse during the peak
+          ansible.builtin.assert:
+            that: >-
+              (resize_allow_peak | default(false) | bool) or
+              not (rs_hour >= resize_peak_utc[0] and rs_hour <= resize_peak_utc[1])
+            fail_msg: >-
+              It is {{ rs_hour }}h UTC, inside the peak ({{ resize_peak_utc[0] }}-{{ resize_peak_utc[1] }} UTC).
+              Draining a node now pushes its calls onto the others. Re-run off-peak, or with -e resize_allow_peak=true.
+          vars:
+            rs_hour: "{{ now(utc=true).hour | int }}"
+
+        - name: Is this node in the dispatcher list of every edge?
+          ansible.builtin.shell: |
+            kamcmd dispatcher.list | grep -cF 'URI: {{ pbx_ds_uri }}' || true
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['edge'] }}"
+          register: rs_known
+          changed_when: false
+
+        - name: The edges must route to this node (else just resize it, nothing to drain)
+          ansible.builtin.assert:
+            that: (rs_known.results | map(attribute='stdout') | map('int') | select('gt', 0) | list | length) == (groups['edge'] | length)
+            fail_msg: "{{ inventory_hostname }} is missing from some edge's dispatcher list; check `kamcmd dispatcher.list`."
+
+        - name: Other pbx nodes in service, per edge
+          ansible.builtin.shell: |
+            set -o pipefail
+            kamcmd dispatcher.list | grep -E 'URI|FLAGS' | paste - - | grep -v '{{ pbx_ds_uri }}' | grep -c 'FLAGS: A' || true
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['edge'] }}"
+          register: rs_others
+          changed_when: false
+
+        - name: Refuse to drain the last pbx node in service
+          ansible.builtin.assert:
+            that: rs_others.results | selectattr('stdout', 'equalto', '0') | list | length == 0
+            fail_msg: "No other pbx node is in service on some edge. Put one back first (kamcmd dispatcher.set_state a 1 sip:<ip>:5060)."
+
+        # "N of M max active calls" on every OTHER pbx node: is there room for this node's calls?
+        - name: Calls on the other pbx nodes
+          ansible.builtin.command: asterisk -rx 'core show channels count'
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['pbx'] | difference([inventory_hostname]) }}"
+          register: rs_load
+          changed_when: false
+          failed_when: false
+
+        - name: Room on the other nodes
+          ansible.builtin.set_fact:
+            rs_used: "{{ rs_load.results | map(attribute='stdout') | map('regex_search', '[0-9]+(?= of [0-9]+ max active call)') | map('default', '0', true) | map('int') | sum }}"
+            rs_cap: "{{ rs_load.results | map(attribute='stdout') | map('regex_search', '(?<= of )[0-9]+(?= max active call)') | map('default', '0', true) | map('int') | sum }}"
+
+        - name: Refuse if the other nodes are already nearly full
+          ansible.builtin.assert:
+            that: (rs_cap | int) > 0 and ((rs_used | int) / (rs_cap | int)) <= (resize_max_others_full | float)
+            fail_msg: >-
+              The other pbx nodes run {{ rs_used }} of {{ rs_cap }} calls
+              (> {{ (resize_max_others_full | float * 100) | int }} %). Draining {{ inventory_hostname }} now would
+              overflow them. Wait for less traffic.
+            success_msg: "Other nodes: {{ rs_used }} of {{ rs_cap }} calls."
+
+        # ---- 2. drain ---------------------------------------------------------------------------
+        - name: Mark the drain as started (from here a failure leaves the node drained)
+          ansible.builtin.set_fact:
+            rs_drained: true
+
+        - name: "Drain {{ inventory_hostname }} on every edge (dispatcher state d)"
+          ansible.builtin.command: kamcmd dispatcher.set_state d 1 {{ pbx_ds_uri }}
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['edge'] }}"
+          changed_when: true
+
+        - name: "Waiting for 0 calls (up to {{ pbx_drain_wait_min | default(45) }} min)"
+          ansible.builtin.command: asterisk -rx 'core show channels count'
+          register: rs_calls
+          until: (((rs_calls.stdout | regex_search('[0-9]+(?= active call| of [0-9]+ max active call)')) or '1') | int) == 0
+          retries: "{{ ((pbx_drain_wait_min | default(45) | int) * 60 / 15) | int }}"
+          delay: 15
+          changed_when: false
+
+        # ---- 3. the resize (by hand) -------------------------------------------------------------
+        - name: Resize in Clanode
+          ansible.builtin.pause:
+            prompt: |
+
+              {{ inventory_hostname }} ({{ private_ip }}) is drained and has 0 calls.
+              Now, in Clanode (https://clanode.compas.cs.stonybrook.edu/linodes):
+                {{ inventory_hostname }} -> Resize -> the plan with {{ resize_vcpus }} vCPUs (16G) -> Resize.
+              Wait until it shows Running again, then press Enter here.
+              (Ctrl+C then A aborts; the node stays drained, see README 2.4 for putting it back.)
+
+        - name: Resized (from here a failure leaves the node drained)
+          ansible.builtin.set_fact:
+            rs_resized: true
+
+        # ---- 4. back up, right size, same address --------------------------------------------------
+        - name: Wait for SSH after the resize reboot
+          ansible.builtin.wait_for_connection:
+            delay: 5
+            timeout: 1800
+
+        - name: Re-read the hardware
+          ansible.builtin.setup:
+            gather_subset: [hardware, network]
+
+        - name: Check vCPUs and address
+          ansible.builtin.assert:
+            that:
+              - (ansible_processor_vcpus | int) >= (resize_vcpus | int)
+              - ansible_default_ipv4.address == private_ip
+            fail_msg: >-
+              After the resize {{ inventory_hostname }} has {{ ansible_processor_vcpus }} vCPUs and address
+              {{ ansible_default_ipv4.address }} (expected >= {{ resize_vcpus }} and {{ private_ip }}).
+              It stays drained.
+
+      rescue:
+        # Drained but not resized yet (drain timed out, or aborted at the pause): the node runs as
+        # before, so it can take calls again. After the resize: leave it drained for a human.
+        - name: Put the node back in service (nothing was resized)
+          ansible.builtin.command: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['edge'] }}"
+          changed_when: true
+          when:
+            - rs_drained | default(false) | bool
+            - not (rs_resized | default(false) | bool)
+
+        - name: Stop
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }}: stopped at "{{ ansible_failed_task.name }}".
+              {% if not (rs_drained | default(false) | bool) %}Nothing was changed.
+              {% elif not (rs_resized | default(false) | bool) %}It is back in service; nothing was resized.
+              {% else %}It was resized and is LEFT DRAINED (dispatcher state d). Fix it, then re-run this playbook
+              for it: it sees the new size, sets maxcalls, restarts and puts it back.{% endif %}
+
+    # A node an earlier run resized but left drained (state d on every edge, 0 calls): finish it.
+    - name: Left drained by an earlier run?
+      when: not (resize_needed | bool)
+      block:
+        - name: Dispatcher flags for this node, per edge
+          ansible.builtin.shell: |
+            set -o pipefail
+            kamcmd dispatcher.list | grep -E 'URI|FLAGS' | paste - - | grep -F '{{ pbx_ds_uri }}' | grep -o 'FLAGS: [A-Z]*' || true
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['edge'] }}"
+          register: rs_flags
+          changed_when: false
+
+        - name: Calls on this node
+          ansible.builtin.command: asterisk -rx 'core show channels count'
+          register: rs_now
+          changed_when: false
+
+        - name: Treat it as drained
+          ansible.builtin.set_fact:
+            rs_drained: true
+          when:
+            - rs_flags.results | map(attribute='stdout') | select('match', 'FLAGS: D') | list | length == (groups['edge'] | length)
+            - (((rs_now.stdout | regex_search('[0-9]+(?= active call| of [0-9]+ max active call)')) or '1') | int) == 0
+
+    # ---- 5. maxcalls for the vCPUs it has now (also on a re-run of an already-resized node) ----------
+    # 80 per vCPU, like roles/asterisk/defaults (an inventory host var asterisk_maxcalls still wins).
+    - name: maxcalls for this size
+      ansible.builtin.set_fact:
+        rs_maxcalls: "{{ hostvars[inventory_hostname]['asterisk_maxcalls'] | default((ansible_processor_vcpus | int) * 80, true) }}"
+
+    - name: Override in the inventory?
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} uses maxcalls {{ rs_maxcalls }}; {{ ansible_processor_vcpus }} vCPUs x 80 would be
+          {{ (ansible_processor_vcpus | int) * 80 }}. Remove asterisk_maxcalls from its inventory line if that is stale.
+      when: (rs_maxcalls | int) != (ansible_processor_vcpus | int) * 80
+
+    - name: asterisk.conf (maxcalls)
+      ansible.builtin.template:
+        src: "{{ repo_root }}/telephony/asterisk/asterisk.conf.j2"
+        dest: /etc/asterisk/asterisk.conf
+        owner: asterisk
+        group: asterisk
+        mode: "0640"
+      vars:
+        asterisk_maxcalls: "{{ rs_maxcalls }}"
+      register: rs_conf
+
+    # A changed asterisk.conf needs a restart. Only safe while the node has no calls: always true
+    # right after the resize (drained, rebooted); on an already-resized node it must be drained by hand.
+    - name: Restart needed on a node in service?
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }}: asterisk.conf changed (maxcalls {{ rs_maxcalls }}) but the node was not drained by
+          this run. Restart it through the normal rollout: ansible-playbook site.yml --limit {{ inventory_hostname }}.
+      when: rs_conf.changed and not (rs_drained | default(false) | bool)
+
+    - name: Restart Asterisk and the call app (node is drained)
+      when: rs_drained | default(false) | bool
+      block:
+        - name: Restart Asterisk
+          ansible.builtin.systemd:
+            name: asterisk
+            state: restarted
+            daemon_reload: true
+
+        - name: Restart the call app
+          ansible.builtin.systemd:
+            name: pbx-ari-app
+            state: restarted
+
+        - name: Wait until the call app is healthy (ARI connected + DB reachable)
+          ansible.builtin.uri:
+            url: http://127.0.0.1:9101/health
+          register: rs_health
+          retries: 45
+          delay: 2
+          until: rs_health.status == 200
+
+        - name: Asterisk reports the new limit
+          ansible.builtin.command: asterisk -rx 'core show channels count'
+          register: rs_after
+          changed_when: false
+          failed_when: ("of " ~ rs_maxcalls ~ " max active call") not in rs_after.stdout
+
+        # ---- 6. back in service ---------------------------------------------------------------------
+        - name: "Put {{ inventory_hostname }} back on every edge (dispatcher state a)"
+          ansible.builtin.command: kamcmd dispatcher.set_state a 1 {{ pbx_ds_uri }}
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['edge'] }}"
+          changed_when: true
+
+        - name: Done
+          ansible.builtin.debug:
+            msg: "{{ inventory_hostname }}: {{ ansible_processor_vcpus }} vCPUs, {{ rs_after.stdout_lines | last }}, back in service."

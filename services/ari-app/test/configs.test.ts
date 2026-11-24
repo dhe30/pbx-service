@@ -65,7 +65,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).toMatch(/modparam\("rtpengine", "extra_id_pv", "\$avp\(extra_id\)"\)/);
       const br = block(kam, 'branch_route[DEV_BRANCH]');
       expect(br).toMatch(/\$avp\(extra_id\) = @via\[1\]\.branch \+ \$T_branch_idx;/);
-      expect(br.match(/rtpengine_offer\("via-branch=extra /g)).toHaveLength(3);
+      expect(br.match(/rtpengine_offer\("via-branch=extra /g)).toHaveLength(5);   // ws, tls, udp + private-network tls, udp
       const rep = block(kam, 'onreply_route[DEV_REPLY]');
       expect(rep).toMatch(/\$avp\(extra_id\) = @via\[2\]\.branch \+ \$T_branch_idx;/);
       expect(rep.match(/rtpengine_answer\("via-branch=extra /g)).toHaveLength(3);
@@ -120,12 +120,19 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[RELAY]').indexOf('route(NH_TIMERS)')).toBeLessThan(block(kam, 'route[RELAY]').indexOf('t_relay()'));
       expect(block(kam, 'failure_route[PBX_FAILOVER]')).toMatch(/route\(NH_TIMERS\);\n\s*t_relay\(\);/);
     });
-    it('only 503 or a dead node marks a pbx node inactive; a 500 (one failed call) goes to the caller', () => {
+    it('only 503 or a dead node fails over to the next pbx node; a 500 (one failed call) goes to the caller', () => {
       // 2026-11-20 19:49: vendor DNS outage -> each failed PSTN call (500) marked every pbx node
       // inactive in turn and other calls got 503 "no pbx node available".
       const fo = block(kam, 'failure_route[PBX_FAILOVER]');
       expect(fo).toContain('if (t_check_status("503") || (t_branch_timeout() && !t_branch_replied())) {');
       expect(fo).not.toMatch(/t_check_status\("[^"]*500/);
+    });
+    it('a 503 (pbx at maxcalls) fails over without marking the node; only a timeout marks it (2026-11-23 peak)', () => {
+      // Marking on capacity 503s took a full node out for 5-10 s at a time and wasted its freed slots.
+      const fo = block(kam, 'failure_route[PBX_FAILOVER]');
+      expect(fo.match(/ds_mark_dst\(/g)).toHaveLength(1);
+      expect(fo).toMatch(/if \(!t_check_status\("503"\)\) \{\n\s*ds_mark_dst\("ip"\);/);
+      expect(fo.indexOf('ds_mark_dst(')).toBeLessThan(fo.indexOf('ds_next_dst()'));
     });
     it('log lines end in a \\n escape, not a line break inside the string', () => {
       expect(kam).not.toMatch(/xlog\("L_[A-Z]+", "[^"\n]*\n"\)/);
@@ -148,7 +155,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('toward carriers, vendors and SIP phones (UDP/TLS): PCMU + PCMA, G.729, G.723.1, Opus offered', () => {
       const br = block(kam, 'branch_route[DEV_BRANCH]');
       const plainTls = [...br.matchAll(/rtpengine_offer\("([^"]+)"\)/g)].map((m) => m[1]!).filter((f) => !f.includes('SAVPF'));
-      expect(plainTls).toHaveLength(2);
+      expect(plainTls).toHaveLength(4);   // udp, tls, each also for a private-network phone
       for (const f of [...plainTls, ...offers('route[TO_VENDOR]')]) {
         expect(f).toMatch(/codec-transcode=PCMA codec-transcode=G729 codec-transcode=G723 codec-transcode=opus/);
       }
@@ -169,7 +176,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('in-dialog re-INVITEs (hold/resume, transfer) cover all five leg types both ways', () => {
       const ind = block(kam, 'route[INDLG_SDP]');
       for (const leg of ['carrier', 'vendor', 'staff_udp', 'staff_tls', 'staff_ws']) expect(ind).toContain(`check_route_param("leg=${leg}")`);
-      expect(ind.match(/rtpengine_offer\(/g)).toHaveLength(10);
+      expect(ind.match(/rtpengine_offer\(/g)).toHaveLength(14);   // 5 legs x 2 directions + private-network staff_udp/staff_tls x 2
     });
   });
 
@@ -304,6 +311,21 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(kam).toMatch(/is_in_subnet\("\$si", "130\.245\.136\.0\/24"\)\) setflag\(FLT_TRUSTED\)/);
       expect(kam).toMatch(/is_in_subnet\("\$si", "130\.245\.136\.142\/32"\) && \$pr == "udp"\)/);
       expect(block(kam, 'route[REQINIT]')).toMatch(/if \(isflagset\(FLT_DEVICE_SRC\) && !isflagset\(FLT_TRUSTED\)\)/);
+    });
+    it('phones on the private network: trusted (no pike), private media address, ;pn=1 in-dialog', () => {
+      const cls = block(kam, 'route[CLASSIFY]');
+      // after our own nodes (FLT_PBX / FLT_PEER return earlier), before FLT_DEVICE_SRC
+      expect(cls).toMatch(/if \(is_in_subnet\("\$si", "10\.0\.0\.0\/16"\)\) \{\n[^}]*setflag\(FLT_TRUSTED\);\n[^}]*setflag\(FLT_PRIVNET\)/);
+      expect(cls.indexOf('FLT_PRIVNET')).toBeGreaterThan(cls.indexOf('ds_is_from_list'));
+      const dev = block(kam, 'route[FROM_DEVICE]');
+      expect(dev).toMatch(/if \(isflagset\(FLT_PRIVNET\)\) \{\n\t+add_rr_param\(";pn=1"\);\n\t+record_route\(\);\n\t+rtpengine_offer\("direction=internal direction=internal /);
+      const br = block(kam, 'branch_route[DEV_BRANCH]');
+      expect(br).toMatch(/is_in_subnet\("\$var\(rh\)", "10\.0\.0\.0\/16"\)\) setbflag\(FLB_PRIV\)/);
+      expect(br).toMatch(/via-branch=extra direction=internal direction=internal .*RTP\/SAVP SDES-only/);
+      const indlg = block(kam, 'route[INDLG_SDP]');
+      expect(indlg.match(/check_route_param\("pn=1"\)/g)).toHaveLength(4);   // staff_udp + staff_tls, both directions
+      // browsers and the carrier/vendor legs keep the public address
+      expect(block(kam, 'route[FROM_CARRIER]')).not.toMatch(/direction=internal direction=internal/);
     });
     it('a carrier entry with :port matches that source port only (fake carrier + phones on one host)', () => {
       const cls = block(kam2, 'route[CLASSIFY]');

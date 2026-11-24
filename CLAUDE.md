@@ -230,7 +230,8 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
   htable cache, view public.kamailio_did_tenant). Kamailio never writes to Postgres.
 - Dispatcher set 1 = pbx nodes; algorithm 7 hashes on the account id (auth_db load_credentials
   -> $avp(tenant) for phones; DID lookup for carrier calls), round-robin if unknown; failover with
-  ds_next_dst on 503/timeout (NOT 500: one failed call, 2026-11-20).
+  ds_next_dst on 503/timeout (NOT 500: one failed call, 2026-11-20); only a timeout marks the node
+  inactive, a 503 (maxcalls) just moves that call on (2026-11-24, V-T23).
 - Routes: FROM_CARRIER (carrier_cidrs), FROM_DEVICE (digest auth 407; adds X-PBX-Src: device +
   X-PBX-User), TO_DEVICES (Asterisk -> lookup -> parallel fork; per-branch transport via branch
   flags; rtpengine via-branch=extra per branch), TO_VENDOR (Asterisk -> PSTN vendor host, sent to the last address that resolved: route[VENDOR_DST], V-P14; Asterisk
@@ -244,6 +245,9 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
   decrypted) to hourly pcaps in /var/log/pbx/sipdump, kept 12 h and at most 10 GB (pbx-sipdump-prune timer, 2026-11-22); search with loadtest/diag/sip-history.py.
 - Security: X-PBX-* headers stripped from outside; pike + UA blacklist for untrusted sources only
   (trusted_tester_cidrs = course simulators exempt, B2).
+- Private-network phones (2026-11-23): the course sends part of its phones' traffic to our PRIVATE
+  IPs. A device source in private_device_cidrs (10.0.0.0/16, after our own nodes) is trusted (no pike)
+  and gets rtpengine's private media address (FLT_PRIVNET / FLB_PRIV, Record-Route ;pn=1). V-A9.
 
 ---------------------------------------------------------------------------------------------
 ## 8. rtpengine
@@ -387,7 +391,9 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 - Postgres 16 + Patroni + etcd on db-1..3 (etcd quorum of 3). Data on Volumes.
 - Local HAProxy on each DB client node: 127.0.0.1:5432 -> server whose GET :8008/primary == 200.
 - All clients (API, ARI app, Kamailio) must retry/reconnect across a 10–30 s failover.
-- Object store: S3-compatible, self-hosted on db-1..3 with replication factor 3
+- Object store: S3-compatible, self-hosted on db-1..3 with replication factor 3. Since 2026-11-23
+  new blocks go to a 250 GB Volume per db node (/var/lib/garage/data2, garage_volume_data_dir);
+  the root-disk dir is read_only (docs/incidents/2026-11-23-db-disks-full.md)
   (candidates: Garage or SeaweedFS — evaluate; code only uses the S3 API). [VERIFY]
 - Backups: nightly base backup + WAL archiving (pgBackRest or wal-g) to storage NOT on the db
   nodes (e.g., mon-1 volume). Restore must be tested.
@@ -511,7 +517,8 @@ Still open:
 - Platform: VM quota, floating/shared IPs, NodeBalancers, API access, outbound internet,
   A records / cert issuance for the group domain (needed for TLS/WSS).
 - Are external services allowed (GitHub Actions, ghcr.io, Let's Encrypt, public STUN)?
-- Retention requirements for recordings/voicemail?
+- Retention: ANSWERED 2026-11-23 — recordings 7 days (API scheduler deletes them after 7 d + 1 h);
+  voicemail kept until deleted.
 
 ---------------------------------------------------------------------------------------------
 ## 19. Hold + call waiting (added 2026-10-27, implemented in phase 1 on 2026-10-28)

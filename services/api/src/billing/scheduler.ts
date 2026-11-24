@@ -1,6 +1,6 @@
 import { billingPeriod, withRetry, type Db, type Sql } from '@pbx/shared';
 import type { FastifyBaseLogger } from 'fastify';
-import { cleanupOrphanVoicemailMedia } from '../maintenance.js';
+import { cleanupOldRecordings, cleanupOrphanVoicemailMedia } from '../maintenance.js';
 import type { MediaStore } from '../object-store.js';
 import { MIN_CHARGE_CENTS, altPricingEnabled, callPricingAt, inAltWindow, planAt, pricesAt } from './catalog.js';
 import { rechargeNext } from './credit.js';
@@ -22,7 +22,8 @@ import type { StripeClient } from './stripe.js';
 //   3. past due: accounts with an invoice still unpaid 24 h after its period ended. The call path
 //      then blocks outgoing external legs (tenants.status, NOTIFY pbx_config).
 //   4. lapse: add-ons whose cancelled period ended are switched off (tenant_settings).
-//   5. housekeeping (with a store): voicemail audio left behind by *98 deletes (src/maintenance.ts).
+//   5. housekeeping (with a store): voicemail audio left behind by *98 deletes, and call
+//      recordings past their 7-day retention (src/maintenance.ts).
 //   6. prepaid top-ups: every account whose credit is below its threshold gets one top-up charged
 //      (credit.ts). Runs first, so a new account's credit is charged within one tick.
 // Prepaid usage: calls started at or after tenants.prepaid_since are deducted from the
@@ -52,6 +53,7 @@ export interface TickResult {
   pastDue: number;
   lapsed: number;
   orphansDeleted: number;
+  recordingsDeleted: number;
   toppedUp: number;
   topUpsFailed: number;
 }
@@ -75,7 +77,7 @@ export async function applyCallPricing(sql: Sql, now = new Date()): Promise<bool
 }
 
 export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<TickResult> {
-  const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0, orphansDeleted: 0, toppedUp: 0, topUpsFailed: 0 };
+  const r: TickResult = { invoiced: 0, charged: 0, failed: 0, pastDue: 0, lapsed: 0, orphansDeleted: 0, recordingsDeleted: 0, toppedUp: 0, topUpsFailed: 0 };
   // First, and on its own: a failure here must not stop billing.
   try {
     if (await applyCallPricing(d.sql, now)) d.log.info({ alt: inAltWindow(now), ...callPricingAt(now) }, 'per-minute prices switched');
@@ -99,6 +101,11 @@ export async function runBillingTick(d: BillingDeps, now = new Date()): Promise<
   r.pastDue = await markPastDue(d, now);
   if (d.store) {
     r.orphansDeleted = await cleanupOrphanVoicemailMedia({ sql: d.sql, store: d.store, log: d.log }, now);
+    try {
+      r.recordingsDeleted = await cleanupOldRecordings({ sql: d.sql, store: d.store, log: d.log }, now);
+    } catch (err) {
+      d.log.error({ err }, 'recording retention cleanup failed');
+    }
   }
   if (r.invoiced || r.charged || r.failed || r.pastDue || r.lapsed || r.toppedUp || r.topUpsFailed) d.log.info({ ...r }, 'billing tick');
   return r;
