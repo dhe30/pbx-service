@@ -71,6 +71,14 @@ ari_user: "pbxapp"
 # Guards against a browser that closed while holding. Must stay below rtpengine silent-timeout.
 hold_max_sec: 1800
 
+# Asterisk call cap per vCPU (asterisk.conf maxcalls = vCPUs x this; an inventory host var
+# asterisk_maxcalls still wins). It is admission control: above it a node answers 503 and Kamailio
+# tries the next one, which keeps overload off the media nodes. At the 2026-11-24 05:46 peak
+# pbx-1..3 (8 vCPU) sat at 640 with 61-67 % CPU (~10 % base + ~0.09 % per call: 100 -> ~80 %), while
+# media-1..3 (4 vCPU) ran 92-99 %. Raise to 100 only when every media node is 8 vCPU. Applying a new
+# value needs a drain + restart per node: pbx-resize.yml -e maxcalls_apply=true (README §2.4).
+asterisk_calls_per_vcpu: 80
+
 # PJSIP trunk names toward the edges, in preference order: edge-a -> groups['edge'][0], ...
 edge_trunk_names: "{{ ['edge-a', 'edge-b', 'edge-c', 'edge-d'][:groups['edge'] | length] }}"
 # Where site.yml installs rtpengine: dedicated media nodes when the inventory has a `media` group
