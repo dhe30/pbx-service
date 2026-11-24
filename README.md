@@ -217,6 +217,30 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   Remove a stale `asterisk_maxcalls=` from the node's inventory line first, or it wins. The resize
   does not change the dispatcher hash (same nodes), so calls keep their node. First used for
   pbx-1..3 4G -> 16G (8 vCPU, maxcalls 640) on 2026-11-24.
+  If the drain times out, the run lists the calls still up (channel, caller, seconds up) before it
+  puts the node back: wait longer (`-e pbx_drain_wait_min=90`) or hang the stuck one up
+  (`asterisk -rx 'channel request hangup <channel>'`).
+- **Resizing db nodes** (Postgres + Patroni, etcd and Garage on each; 1 vCPU saturated at the
+  2026-11-24 05:40 ramp): `db-resize.yml`, one node at a time, off-peak (same 11-23 UTC guard and
+  override). Never two db nodes down at once: that loses the etcd and Garage quorums and Patroni
+  stops all writes. Run it on mon-1 (or WSL), in inventory order:
+  1. Dry run first (validates the vault, etcd, Garage and that the rendered `patroni.yml` differs
+     only in memory lines): `ansible-playbook db-resize.yml --ask-vault-pass --limit db-1 -e
+     resize_vcpus=1`. A node already at the size only gets that check; nothing restarts.
+  2. `ansible-playbook db-resize.yml --ask-vault-pass -e resize_vcpus=<vCPUs of the plan>`.
+     Per node: guards (Patroni has every member, one Leader, replicas streaming within 16 MB; etcd
+     healthy on all three; Garage sees all three; the Garage Volume is mounted). A Leader is
+     switched over to the sync standby first (~5 s of write pause). Then tag `nosync` + reload
+     (Patroni moves synchronous replication elsewhere, so no COMMIT waits on a node that is going
+     away), stop Patroni, and **pause**: resize in Clanode, keep the Volume attached, wait for
+     Running, press Enter. After the reboot: vCPUs, address and Volume checked, etcd / Patroni /
+     Garage whole again, `patroni.yml` re-rendered (`shared_buffers` 25 % and
+     `effective_cache_size` 70 % of the new RAM, nosync off) and Postgres restarted once **as a
+     replica**. The primary is not switched back.
+  Stopped before the resize: the tag is removed and Patroni restarted (a normal replica). Stopped
+  after it: re-run the same command for that node. A rendered `patroni.yml` that would change more
+  than the memory lines (repo or inventory drifted from the last deploy) stops the run; read
+  `site.yml --check --diff --limit db-N`, then `-e resize_allow_config_diff=true`. V-P15, V-P16.
 - **Adding media nodes** (rtpengine off the edges; the edges' CPU is mostly rtpengine). Kamailio
   then has two rtpengine sets: set 0 = the edges (where calls in progress live), set 1 = the media
   nodes, and a live switch decides which set NEW calls use. In this order:
