@@ -240,7 +240,9 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   Stopped before the resize: the tag is removed and Patroni restarted (a normal replica). Stopped
   after it: re-run the same command for that node. A rendered `patroni.yml` that would change more
   than the memory lines (repo or inventory drifted from the last deploy) stops the run; read
-  `site.yml --check --diff --limit db-N`, then `-e resize_allow_config_diff=true`. V-P15, V-P16.
+  the diff it printed, then `-e resize_allow_config_diff=true`. Such changes (e.g. `pg_hba` lines
+  for new inventory hosts: media-4/5 on 2026-11-24) apply on the Patroni reload; Postgres restarts
+  only when `shared_buffers` changed. V-P15, V-P16.
 - **Adding media nodes** (rtpengine off the edges; the edges' CPU is mostly rtpengine). Kamailio
   then has two rtpengine sets: set 0 = the edges (where calls in progress live), set 1 = the media
   nodes, and a live switch decides which set NEW calls use. In this order:

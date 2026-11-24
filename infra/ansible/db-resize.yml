@@ -129,14 +129,14 @@
                   + (rs_pl.stdout | from_json | selectattr('Role', 'equalto', 'Replica') | list))
                  | map(attribute='Member') | first | default('') }}
 
-        - name: Switch the primary to {{ rs_candidate }} (about 5 s of write pause)
+        - name: Switch the primary to the sync standby (about 5 s of write pause)
           ansible.builtin.command: >-
             patronictl switchover {{ patroni_scope }} --leader {{ inventory_hostname }}
             --candidate {{ rs_candidate }} --force
           when: rs_was_leader | bool
           changed_when: true
 
-        - name: Wait until {{ rs_candidate }} leads and this node streams from it
+        - name: Wait until the new primary leads and this node streams from it
           ansible.builtin.command: patronictl list -f json
           register: rs_after_sw
           until: >-
@@ -313,15 +313,20 @@
       delay: 5
       changed_when: false
 
-    - name: This node's role now
+    - name: This node's role now; did the memory settings change?
       ansible.builtin.set_fact:
         rs_role_now: "{{ (rs_me.stdout | from_json | selectattr('Member', 'equalto', inventory_hostname) | first).Role }}"
+        # pg_hba and most other lines apply on the reload above; only shared_buffers needs a restart.
+        rs_mem_changed: >-
+          {{ rs_cfg_check.changed and
+             ((rs_cfg_check.diff | first).before.splitlines() | select('search', 'shared_buffers:') | list)
+             != ((rs_cfg_check.diff | first).after.splitlines() | select('search', 'shared_buffers:') | list) }}
 
     # shared_buffers needs a Postgres restart. Only on a replica (this playbook switched the leader
     # away before the resize; a re-run on a node that leads again would need a switchover first).
     - name: Restart Postgres on this replica for the new shared_buffers
       ansible.builtin.command: patronictl restart {{ patroni_scope }} {{ inventory_hostname }} --force
-      when: rs_cfg.changed and rs_role_now != 'Leader'
+      when: (rs_mem_changed | bool) and rs_role_now != 'Leader'
       changed_when: true
 
     - name: Leader with new settings pending
@@ -329,7 +334,7 @@
         msg: >-
           {{ inventory_hostname }} is the Leader, so Postgres was not restarted: shared_buffers takes effect at the
           next restart. Do it off-peak: `patronictl switchover`, then `patronictl restart {{ patroni_scope }} {{ inventory_hostname }}`.
-      when: rs_cfg.changed and rs_role_now == 'Leader'
+      when: (rs_mem_changed | bool) and rs_role_now == 'Leader'
 
     - name: Wait until this node streams again after the restart
       ansible.builtin.command: patronictl list -f json
