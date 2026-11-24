@@ -44,7 +44,7 @@
       block:
         - name: Registrations and active pbx nodes before
           ansible.builtin.shell: |
-            kamcmd stats.get_statistics usrloc:registered_users | awk '{print $3}'
+            kamcmd stats.get_statistics usrloc: | awk '/registered_users/{print $3}'
             kamcmd dispatcher.list | grep -c 'FLAGS: AP' || true
           register: before
           changed_when: false
@@ -81,7 +81,7 @@
           changed_when: false
 
         - name: Wait for the registrations from the peer edge (DMQ sync)
-          ansible.builtin.shell: kamcmd stats.get_statistics usrloc:registered_users | awk '{print $3}'
+          ansible.builtin.shell: "kamcmd stats.get_statistics usrloc: | awk '/registered_users/{print $3}'"
           register: ul_after
           retries: 15
           delay: 2
