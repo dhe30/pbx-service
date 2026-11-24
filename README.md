@@ -207,7 +207,7 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
 - **Resizing pbx nodes** (more vCPUs = more calls: maxcalls is 80 per vCPU): `pbx-resize.yml`, one
   node at a time, off-peak (it refuses 11-23 UTC unless `-e resize_allow_peak=true`, and refuses
   when the other nodes are already over 70 % of their maxcalls). Run it on mon-1:
-  `ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1 -e resize_vcpus=6` (6 = the
+  `ansible-playbook pbx-resize.yml --ask-vault-pass --limit pbx-1 -e resize_vcpus=8` (8 = the
   vCPUs of the target plan; read them off Clanode's resize page). It drains the node, waits for
   0 calls, then **pauses**: resize the VM in Clanode, wait for Running, press Enter. It then checks
   the vCPUs and that the private IP did not change, writes maxcalls into `asterisk.conf`, restarts
@@ -216,7 +216,7 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   node stays drained; re-run the same command (it finishes a node left drained at the new size).
   Remove a stale `asterisk_maxcalls=` from the node's inventory line first, or it wins. The resize
   does not change the dispatcher hash (same nodes), so calls keep their node. First used for
-  pbx-1..3 4G -> 16G on 2026-11-24.
+  pbx-1..3 4G -> 16G (8 vCPU, maxcalls 640) on 2026-11-24.
 - **Adding media nodes** (rtpengine off the edges; the edges' CPU is mostly rtpengine). Kamailio
   then has two rtpengine sets: set 0 = the edges (where calls in progress live), set 1 = the media
   nodes, and a live switch decides which set NEW calls use. In this order:
