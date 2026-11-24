@@ -210,6 +210,8 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('Asterisk -> vendor hosts goes through TO_VENDOR (rtpengine leg=vendor)', () => {
       expect(kam).toMatch(/\$rd == "us-vendor\.cse356\.compas\.cs\.stonybrook\.edu" \|\| \$rd == "intl-vendor\.cse356\.compas\.cs\.stonybrook\.edu"\) route\(TO_VENDOR\)/);
       expect(block(kam, 'route[TO_VENDOR]')).toMatch(/add_rr_param\(";leg=vendor"\)/);
+      // The vendor can take well over the 5 s default fr_timer to answer: wait up to 32 s.
+      expect(block(kam, 'route[TO_VENDOR]')).toMatch(/t_set_fr\(120000, 32000\);/);
       expect(block(kam, 'failure_route[VENDOR_FAILURE]')).toMatch(/t_check_status\("401\|407"\)/);
     });
     it('vendor legs go to a stored address, not a DNS lookup per call (2026-11-23 478 Unresolvable destination)', () => {

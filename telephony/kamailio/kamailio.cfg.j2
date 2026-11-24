@@ -863,6 +863,9 @@ route[TO_VENDOR] {
 	$avp(rtp_answer) = "{{ F.plain.pbx_answer }}";
 	t_on_reply("RTP_REPLY");
 	t_on_failure("VENDOR_FAILURE");
+	# Up to 32 s (= Asterisk timer B) for the vendor's first reply, not the 5 s default: on
+	# 2026-11-23 the vendor needed p50 3.5 s / p90 17 s, and 5 s timed out ~37 % of PSTN legs.
+	t_set_fr(120000, 32000);
 	route(SEND_PUBLIC);
 	route(RELAY);
 }
