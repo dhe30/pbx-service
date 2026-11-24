@@ -341,6 +341,15 @@ modparam("rtpengine", "setid_avp", "$avp(rtpset)")
 modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
 {% endif %}
 modparam("rtpengine", "rtpengine_disable_tout", 20)
+# Draining a node: `kamcmd rtpengine.enable udp:<ip>:2223 0` stops NEW calls going to it, and with
+# allow_op its calls in progress keep using it (re-INVITE refreshes, hold, BYE) until they end.
+# Without it (until 2026-11-24) the same command made every request of those calls fail with "no
+# available proxies": media-5 drained at 09:52:31 UTC -> its calls' 30 s session refreshes went to
+# Asterisk with the phone's raw SDP (500 SDP negotiation failed / 488), the grader's 09:53-09:55
+# us/phone_in failures. Only nodes disabled by RPC count; a node that times out is still skipped.
+# Relies on the module's Call-ID -> node table, which the edge that set the call up holds (its
+# Record-Route makes it do every in-dialog rtpengine command). [VERIFY V-T24]
+modparam("rtpengine", "rtpengine_allow_op", 1)
 # Wait per attempt for rtpengine's reply. Measured 2026-11-14 (10 min, 191 commands): replies take
 # 0.2-6 ms (same edge < 1.5 ms, cross-edge 1-6 ms). With 1000 ms, ONE lost UDP packet held the SIP
 # message for exactly 1 s (a re-INVITE's 200 OK took 1.008 s; the course's re-INVITE p95 ~1 s),

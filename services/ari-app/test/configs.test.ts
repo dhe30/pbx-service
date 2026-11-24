@@ -57,6 +57,10 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('UDP receive buffer 4 MB (208 KB overflowed on :5070 at the 2026-11-24 peak)', () => {
       expect(kam).toMatch(/^maxbuffer=4194304$/m);
     });
+    it('a media node disabled by RPC (drain) keeps serving its calls in progress', () => {
+      expect(kam).toMatch(/^modparam\("rtpengine", "rtpengine_allow_op", 1\)$/m);
+      expect(kam2).toMatch(/^modparam\("rtpengine", "rtpengine_allow_op", 1\)$/m);
+    });
   });
 
   describe('carrier on the private network (2026-11-24)', () => {
