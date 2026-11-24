@@ -175,6 +175,25 @@ describe('§3 *98: Cisco Unity standard conversation', () => {
     expect(h.ari.channels.has(ch)).toBe(false);
   });
 
+  // 2026-11-24 tickets: a busy mailbox got a new message while the caller was in the *98 menu;
+  // newest-first played and deleted THAT one, and "all new messages from before the call" stayed.
+  it('a message left DURING the *98 call is not played (or deleted): 3 removes one from before the call', async () => {
+    const { h, a, mb, m1, call } = await mailbox();
+    h.ari.playMs = 40;
+    const ch = call();
+    await heardPrompt(h, ch, 'sound:vm-onefor');
+    const late = await a.voicemail(mb, false, new Date(Date.now() + 1000)); // arrives mid-call
+    h.ari.dtmf(ch, '1');
+    await until(() => msgPlays(h, ch).length === 1);
+    const [first] = await db.sql<{ mediaId: string }[]>`select media_id from voicemails where id = ${m1}`;
+    expect(msgPlays(h, ch)[0]).toBe(`sound:/cache/${first!.mediaId}`);
+    h.ari.dtmf(ch, '3');
+    await until(async () => (await heard(m1)) === 'deleted', 2000, 'm1 deleted');
+    expect(await heard(late)).toBe(false); // untouched, still new
+    h.ari.remoteHangup(ch);
+    await h.settle();
+  });
+
   it('during playback: 2 saves (new -> saved) and moves to the next message', async () => {
     const { h, m1, m2, call } = await mailbox();
     h.ari.playMs = 40; // messages take a while to play, so keys arrive DURING playback
