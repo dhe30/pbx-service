@@ -101,7 +101,9 @@ rtpengine_weights_from_set: 2
 rtpengine_edge_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
 rtpengine_media_ips: "{{ groups.get('media', []) | map('extract', hostvars, 'private_ip') | list }}"
 # 1 since 2026-11-15 (switched live at ~21:35 UTC; media-1 + media-2 carry new calls).
-rtpengine_media_new_calls: 1
+# 2 since 2026-11-25 (switched live at 18:32:09 UTC on both edges after their restarts with set 2:
+# media-1..7; calls tagged ;rs=1 finish on set 1).
+rtpengine_media_new_calls: 2
 # Other edges, as seen from this host (empty for a single edge).
 edge_peer_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | reject('equalto', private_ip) | list }}"
 # Where the public listeners bind. Same as public_ip unless the provider NATs the public IP
