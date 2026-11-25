@@ -82,9 +82,10 @@ backend kamailio_ws
 backend api
     # /ready (not /health): it turns 503 as soon as an API process gets SIGTERM (deploys run
     # serial: 1), so this edge stops sending it requests before it closes (SHUTDOWN_DRAIN_MS 6 s >
-    # inter 2s x fall 2). Trade-off (backend-for-team.md): if the database is down cluster-wide,
-    # every API node is marked down and HAProxy answers 503 itself, which clients retry the same way.
-    option httpchk GET /ready
+    # inter 2s x fall 2). ?deps=0 skips the DB / object-store checks: those are shared by every app
+    # node, so a slow DB marked all of them down at once and HAProxy answered 503 to everything
+    # (1 min on 2026-11-25); now requests go through (slowly) and a dead node is still caught.
+    option httpchk GET /ready?deps=0
     http-check expect status 200
     default-server inter 2s fall 2 rise 2
     # Retry another app node when a connection fails (node died between checks).

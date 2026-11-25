@@ -57,6 +57,22 @@ describe('GET /ready', () => {
     expect(aborted).toBe(true);
   }, 15_000);
 
+  it('?deps=0 is 200 when a dependency fails, without running checks', async () => {
+    let ran = false;
+    const app = await build({ readinessChecks: { db: async () => { ran = true; throw new Error('slow'); } } });
+    const res = await app.inject({ method: 'GET', url: '/ready?deps=0' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'ok' });
+    expect(ran).toBe(false);
+  });
+
+  it('?deps=0 is still 503 while draining', async () => {
+    const app = await build({ isDraining: () => true });
+    const res = await app.inject({ method: 'GET', url: '/ready?deps=0' });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ status: 'draining' });
+  });
+
   it('is 503 while draining, without running checks', async () => {
     let ran = false;
     const app = await build({

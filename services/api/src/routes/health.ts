@@ -62,6 +62,13 @@ export const healthRoutes: FastifyPluginAsync<HealthOptions> = async (app, opts)
       if (opts.isDraining()) {
         return reply.status(503).send({ status: 'draining' });
       }
+      // ?deps=0: only "is this process serving and not shutting down". The edge HAProxies check
+      // this: the DB and object store are shared by every replica, so a slow dependency failed all
+      // of them at once and HAProxy answered 503 to every request (1 min on 2026-11-25) instead
+      // of letting requests through slowly.
+      if ((req.query as { deps?: string }).deps === '0') {
+        return reply.send({ status: 'ok' });
+      }
       // Run all checks in parallel, each bounded by the timeout, so /ready answers in < timeoutMs
       // even when a dependency hangs (HAProxy's check would otherwise time out instead).
       const names = Object.keys(opts.checks);

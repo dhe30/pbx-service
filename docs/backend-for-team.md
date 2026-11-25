@@ -554,13 +554,14 @@ the page, keep it in `sessionStorage`).
 | Endpoint | Use for |
 |---|---|
 | `GET /health` | Process alive. Never checks dependencies. Use for systemd/docker restarts. |
-| `GET /ready` | DB + object store reachable, not shutting down. Use for HAProxy routing and alerts. Answers within ~1.5 s even if a dependency hangs. Body names the failing check. |
+| `GET /ready` | DB + object store reachable, not shutting down. Use for alerts. Answers within ~1.5 s even if a dependency hangs. Body names the failing check. `?deps=0`: only "not shutting down" (HAProxy routes on this). |
 
-- **The edge HAProxy routes on `/ready`** (decided 2026-11-12, `edge_haproxy` role: `inter 2s fall 2
+- **The edge HAProxy routes on `/ready?deps=0`** (`/ready` decided 2026-11-12, `?deps=0` 2026-11-25, `edge_haproxy` role: `inter 2s fall 2
   rise 2`, `retries 2` + `redispatch`). Reason: `/ready` turns 503 on SIGTERM, so rolling deploys
   drain without failed requests; with `/health` they didn't. Cost: a cluster-wide DB (or object
   store) outage marks every app replica down and HAProxy answers 503 itself; clients retry 503s
-  either way.
+  either way. Since 2026-11-25 HAProxy checks `/ready?deps=0`: a 1-minute slow DB had marked both
+  replicas down (503 to every request); now requests go through slowly instead.
 - **Graceful shutdown:** on SIGTERM, `/ready` returns 503 for `SHUTDOWN_DRAIN_MS` (default 5 s)
   before the server closes. Keep this above HAProxy's check interval x fall count, so HAProxy
   stops routing before connections close.
