@@ -539,8 +539,10 @@ describe.skipIf(!rendered)('rendered configs', () => {
 });
 
 // Dedicated media nodes (inventory group `media`, tests/render-inventory-media.ini): rtpengine set 0
-// stays the edges (calls already anchored there), set 1 = media nodes, a live switch decides which
-// set NEW calls use, and each call's set rides in its Record-Route (;rs=1). README 2.4, V-T18.
+// stays the edges (calls already anchored there), sets 1..N = generations of the media group (host
+// var rtp_sets; the test inventory has set 1 = media-1/2 and set 2 = media-1..3), a live switch
+// decides which set NEW calls use, and each call's set rides in its Record-Route (;rs=N).
+// README 2.4, V-T18, V-T25.
 const RM = join(import.meta.dirname, '../../../telephony/tests/.rendered-media');
 const renderedMedia = existsSync(join(RM, 'edge-1', 'kamailio.cfg'));
 
@@ -562,10 +564,27 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
     expect(kam).toContain('modparam("rtpengine", "setid_avp", "$avp(rtpset)")');
   });
 
+  it('adding a media node adds a NEW set; the old set keeps its exact member list (2026-11-25)', () => {
+    // Set 1 must stay byte-identical: its calls in progress hash their Call-ID over it after a restart.
+    const socks = [...kam.matchAll(/^modparam\("rtpengine", "rtpengine_sock", "(\d+) == ([^"]+)"\)$/gm)];
+    expect(socks.map((m) => [m[1], m[2]])).toEqual([
+      ['1', 'udp:127.0.0.51:2223 udp:127.0.0.52:2223'],
+      // Weighted from set 2 on (rtpengine_weights_from_set): media-3 has rtp_weight=2, the others 1.
+      ['2', 'udp:127.0.0.51:2223=1 udp:127.0.0.52:2223=1 udp:127.0.0.53:2223=2'],
+    ]);
+    // Both inventory spellings (rtp_sets=1,2 -> tuple, rtp_sets="1,2" -> string) parse the same.
+    expect(kam).toMatch(/one set per GENERATION of the media group \(set 1: 2 nodes, set 2: 3 nodes\)/);
+  });
+
   it('a live switch; after a restart it starts at group_vars rtpengine_media_new_calls (1 since 2026-11-15)', () => {
     expect(kam).toMatch(/^loadmodule "cfg_rpc\.so"$/m);
     expect(kam).toMatch(/^pbx\.media_rtp = 1 desc /m);
-    expect(block(kam, 'route[RTP_SET_NEW]')).toContain('if ($sel(cfg_get.pbx.media_rtp) == 1) $avp(rtpset) = 1;');
+    const sn = block(kam, 'route[RTP_SET_NEW]');
+    expect(sn).toContain('$var(rs) = $sel(cfg_get.pbx.media_rtp);');
+    expect(sn).toContain('if ($var(rs) == 1) { $avp(rtpset) = 1; return; }');
+    expect(sn).toContain('if ($var(rs) == 2) { $avp(rtpset) = 2; return; }');
+    // A value that is no set here: set 0 and an error, not a call with no rtpengine set.
+    expect(sn).toMatch(/xlog\("L_ERR", "rtpengine: pbx\.media_rtp=\$var\(rs\) is not a media set here/);
   });
 
   it('every NEW call picks its set before its first rtpengine command and tags its Record-Route', () => {
@@ -579,16 +598,23 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
     expect(block(kam, 'route[TO_DEVICES]')).toContain('route(RTP_SET_NEW)');
     const br = block(kam, 'branch_route[DEV_BRANCH]');
     expect(br.indexOf('route(RTP_SET_RR)')).toBeLessThan(br.indexOf('record_route()'));
-    expect(block(kam, 'route[RTP_SET_RR]')).toContain('if ($avp(rtpset) == 1) add_rr_param(";rs=1");');
+    for (const n of [1, 2]) {
+      expect(block(kam, 'route[RTP_SET_RR]')).toContain(`if ($avp(rtpset) == ${n}) add_rr_param(";rs=${n}");`);
+    }
   });
 
   it('in-dialog requests use the call\'s own set; a relaying edge copies the tag; CANCEL uses the switch', () => {
     const wd = block(kam, 'route[WITHINDLG]');
     expect(wd).toContain('if (check_route_param("rs=1")) $avp(rtpset) = 1;');
+    expect(wd).toContain('if (check_route_param("rs=2")) $avp(rtpset) = 2;');
+    expect(wd.indexOf('check_route_param("rs=2")')).toBeLessThan(wd.indexOf('rtpengine_delete'));
     expect(wd.indexOf('check_route_param("rs=1")')).toBeLessThan(wd.indexOf('rtpengine_delete'));
     expect(wd.indexOf('check_route_param("rs=1")')).toBeLessThan(wd.indexOf('route(INDLG_SDP)'));
     const peer = block(kam, 'route[FROM_PEER]');
     expect(peer.indexOf('add_rr_param(";rs=1")')).toBeLessThan(peer.indexOf('record_route()'));
+    expect(peer.indexOf('add_rr_param(";rs=2")')).toBeLessThan(peer.indexOf('record_route()'));
+    // ;rs=1 must not match ;rs=12 (a later generation).
+    expect(peer).toContain('search("^Record-Route:.*;rs=1[;>]")');
     const req = block(kam, 'request_route');
     expect(req.indexOf('route(RTP_SET_NEW)')).toBeLessThan(req.indexOf('rtpengine_delete'));
   });
