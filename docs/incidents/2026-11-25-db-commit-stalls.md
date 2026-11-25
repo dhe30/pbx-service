@@ -70,6 +70,34 @@ db-1 (Patroni primary) could not flush its root disk:
   18:34. A manual CHECKPOINT on db-1 beforehand took 139 s during a stall: don't force one on a
   stalling disk.
 
+## 18:41-22:23 UTC: db-1's slowness follows the VM, not the primary role
+node_exporter counters every 5 min for 3 h 40 min after the switchover (db-3 primary, db-1 replica):
+| | root write ops/s | flushes/s | ms per flush | IO fully stalled | worst 5 min | 5-min intervals > 20 ms/flush |
+|---|---|---|---|---|---|---|
+| db-1 (replica) | 125 | 3.8 | 142 | 38 % | 84 % | 31 of 34 |
+| db-2 (sync standby) | 133 | 5.3 | 16 | 11 % | 20 % | 10 of 34 |
+| db-3 (primary) | 129 | 5.1 | 10 | 10 % | 14 % | 2 of 34 |
+
+- Same write load on all three, 9-14x the flush time on db-1. The primary's workload did not slow
+  db-3. db-1 recovered to 8-10 ms after 22:07 (Garage resync queue 5,300 -> 2,800), so its episodes
+  come and go; it has been the worst db VM for 39 h.
+- Volumes (vdb): 113-124 ms per flush on all three (not node-specific).
+- Decision: resize db-1 off-peak (it may land on another host); replace it if that does not help.
+
+### db-1 resize (off-peak, after 23 UTC; a person runs it: vault password + Clanode UI)
+1. Gate: run `sample-once`-style counters twice, 5 min apart (or Grafana: node_disk_flush_requests
+   time / count on vda). Resize only if db-1 is still clearly worse than db-2/db-3, and the grader
+   is quiet (the playbook refuses 11-23 UTC by itself).
+2. Dry run, then the real run, from mon-1 (or WSL):
+   `ansible-playbook db-resize.yml --ask-vault-pass --limit db-1 -e resize_vcpus=4`
+   db-1 is a replica: no switchover. The playbook checks Patroni / etcd / Garage are complete, tags
+   db-1 nosync, stops Patroni, then PAUSES: resize db-1 in Clanode to 4 vCPU / 8 GB (keep the
+   Volume attached), press Enter. It then checks vCPUs, the private IP and the Garage Volume,
+   re-renders shared_buffers / effective_cache_size and waits for etcd, Patroni (streaming) and Garage.
+3. While db-1 is off: etcd and Garage run on 2 of 3 (quorum holds, no spare). Don't touch db-2/db-3.
+4. Check 30 min later: db-1 ms per flush and stall % against db-2/db-3. Still > 3x worse -> replace
+   the VM (new db node in the inventory, etcd member replace, Garage layout change: a separate task).
+
 ## Still open
 - Garage write load shares db-1's storage with the Postgres primary (move it, or separate storage).
 - Call-path reads share the ARI app's DB pool with CDR inserts that hang on commit.
