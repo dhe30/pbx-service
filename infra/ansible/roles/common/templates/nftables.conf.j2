@@ -32,12 +32,12 @@ table inet filter {
 		# HTTP: Let's Encrypt HTTP-01 challenges; everything else is redirected to HTTPS.
 		tcp dport 80 accept
 		tcp dport 443 accept
-		udp dport 30000-40000 accept
+		udp dport {{ rtpengine_edge_port_min }}-{{ rtpengine_edge_port_max }} accept
 {% endif %}
 {% if groups.get('media') and inventory_hostname in groups['media'] %}
 
 		# Dedicated media node: rtpengine media.
-		udp dport 30000-40000 accept
+		udp dport {{ rtpengine_media_port_min }}-{{ rtpengine_media_port_max }} accept
 {% endif %}
 {% set test_peers = ((groups.get('edge', []) + groups.get('media', [])) | map('extract', hostvars) | selectattr('public_ip', 'defined') | map(attribute='public_ip') | unique | list) %}
 {% if inventory_hostname in groups.get('mon', []) and test_peers %}

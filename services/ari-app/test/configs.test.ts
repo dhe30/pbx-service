@@ -624,4 +624,13 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
     expect(conf).toMatch(/^interface = internal\/127\.0\.0\.52;external\/127\.0\.0\.52!127\.0\.1\.52$/m);
     expect(conf).toMatch(/^listen-ng = 127\.0\.0\.52:2223$/m);
   });
+
+  it('media nodes use the wide port range 20000-60000; the edges keep 30000-40000 (2026-11-25)', () => {
+    const media = readFileSync(join(RM, 'media-2', 'rtpengine.conf'), 'utf8');
+    expect(media).toMatch(/^port-min = 20000$/m);
+    expect(media).toMatch(/^port-max = 60000$/m);
+    const edge = readFileSync(join(RM, 'edge-1', 'rtpengine.conf'), 'utf8');
+    expect(edge).toMatch(/^port-min = 30000$/m);
+    expect(edge).toMatch(/^port-max = 40000$/m);
+  });
 });

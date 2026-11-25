@@ -98,6 +98,17 @@ rtpengine_ips: "{{ (groups.get('media') or groups['edge']) | map('extract', host
 # rtpengine_sock list, so a node's share of new calls follows its size (weight / sum). Set 1 was
 # deployed without weights and must keep rendering exactly as it did (its calls hash over it).
 rtpengine_weights_from_set: 2
+# rtpengine's public media ports: rtpengine.conf port-min/max and the host nftables rule. The
+# cloud firewall must open the same range. Media nodes 20000-60000 since 2026-11-25 (30000-40000
+# ran out of ports); the edges' rtpengine (set 0, the fallback) keeps 30000-40000. rtpengine reads
+# the range only at startup: a running node keeps its old range until it is drained and restarted.
+# On media nodes the kernel's ephemeral range moves above the media range (rtpengine role).
+rtpengine_edge_port_min: 30000
+rtpengine_edge_port_max: 40000
+rtpengine_media_port_min: 20000
+rtpengine_media_port_max: 60000
+rtpengine_port_min: "{{ rtpengine_media_port_min if inventory_hostname in groups.get('media', []) else rtpengine_edge_port_min }}"
+rtpengine_port_max: "{{ rtpengine_media_port_max if inventory_hostname in groups.get('media', []) else rtpengine_edge_port_max }}"
 rtpengine_edge_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
 rtpengine_media_ips: "{{ groups.get('media', []) | map('extract', hostvars, 'private_ip') | list }}"
 # 1 since 2026-11-15 (switched live at ~21:35 UTC; media-1 + media-2 carry new calls).
