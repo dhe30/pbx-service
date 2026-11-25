@@ -16,6 +16,12 @@ patroni_loop_wait: 10
 patroni_retry_timeout: 10
 # A replica more than this many bytes behind is never promoted (it would lose committed data).
 patroni_maximum_lag_on_failover: 1048576
+# Failsafe: when etcd is unreachable, the primary keeps running if it can still reach EVERY member's
+# REST API (POST /failsafe); otherwise it demotes as before. Without it a platform disk stall on the
+# etcd leader (8 s fdatasync) made Patroni shut Postgres down for 70 s on 2026-11-25 18:04 UTC.
+# Live cluster: set 2026-11-25 with `patronictl edit-config -s failsafe_mode=true` (bootstrap.dcs
+# in the template only applies when a cluster is first created).
+patroni_failsafe_mode: true
 
 # Synchronous replication: a COMMIT returns only after one replica has the WAL, so a failover never
 # loses a committed row (chaos drill in CLAUDE.md §16). Cost: one private-network round trip per

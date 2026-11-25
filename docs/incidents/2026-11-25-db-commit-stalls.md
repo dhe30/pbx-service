@@ -31,6 +31,17 @@ db-1 (Patroni primary) could not flush its root disk:
 - services/ari-app/src/cache.ts: expired / invalidated snapshots, account ids and rate decks are kept
   as fallbacks; a call waits at most `CONFIG_STALE_WAIT_MS` (500 ms) for a reload when one exists.
 
+## 18:04 UTC: the stall reached etcd -> Patroni shut Postgres down for 70 s
+- 17:50-18:04 db-1 statements 20-33 s, a checkpoint sync 117 s; CDR inserts were retried and landed
+  3-20 min late (grader `call_records` "no record" tickets for calls 17:45-18:02; the rows exist).
+- db-1 is the etcd leader: fdatasync up to 8.8 s. 18:03:44 Patroni read timeouts to all three etcd
+  members -> "demoting self because DCS is not accessible" -> fast shutdown 18:04:01 (58 s on the
+  stuck disk), read-only 18:05:00, promoted again 18:05:11 (sync standby now db-3).
+- Grader: `call failed_500` (ARI app: "the database system is shutting down"), API 503 on
+  login / tickets / voicemail_web, a 2-min spike; back to the trickle by 18:07.
+- Fix: `failsafe_mode: true` (live 18:12 UTC via `patronictl edit-config`, and in the role). With
+  etcd unreachable the primary now stays up while it can reach every member's REST API.
+
 ## Still open
 - Garage write load shares db-1's storage with the Postgres primary (move it, or separate storage).
 - Call-path reads share the ARI app's DB pool with CDR inserts that hang on commit.
