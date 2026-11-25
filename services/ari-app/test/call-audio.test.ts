@@ -77,6 +77,42 @@ describe.skipIf(!python)('pbx-call-audio verdicts', () => {
     expect(r!.verdict).toBe('format_mismatch');
   });
 
+  // 2026-11-25: the course's phones also reach us over the private network. A real record from
+  // media-1 (19:5x UTC): pbx-1 (PCMU) and a G.723 phone at 10.0.2.248, which is none of our VMs.
+  // "Private = Asterisk" gave it no verdict (no_party_leg, 19,974 of 20,000 records).
+  const privatePhoneCall = (cid: string, phoneOut: number) =>
+    [
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] Final packet stats:`,
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] --- Tag '317298a5', created 1:30 ago for branch ''`,
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] ------ Media #1 (audio over RTP/AVP) using PCMU/8000`,
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] --------- Port      10.0.2.222:30010 <>      10.0.1.214:16730, SSRC 1, in 2737 p, 470764 b, 0 e, 30 ts, out 1818 p, 458056 b, 0 e`,
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] --- Tag '64bdecf75d74', created 1:30 ago for branch ''`,
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] ------ Media #1 (audio over RTP/AVP) using G723/8000`,
+      `1795636500.100 media-1 rtpengine[1]: INFO: [${cid}]: [core] --------- Port      10.0.2.222:30020 <>      10.0.2.248:42246, SSRC 2, in 1823 p, 65628 b, 0 e, 30 ts, out ${phoneOut} p, ${phoneOut * 36} b, 0 e`,
+      '',
+    ].join('\n');
+  const PBX = ['--pbx-peer', '10.0.1.214', '--pbx-peer', '10.0.0.91'];
+
+  it('without --pbx-peer a private-network phone counts as Asterisk (old rule, kept as fallback)', () => {
+    const [r] = run(privatePhoneCall('old-rule@10.0.2.248', 1824));
+    expect(r!.verdict).toBe('no_party_leg');
+  });
+
+  it('--pbx-peer: only the pbx nodes are Asterisk, a private-network phone is judged', () => {
+    const [r] = run(privatePhoneCall('pn-ok@10.0.2.248', 1824), ...PBX);
+    expect(r!.legs.map((l) => l.side)).toEqual(['pbx', 'party']);
+    expect(r!.verdict).toBe('ok');
+    const [silent] = run(privatePhoneCall('pn-silent@10.0.2.248', 0), ...PBX);
+    expect(silent!.verdict).toBe('silent_to_party');
+  });
+
+  it('--pbx-peer leaves public-party calls as they were', () => {
+    const plain = run(FIXTURE).map((r) => [r.call_id, r.verdict, r.legs.map((l) => l.side).join()]);
+    // the fixture's Asterisk legs are pbx-1 (10.0.1.214) and pbx-2 (10.0.0.91)
+    const withPbx = run(FIXTURE, ...PBX).map((r) => [r.call_id, r.verdict, r.legs.map((l) => l.side).join()]);
+    expect(withPbx).toEqual(plain);
+  });
+
   it('calls with a --test-peer leg are marked as test traffic', () => {
     const marked = run(FIXTURE, '--test-peer', '130.245.136.128');
     expect(marked.find((r) => r.call_id.startsWith('f068b387'))!.test).toBe(true);

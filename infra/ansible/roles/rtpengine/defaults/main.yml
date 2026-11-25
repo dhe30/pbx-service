@@ -13,3 +13,9 @@ rtpengine_threads: "{{ ansible_processor_vcpus | default(2) }}"
 # (130.245.136.144, NAT) and announce its private address in their SDP.
 call_audio_test_peers: "{{ ['130.245.136.144'] + (groups.get('mon', []) | map('extract', hostvars, 'private_ip') | list) }}"
 call_audio_jsonl: /var/log/pbx/call-audio.jsonl
+# Asterisk's side of each call = a leg whose peer is a pbx node's private IP; every other peer is a
+# party. Until 2026-11-25 "any private address" meant Asterisk, but the course's phones also reach
+# us over the private network (10.0.0.0/16, CLAUDE.md §7): their legs got no verdict, and on
+# 2026-11-25 19,974 of 20,000 records on media-1 were "no_party_leg". A new pbx node must be added
+# here before it takes calls (call-audio.yml, README §2.4), else its legs are judged as a party's.
+call_audio_pbx_peers: "{{ groups.get('pbx', []) | map('extract', hostvars, 'private_ip') | list }}"

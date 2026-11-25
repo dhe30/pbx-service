@@ -188,8 +188,9 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
 - **Adding a pbx node:** add it to `[pbx]`, then `firewall.yml` (every node's `@cluster`),
   `--limit db` (Patroni's `pg_hba`, reloaded live), `--limit <new node>` (installs and starts it;
   the edges don't route to it yet, so the rollout skips the drain), `--limit edge` (dispatcher
-  list and Kamailio's internal hops: Kamailio restarts, one edge at a time) and `--limit mon`.
-  Adding a node re-hashes which node each account's calls go to (dispatcher algorithm 7): for a
+  list and Kamailio's internal hops: Kamailio restarts, one edge at a time), `--limit mon` and
+  `call-audio.yml` (the media nodes' audio monitor learns which peers are Asterisk; restarts only
+  pbx-call-audio, never rtpengine). Adding a node re-hashes which node each account's calls go to (dispatcher algorithm 7): for a
   few minutes an attended transfer between a call from before and one from after may cross nodes.
   **Without restarting anything** (peak hours, or an edge holding TLS phones that won't reconnect):
   `patroni-config.yml` instead of `--limit db` (only Patroni's config + live reload; the full data
