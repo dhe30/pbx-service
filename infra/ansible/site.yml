@@ -5,7 +5,7 @@
 # See CLAUDE.md §15 for ordering and cross-group dependencies.
 - hosts: all
   become: true
-  # logging: persistent, size-capped journal and log rotation on every VM (no log can fill a disk).
+  # logging: size-capped journal (RAM on edge/media, disk elsewhere) and log rotation on every VM.
   roles: [common, logging]
 
 # Data tier: etcd quorum first (Patroni needs it to elect a primary), then Postgres, then Garage.

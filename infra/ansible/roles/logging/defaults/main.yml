@@ -8,6 +8,21 @@
 # Grafana (rotates itself), and /var/log/syslog etc. if rsyslog is installed.
 
 # ---- journald ----
+# Where the journal lives. "persistent" = /var/log/journal on disk (survives reboots).
+# "volatile" = /run/log/journal in RAM only: lost on reboot, but journald never waits for the disk.
+#
+# Why the call path is volatile (2026-11-25, docs/incidents/2026-11-25-disk-stalls-call-path.md):
+# the platform's storage froze for 1-2 min at a time on random VMs. journald blocks on a frozen
+# disk, stops reading its sockets, and then every process that logs blocks in syslog()/stdout:
+# media-4's rtpengine (~600 lines/s) stopped answering Kamailio for 97 s ("no available proxies",
+# lost calls) and edge-2's journal stalled 50 s ("no pbx node", REGISTER failures) while the VMs
+# themselves kept running. Edges and media nodes therefore keep their journal in RAM; SIP history
+# stays on disk in sipdump's pcaps (written by its own process, not by the SIP workers).
+journald_volatile_groups: [edge, media]
+journald_storage: "{{ 'volatile' if (group_names | intersect(journald_volatile_groups)) else 'persistent' }}"
+# RAM for the volatile journal. /run is a tmpfs of 10 % of RAM (edges: 198M of 2 GB, media-2: 1.6G),
+# and other services keep their sockets and pid files there, so stay well below its size.
+journald_runtime_max_use: "{{ '800M' if 'media' in group_names else '100M' }}"
 # Total journal size on disk. Debian's default is 10% of the filesystem (max 4 GiB); a fixed cap
 # is easier to reason about on small VMs.
 journald_max_use: 1G
