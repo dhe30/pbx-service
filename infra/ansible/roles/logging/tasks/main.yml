@@ -1,5 +1,5 @@
 ---
-# Logs on every VM (Track 4): persistent, size-capped journal; size-capped, hourly-checked
+# Logs on every VM (Track 4): size-capped journal (in RAM on edge/media nodes, on disk elsewhere); size-capped, hourly-checked
 # logrotate; rotation for the log files nothing else rotates (Asterisk, pgBackRest).
 
 # ---- journald ------------------------------------------------------------------------------
@@ -9,7 +9,7 @@
     state: directory
     mode: "0755"
 
-- name: journald limits (persistent, size cap, rate limit)
+- name: journald limits (persistent or in RAM per role, size cap, rate limit)
   ansible.builtin.template:
     src: journald.conf.j2
     dest: /etc/systemd/journald.conf.d/pbx.conf
