@@ -49,7 +49,7 @@ describe('§3 Number routing: each number routes to an extension, ring group, IV
     await h.settle();
   });
 
-  it("a ring group never rings a member's external number that is the caller", async () => {
+  it("a ring group also rings a member's external number that is the caller (ticket 2026-11-25)", async () => {
     const { h, a } = await acct();
     await a.extension({ number: '101', externalNumbers: ['+16315550728'] });
     await a.extension({ number: '102' });
@@ -57,9 +57,9 @@ describe('§3 Number routing: each number routes to an extension, ring group, IV
     const did = nextDid();
     await a.number(did, { type: 'ring_group', id: g });
     const caller = h.ari.carrierCall(did, '+16315550728');
-    await until(() => h.ari.originates.length === 2, 2000, 'both desk phones');
-    expect(h.ari.originates.every((o) => o.target.kind === 'sip')).toBe(true);
-    expect(h.ari.legsTo('+16315550728')).toHaveLength(0);
+    await until(() => h.ari.originates.length === 3, 2000, 'both desk phones + the external number');
+    expect(h.ari.originates.filter((o) => o.target.kind === 'sip')).toHaveLength(2);
+    expect(h.ari.legsTo('+16315550728')).toHaveLength(1);
     h.ari.remoteHangup(caller);
     await h.settle();
   });

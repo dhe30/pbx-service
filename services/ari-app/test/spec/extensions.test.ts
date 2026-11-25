@@ -40,16 +40,16 @@ describe('§3 Extensions: ringing', () => {
     await h.settle();
   });
 
-  it("never rings an external number that is the caller's own number", async () => {
+  it("also rings an external number that is the caller's own number (ticket 2026-11-25)", async () => {
     const { h, a, did } = await setup({ number: '101', externalNumbers: ['+16315550728', '+12015557001'] });
     const sip = a.ext['101']!.sip;
     h.ari.sip.set(sip, { answerAfterMs: 20 });
-    // The extension's own mobile calls the shop: ring the desk phone and the OTHER number only.
+    // The course calls FROM a listed external number and expects it to ring with the others
+    // (simultaneous_ring "+16315551559 never rang" while we skipped it).
     const caller = h.ari.carrierCall(did, '+16315550728');
-    await until(() => h.ari.originates.length === 2, 2000, '2 legs');
+    await until(() => h.ari.originates.length === 3, 2000, '3 legs');
     const kinds = h.ari.originates.map((o) => (o.target.kind === 'sip' ? `sip:${o.target.user}` : `ext:${o.target.number}`)).sort();
-    expect(kinds).toEqual(['ext:+12015557001', `sip:${sip}`].sort());
-    expect(h.ari.legsTo('+16315550728')).toHaveLength(0);
+    expect(kinds).toEqual(['ext:+12015557001', 'ext:+16315550728', `sip:${sip}`].sort());
     h.ari.remoteHangup(caller);
     await h.settle();
   });
