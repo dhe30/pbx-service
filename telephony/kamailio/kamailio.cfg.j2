@@ -28,15 +28,29 @@
 # works ("A phone may support only one of PCMU, PCMA, G.729, G.723.1, or Opus"); rtpengine
 # transcodes only when the far side didn't pick PCMU.
 {% set MEDIA = (rtpengine_media_ips | default([])) | length > 0 %}
+{# Media sets 1..N from the media hosts' `rtp_sets` inventory var (unset = 1; `rtp_sets=1,2` in the
+   INI inventory reaches us as the tuple (1, 2), so brackets and spaces are stripped first). Each
+   set lists its members in inventory order, so a set's list (and its Call-ID hash) changes only
+   when a host's rtp_sets does. #}
+{% set media_hosts = groups.get('media', []) %}
+{% set media_host_sets = {} %}
+{% for h in media_hosts %}{% set _ = media_host_sets.update({h: ((hostvars[h].rtp_sets | default(1) | string) | regex_replace('[()\\[\\] ]', '')).split(',') | reject('equalto', '') | map('int') | list}) %}{% endfor %}
+{% set media_set_ids = media_host_sets.values() | list | flatten | unique | sort %}
+{% set media_sets = [] %}
+{% for id in media_set_ids %}{% set _ = media_sets.append({'id': id, 'ips': media_hosts | select('in', media_host_sets | dict2items | selectattr('value', 'contains', id) | map(attribute='key') | list) | map('extract', hostvars, 'private_ip') | list}) %}{% endfor %}
 {% if MEDIA %}
 #
-# rtpengine sets (inventory has a `media` group). Set 0 = the edges' rtpengines, set 1 = the media
-# nodes. Kamailio picks a node by hashing the Call-ID over ONE set, so changing a set's members
-# would move calls in progress to an rtpengine that doesn't know them (the simulator's phones
-# re-INVITE every 30 s: silence within a minute). Instead each NEW call gets a set from the live
-# switch pbx.media_rtp and remembers it in its Record-Route (;rs=1); in-dialog requests, replies
-# and failure routes use the call's own set ($avp(rtpset), modparam setid_avp). Switch on both
-# edges at once: kamcmd cfg.set_now_int pbx media_rtp 1 (back: 0). README 2.4, V-T18.
+# rtpengine sets (inventory has a `media` group). Set 0 = the edges' rtpengines; sets 1..N = the
+# media nodes, one set per GENERATION of the media group ({% for ms in media_sets %}set {{ ms.id }}: {{ ms.ips | length }} nodes{% if not loop.last %}, {% endif %}{% endfor %}).
+# Kamailio picks a node by hashing the Call-ID over ONE set and remembers the choice only in
+# memory, so changing a set's members and restarting would move calls in progress to an rtpengine
+# that doesn't know them (the simulator's phones re-INVITE every 30 s: silence within a minute).
+# So a set's members never change while calls use it: adding or removing media nodes adds a NEW
+# set (the media hosts' rtp_sets inventory var), and new calls move to it with the live switch.
+# Each NEW call gets its set from the live switch pbx.media_rtp and remembers it in its
+# Record-Route (;rs=N); in-dialog requests, replies and failure routes use the call's own set
+# ($avp(rtpset), modparam setid_avp). Switch on both edges at once:
+# kamcmd cfg.set_now_int pbx media_rtp N (back to the edges: 0). README 2.4, V-T18, V-T25.
 {% endif %}
 
 ####### Defines ########
@@ -172,10 +186,11 @@ server_header="Server: pbx-edge"
 user_agent_header="User-Agent: pbx-edge"
 {% if MEDIA %}
 
-# Live switch (cfg_rpc): rtpengine set for NEW calls, 0 = edges, 1 = media nodes.
-#   kamcmd cfg.get pbx media_rtp            kamcmd cfg.set_now_int pbx media_rtp 1
+# Live switch (cfg_rpc): rtpengine set for NEW calls, 0 = edges, {{ media_set_ids | join('/') }} = media sets.
+#   kamcmd cfg.get pbx media_rtp            kamcmd cfg.set_now_int pbx media_rtp {{ media_set_ids | last }}
+# A value that isn't a set here falls back to set 0 (the edges), with an error in the log.
 # The value below is what a restart starts with (group_vars rtpengine_media_new_calls).
-pbx.media_rtp = {{ rtpengine_media_new_calls | int }} desc "rtpengine set for new calls: 0 = edges, 1 = media nodes"
+pbx.media_rtp = {{ rtpengine_media_new_calls | int }} desc "rtpengine set for new calls: 0 = edges, {{ media_set_ids | join('/') }} = media sets"
 {% endif %}
 
 ####### Modules Section ########
@@ -334,7 +349,9 @@ modparam("dispatcher", "hash_pvar", "$avp(dshash)")
 # Set 0 (default) = the edges, written exactly as before the media nodes existed, so a call already
 # anchored on an edge hashes to the same node after the restart. Set 1 = the media nodes.
 modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_edge_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
-modparam("rtpengine", "rtpengine_sock", "1 == {% for ip in rtpengine_media_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+{% for ms in media_sets %}
+modparam("rtpengine", "rtpengine_sock", "{{ ms.id }} == {% for ip in ms.ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+{% endfor %}
 # Set per message from this AVP (unset = set 0). Transaction AVPs reach reply and failure routes.
 modparam("rtpengine", "setid_avp", "$avp(rtpset)")
 {% else %}
@@ -693,13 +710,20 @@ route[PBX_TIMERS] {
 # rtpengine set for a NEW call, from the live switch (see the header). Sets $avp(rtpset), which
 # the rtpengine module reads for every command of this transaction (setid_avp).
 route[RTP_SET_NEW] {
-	if ($sel(cfg_get.pbx.media_rtp) == 1) $avp(rtpset) = 1;
+	$var(rs) = $sel(cfg_get.pbx.media_rtp);
+	if ($var(rs) == 0) return;
+{% for ms in media_sets %}
+	if ($var(rs) == {{ ms.id }}) { $avp(rtpset) = {{ ms.id }}; return; }
+{% endfor %}
+	xlog("L_ERR", "rtpengine: pbx.media_rtp=$var(rs) is not a media set here, using set 0 (edges) [ci=$ci]\n");
 }
 
 # Remember the set in the Record-Route being built, for the call's in-dialog requests (on either
 # edge, and after a Kamailio restart). Call right before record_route().
 route[RTP_SET_RR] {
-	if ($avp(rtpset) == 1) add_rr_param(";rs=1");
+{% for ms in media_sets %}
+	if ($avp(rtpset) == {{ ms.id }}) add_rr_param(";rs={{ ms.id }}");
+{% endfor %}
 }
 
 {% endif %}
@@ -1131,7 +1155,9 @@ route[FROM_PEER] {
 {% if MEDIA %}
 	# Copy the sending edge's set into our own Record-Route, so the BYE we relay later deletes the
 	# session in the right set (as before the sets: both edges send it, the second is a no-op).
-	if (search("^Record-Route:.*;rs=1")) add_rr_param(";rs=1");
+{% for ms in media_sets %}
+	if (search("^Record-Route:.*;rs={{ ms.id }}[;>]")) add_rr_param(";rs={{ ms.id }}");
+{% endfor %}
 {% endif %}
 	record_route();
 	t_on_reply("PEER_REPLY");
@@ -1164,7 +1190,9 @@ route[WITHINDLG] {
 	}
 {% if MEDIA %}
 	# The call's own rtpengine set, from OUR Record-Route entry (no tag = set 0, the edges).
-	if (check_route_param("rs=1")) $avp(rtpset) = 1;
+{% for ms in media_sets %}
+	if (check_route_param("rs={{ ms.id }}")) $avp(rtpset) = {{ ms.id }};
+{% endfor %}
 {% endif %}
 
 	if (is_method("BYE")) {

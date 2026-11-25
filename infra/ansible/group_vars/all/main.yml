@@ -88,10 +88,12 @@ edge_trunk_names: "{{ ['edge-a', 'edge-b', 'edge-c', 'edge-d'][:groups['edge'] |
 # (B3: media CPU off the signaling nodes), otherwise the edges.
 rtpengine_ips: "{{ (groups.get('media') or groups['edge']) | map('extract', hostvars, 'private_ip') | list }}"
 # Kamailio's rtpengine sets (kamailio.cfg.j2). Set 0 = the edges' rtpengines, always: calls already
-# anchored there keep hashing to the same node. Set 1 = the media nodes. Which set a NEW call uses
-# is a live switch on each edge (kamcmd cfg.set_now_int pbx media_rtp 1|0); its value after a
-# Kamailio restart is rtpengine_media_new_calls. In-dialog requests follow the call's own set
-# (Record-Route ;rs=1), so flipping the switch never moves a call in progress.
+# anchored there keep hashing to the same node. Sets 1..N = generations of the media group, from each
+# media host's inventory var `rtp_sets` (unset = 1): adding a media node to a live system adds a new
+# set instead of changing an old one (README 2.4 "Adding a node to a live media group"). Which set
+# a NEW call uses is a live switch on each edge (kamcmd cfg.set_now_int pbx media_rtp N|0); its
+# value after a Kamailio restart is rtpengine_media_new_calls. In-dialog requests follow the call's
+# own set (Record-Route ;rs=N), so flipping the switch never moves a call in progress.
 rtpengine_edge_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
 rtpengine_media_ips: "{{ groups.get('media', []) | map('extract', hostvars, 'private_ip') | list }}"
 # 1 since 2026-11-15 (switched live at ~21:35 UTC; media-1 + media-2 carry new calls).

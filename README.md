@@ -281,6 +281,36 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
      done 2026-11-15). It takes effect at the next edge deploy, which is a Kamailio restart; until
      then the live value holds. The edges' rtpengine stays as the fallback (switch back to 0).
 
+- **Adding a node to a live media group** (2026-11-25, media-6): never just append it to set 1.
+  Kamailio hashes each call's Call-ID over its set's member list and keeps the chosen node only in
+  memory, so an edge restarted with a longer set 1 sends most calls in progress to an rtpengine that
+  doesn't have them (their next 30 s refresh, hold or BYE: silence, 488/500). Instead the new node
+  starts a NEW set, a new generation of the media group, and new calls move to it with the live
+  switch; calls tagged `;rs=1` keep hashing over the unchanged set 1 until they end. Per-host
+  inventory var `rtp_sets` (unset = `1`; members stay in inventory order):
+  ```ini
+  media-1 ... rtp_sets=1,2        # every existing node: in the old set AND the new one
+  ...
+  media-5 ... rtp_sets=1,2
+  media-6 ... rtp_sets=2          # the new node: new set only
+  ```
+  Steps 2 and 3 above (`--limit media-6`, then `firewall.yml`), then:
+  1. Diff only, per edge: `ansible-playbook kamailio-config.yml --ask-vault-pass --limit edge-1`
+     (renders `kamailio.cfg.new`, runs `kamailio -c`, prints the diff). It must ADD a `2 == ...`
+     rtpengine_sock line and leave the `1 == ...` line byte-identical. If set 1 changes, stop.
+  2. Restart one edge at a time: the same with `-e apply=true` (TLS/browser phones reconnect,
+     calls in progress keep their media), then check `grep "open files" /proc/$(pgrep -o -u
+     kamailio kamailio)/limits` and the TLS phones re-registering before the other edge. Keep
+     `rtpengine_media_new_calls: 1` for now: a call put on set 2 by a restarted edge while the
+     other edge still has no set 2 would lose its in-dialog handling there.
+  3. Both edges restarted: `kamcmd rtpengine.show all` on BOTH must list set 2 with `disabled: 0`
+     for every node (especially the new one), then on both edges within a second:
+     `kamcmd cfg.set_now_int pbx media_rtp 2` (back: `1`). New calls only.
+  4. Set `rtpengine_media_new_calls: 2` in group_vars (the value a later restart starts with).
+  5. Set 1 can be retired after its last call ended (calls last up to ~35 min, +30 min hold: wait
+     2 h, `rtpengine-ctl list numsessions` is no proof since the nodes are shared): drop `1,` from
+     every `rtp_sets` at the next edge deploy. The next added node then starts set 3 (`2,3` / `3`).
+  V-T25.
 - **Draining one media node** (e.g. before resizing it): `kamcmd rtpengine.enable udp:<ip>:2223 0`
   on BOTH edges. New calls skip it; with `rtpengine_allow_op` (since 2026-11-24, needs the edges
   restarted with it) its calls in progress keep using it until they end. Wait until its sessions
