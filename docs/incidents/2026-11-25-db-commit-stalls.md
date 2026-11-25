@@ -42,6 +42,34 @@ db-1 (Patroni primary) could not flush its root disk:
 - Fix: `failsafe_mode: true` (live 18:12 UTC via `patronictl edit-config`, and in the role). With
   etcd unreachable the primary now stays up while it can reach every member's REST API.
 
+## 18:20 UTC: why the db VMs stall (node_exporter counters since boot)
+| | IO fully stalled (% of uptime) | root flushes/s | ms per flush |
+|---|---|---|---|
+| db-1 | 10.2 | 5.3 | 20.3 |
+| db-2 | 6.7 | 5.5 | 6.7 |
+| db-3 | 5.9 | 5.5 | 5.7 |
+| app / edge / pbx-1..5 | 0.1-0.6 | 0.4-2.3 | 5-10 (pbx-2 34) |
+
+- The db VMs (2 vCPU / 4 GB) are the only ones stalling at that level; db-1's root disk is slower
+  per write than db-2's with fewer write ops: its placement, not its load.
+- Volumes (vdb) take 120-200 ms per flush on every db node.
+- db-1 writes in 20 s: Garage 78 MB (resync queue ~5,300 blocks, LMDB metadata 600 MB on the root
+  disk), Postgres 10 MB, journald 6.5 MB (Patroni tracebacks ~3,400 lines/min, Garage ~740/min).
+- Not the cause: `discard` (2,800 discards in 35 h, ~2 s in total).
+
+## 18:2x-18:33 UTC: step-1 mitigations (live)
+- journald `Storage=volatile`, `RuntimeMaxUse=150M` on db-1..3 (roles/logging: `db` added to
+  `journald_volatile_groups`). Restarts 276-837 ms.
+- `vm.dirty_background_bytes` 64 MB / `vm.dirty_bytes` 256 MB (roles/postgres_patroni/tasks/
+  writeback.yml), instead of 10 % / 20 % of RAM.
+- Garage `resync-tranquility` 2 -> 6 on all nodes (`garage worker set -a resync-tranquility 6`; a
+  Garage runtime variable, not in the role).
+- Patroni switchover db-1 -> db-3 at 18:32:34-18:32:45 (timeline 6; db-2 sync standby; db-1 a
+  streaming replica). Cost: 11 failed call flows ("the database system is shutting down") and 25
+  Kamailio auth_db read errors (18:32:40-18:33:10); grader register ~35/min for 2 min. Baseline by
+  18:34. A manual CHECKPOINT on db-1 beforehand took 139 s during a stall: don't force one on a
+  stalling disk.
+
 ## Still open
 - Garage write load shares db-1's storage with the Postgres primary (move it, or separate storage).
 - Call-path reads share the ARI app's DB pool with CDR inserts that hang on commit.

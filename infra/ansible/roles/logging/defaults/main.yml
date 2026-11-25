@@ -18,11 +18,14 @@
 # lost calls) and edge-2's journal stalled 50 s ("no pbx node", REGISTER failures) while the VMs
 # themselves kept running. Edges and media nodes therefore keep their journal in RAM; SIP history
 # stays on disk in sipdump's pcaps (written by its own process, not by the SIP workers).
-journald_volatile_groups: [edge, media]
+# db nodes too (2026-11-25 18:2x UTC): Patroni (~3,400 traceback lines/min from health-check
+# connection resets) and Garage (~740/min) put ~0.3 MB/s of journal writes + syncs on the root disk
+# that Postgres WAL and etcd fsync on.
+journald_volatile_groups: [edge, media, db]
 journald_storage: "{{ 'volatile' if (group_names | intersect(journald_volatile_groups)) else 'persistent' }}"
-# RAM for the volatile journal. /run is a tmpfs of 10 % of RAM (edges: 198M of 2 GB, media-2: 1.6G),
-# and other services keep their sockets and pid files there, so stay well below its size.
-journald_runtime_max_use: "{{ '800M' if 'media' in group_names else '100M' }}"
+# RAM for the volatile journal. /run is a tmpfs of 10 % of RAM (edges: 198M of 2 GB, media-2: 1.6G,
+# db: 393M of 4 GB), and other services keep their sockets and pid files there, so stay well below.
+journald_runtime_max_use: "{{ '800M' if 'media' in group_names else ('150M' if 'db' in group_names else '100M') }}"
 # Total journal size on disk. Debian's default is 10% of the filesystem (max 4 GiB); a fixed cap
 # is easier to reason about on small VMs.
 journald_max_use: 1G

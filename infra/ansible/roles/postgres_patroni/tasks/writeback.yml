@@ -1,0 +1,19 @@
+---
+# Dirty-page writeback limits on the db hosts (2026-11-25 disk stalls, docs/incidents/
+# 2026-11-25-db-commit-stalls.md). With the ratio defaults (background 10 %, 20 %) up to ~400 MB of
+# dirty pages could build up on a 4 GB VM before writeback started; on ext4 (data=ordered) a WAL or
+# etcd fsync then waited for that whole burst. Fixed byte limits keep each writeback batch small.
+- name: Dirty-page writeback limits
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/60-pbx-dirty.conf
+    content: |
+      # Managed by Ansible (role postgres_patroni, tasks/writeback.yml).
+      vm.dirty_background_bytes = {{ db_dirty_background_bytes }}
+      vm.dirty_bytes = {{ db_dirty_bytes }}
+    mode: "0644"
+  register: db_writeback
+
+- name: Apply the writeback limits now
+  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/60-pbx-dirty.conf
+  when: db_writeback.changed
+  changed_when: true

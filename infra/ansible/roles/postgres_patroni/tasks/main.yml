@@ -9,6 +9,9 @@
     fail_msg: "Use 1 or 3 db hosts: etcd needs a majority, and an even count adds no tolerance."
   run_once: true
 
+- name: Dirty-page writeback limits
+  ansible.builtin.include_tasks: writeback.yml
+
 # ---- Packages -----------------------------------------------------------------------------
 
 # Debian's postgresql packages create and start a "main" cluster on 5432 at install time. Patroni

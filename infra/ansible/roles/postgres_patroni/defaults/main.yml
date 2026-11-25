@@ -23,6 +23,11 @@ patroni_maximum_lag_on_failover: 1048576
 # in the template only applies when a cluster is first created).
 patroni_failsafe_mode: true
 
+# Writeback limits (tasks/writeback.yml): start background writeback at 64 MB of dirty pages, block
+# writers at 256 MB, instead of 10 % / 20 % of RAM.
+db_dirty_background_bytes: 67108864
+db_dirty_bytes: 268435456
+
 # Synchronous replication: a COMMIT returns only after one replica has the WAL, so a failover never
 # loses a committed row (chaos drill in CLAUDE.md §16). Cost: one private-network round trip per
 # commit. Not "strict": if no replica is left, the primary keeps accepting writes alone.

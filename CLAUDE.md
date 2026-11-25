@@ -402,6 +402,8 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 - Patroni failsafe_mode on (2026-11-25): an etcd outage no longer demotes a primary that still reaches
   every member (a db-1 disk stall on the etcd leader caused a 70 s shutdown at 18:04 UTC before it).
   It lives in etcd: change it with `patronictl edit-config`; the role only sets it at bootstrap.
+- db-1's root disk is ~3x slower per flush than db-2/db-3: primary moved to db-3 (2026-11-25 18:32 UTC);
+  db nodes keep their journal in RAM and use small writeback limits (docs/incidents/2026-11-25-db-commit-stalls.md).
 - Object store: S3-compatible, self-hosted on db-1..3 with replication factor 3. Since 2026-11-23
   new blocks go to a 250 GB Volume per db node (/var/lib/garage/data2, garage_volume_data_dir);
   the root-disk dir is read_only (docs/incidents/2026-11-23-db-disks-full.md)
