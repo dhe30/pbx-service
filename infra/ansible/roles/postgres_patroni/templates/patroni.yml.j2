@@ -48,6 +48,18 @@ bootstrap:
         # Per-query stats (pg_stat_statements view): evidence for the scaling analysis.
         shared_preload_libraries: pg_stat_statements
         track_io_timing: "on"
+        # 2026-11-25: db-1's disk stalled for seconds at a time (io pressure ~90 %); every commit
+        # waited for its WAL flush (3-4 s commits, 19 sessions on WALWrite), so call records came
+        # late and the API's readiness check timed out. Commits now return before the flush: a
+        # crash of the primary can lose the last ~0.6 s of commits (call records, settings edits).
+        # Fewer full-page images in the WAL: compressed, and checkpoints every 15 min, not 5.
+        # NOTE: bootstrap.dcs only applies when a NEW cluster is created. On the running cluster
+        # these were set with: patronictl -c /etc/patroni/patroni.yml edit-config \
+        #   -p synchronous_commit=off -p wal_compression=on -p checkpoint_timeout=15min -p max_wal_size=4GB
+        synchronous_commit: "off"
+        wal_compression: "on"
+        checkpoint_timeout: 15min
+        max_wal_size: 4GB
 
   initdb:
     - encoding: UTF8

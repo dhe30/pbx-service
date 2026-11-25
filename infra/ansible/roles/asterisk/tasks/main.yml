@@ -169,6 +169,68 @@
     mode: "0644"
   notify: Restart asterisk
 
+# Core dumps. Asterisk 22.11.0 aborted on heap corruption ("corrupted double-linked list") at peak
+# load 9 times on pbx-1..3 between 2026-11-16 and 11-25, each crash dropping every call on the node,
+# and left no core to show where. A drop-in (not the unit template) so this needs no restart: the
+# running process gets the limit via prlimit; systemd's automatic restart after a crash keeps it.
+# Read a core:  gdb -batch -ex 'thread apply all bt 12' /usr/sbin/asterisk /var/crash/core.asterisk.*
+# Cores are ~1-2 GB; systemd-tmpfiles deletes them after 3 days.
+- name: gdb (to read Asterisk core dumps)
+  ansible.builtin.apt:
+    name: gdb
+    state: present
+
+- name: Core dump directory, cleaned after 3 days
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/pbx-crash.conf
+    content: |
+      # Managed by Ansible (role asterisk).
+      d /var/crash 1777 root root 3d
+    mode: "0644"
+  register: pbx_crash_tmpfiles
+
+- name: Create the core dump directory
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/pbx-crash.conf
+  when: pbx_crash_tmpfiles.changed
+  changed_when: true
+
+- name: Cores go to /var/crash
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-pbx-core.conf
+    content: |
+      # Managed by Ansible (role asterisk).
+      kernel.core_pattern = /var/crash/core.%e.%p.%t
+    mode: "0644"
+  register: pbx_core_sysctl
+
+- name: Apply the core pattern now
+  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/90-pbx-core.conf
+  when: pbx_core_sysctl.changed
+  changed_when: true
+
+- name: Asterisk unit drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/asterisk.service.d
+    state: directory
+    mode: "0755"
+
+- name: Asterisk may write cores (drop-in, no restart)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/asterisk.service.d/core.conf
+    content: |
+      # Managed by Ansible (role asterisk).
+      [Service]
+      LimitCORE=infinity
+    mode: "0644"
+  register: pbx_core_dropin
+
+- name: Same limit for the running Asterisk
+  ansible.builtin.shell: |
+    systemctl daemon-reload
+    pid=$(pidof asterisk) && prlimit --pid "$pid" --core=unlimited || true
+  when: pbx_core_dropin.changed
+  changed_when: true
+
 - name: Start Asterisk
   ansible.builtin.systemd:
     name: asterisk
