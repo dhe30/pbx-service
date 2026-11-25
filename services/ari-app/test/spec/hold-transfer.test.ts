@@ -131,6 +131,68 @@ describe('§3 Hold', () => {
   });
 });
 
+// 2026-11-25: Asterisk aborted (heap corruption in softmix, ast_slinfactory_feed) on a recorded
+// call: a bridge recording adds a Recorder member, and a 3-member bridge mixes with softmix.
+// Recordings now come from a snoop channel on one party; the bridge keeps exactly 2 members.
+describe('§3 Call recording (add-on) without a mixing bridge', () => {
+  it('records a snoop on a party, never adds a member to the bridge, files the recording at hangup', async () => {
+    const { h, caller } = await connectedCall({ recordCalls: true });
+    await until(() => h.ari.recordings.size === 1, 2000, 'recording started');
+    const [snoop] = h.ari.snoops;
+    expect(snoop!.channelId).toBe(caller);
+    expect(h.ari.channelRecordStarts).toEqual([{ name: expect.stringMatching(/^rec-/), channelId: snoop!.snoopId, beep: false, ifExists: 'overwrite' }]);
+    for (const members of h.ari.bridges.values()) expect(members.size).toBeLessThanOrEqual(2);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+    const rec = h.uploads.begun.find((u) => u.kind === 'recording')!;
+    expect(h.uploads.finished).toContain(rec.name);
+    expect(h.ari.channels.has(snoop!.snoopId)).toBe(false);
+    expect(h.ctx.bus.size).toBe(0);
+  });
+
+  it('attended transfer by the recorded party: recording continues on the party that stays (same file)', async () => {
+    const { h, a, caller: b } = await connectedCall({ recordCalls: true });
+    const out = h.ari.deviceCall(a.ext['101']!.sip, '102');
+    const leg102 = await until(() => h.ari.peerOf(out), 2000, '102 connected');
+    const outRec = await until(() => h.ari.channelRecordStarts.find((r) => h.ari.snoops.find((s) => s.snoopId === r.channelId)?.channelId === out), 2000, 'call 2 recorded');
+    const a1 = await until(() => h.ari.peerOf(b));
+    h.ari.referAttended(out, a1);
+    await until(() => h.ari.peerOf(leg102) === b, 2000, '102 joined with B');
+    const moved = await until(
+      () => h.ari.channelRecordStarts.find((r) => r.name === outRec.name && r.ifExists === 'append'),
+      2000,
+      'recording moved',
+    );
+    expect(h.ari.snoops.find((s) => s.snoopId === moved.channelId)!.channelId).toBe(leg102);
+    expect(h.ari.recordings.get(outRec.name)?.target).toBe(moved.channelId);
+    for (const members of h.ari.bridges.values()) expect(members.size).toBeLessThanOrEqual(2);
+    h.ari.remoteHangup(leg102);
+    await until(() => !h.ari.channels.has(b));
+    await h.settle();
+    expect(h.uploads.finished).toContain(outRec.name);
+    expect(h.uploads.finished.filter((n) => n === outRec.name)).toHaveLength(1);
+    expect(h.ctx.bus.size).toBe(0);
+  });
+
+  it('a snoop that never enters Stasis: the call goes on unrecorded, nothing left behind', async () => {
+    const h0 = makeHarness(db.sql);
+    h0.ari.snoop = async () => {
+      throw new Error('snoop refused');
+    };
+    const a = await new Account(db.sql).create({ recordCalls: true });
+    await a.extension({ number: '101' });
+    const did = nextDid();
+    await a.number(did, { type: 'extension', id: a.ext['101']!.id });
+    h0.ari.sip.set(a.ext['101']!.sip, { answerAfterMs: 5 });
+    const caller = h0.ari.carrierCall(did, '+16315550001');
+    await until(() => h0.ari.peerOf(caller), 3000, 'connected');
+    h0.ari.remoteHangup(caller);
+    await h0.settle();
+    expect(h0.uploads.finished).toHaveLength(0);
+    expect(h0.ctx.bus.size).toBe(0);
+  });
+});
+
 describe('§3 Blind transfer', () => {
   it('to another extension: the transferring phone drops, the caller rings 102 and is connected', async () => {
     const { h, a, caller, agent } = await connectedCall();
