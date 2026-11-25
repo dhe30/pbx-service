@@ -28,6 +28,8 @@ bootstrap:
     loop_wait: {{ patroni_loop_wait }}
     retry_timeout: {{ patroni_retry_timeout }}
     maximum_lag_on_failover: {{ patroni_maximum_lag_on_failover }}
+    # Keep the primary through an etcd outage while all members still answer (defaults/main.yml).
+    failsafe_mode: {{ 'true' if patroni_failsafe_mode | bool else 'false' }}
     synchronous_mode: {{ 'true' if (patroni_synchronous_mode | bool) and (db_ips | length > 1) else 'false' }}
     postgresql:
       # pg_rewind lets an old primary rejoin as a replica after a failover without a full copy.

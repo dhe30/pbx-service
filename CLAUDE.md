@@ -399,6 +399,9 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 - Postgres 16 + Patroni + etcd on db-1..3 (etcd quorum of 3). Data on Volumes.
 - Local HAProxy on each DB client node: 127.0.0.1:5432 -> server whose GET :8008/primary == 200.
 - All clients (API, ARI app, Kamailio) must retry/reconnect across a 10–30 s failover.
+- Patroni failsafe_mode on (2026-11-25): an etcd outage no longer demotes a primary that still reaches
+  every member (a db-1 disk stall on the etcd leader caused a 70 s shutdown at 18:04 UTC before it).
+  It lives in etcd: change it with `patronictl edit-config`; the role only sets it at bootstrap.
 - Object store: S3-compatible, self-hosted on db-1..3 with replication factor 3. Since 2026-11-23
   new blocks go to a 250 GB Volume per db node (/var/lib/garage/data2, garage_volume_data_dir);
   the root-disk dir is read_only (docs/incidents/2026-11-23-db-disks-full.md)
