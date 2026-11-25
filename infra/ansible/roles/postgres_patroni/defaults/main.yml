@@ -10,10 +10,14 @@ patroni_bin_dir: "/usr/lib/postgresql/{{ postgres_version }}/bin"
 patroni_restapi_port: 8008
 
 # Failover timing (seconds): leader key TTL, loop interval, DCS/Postgres retry timeout.
-# ttl 30 => a dead primary is replaced within ~30 s (the contract's failover budget).
-patroni_ttl: 30
+# ttl 60 => a dead primary is replaced within ~60 s. Was 30 / retry 10 until 2026-11-25: the
+# primary's disk stalled long enough that it couldn't renew the leader key in time and demoted
+# itself (18:05 UTC, ~1 min read-only, failed calls + API 503) though nothing was down. Rule:
+# loop_wait + 2 x retry_timeout <= ttl. These are DCS settings: bootstrap only sets them on a new
+# cluster; the running one was changed with patronictl edit-config -s ttl=60 -s retry_timeout=25.
+patroni_ttl: 60
 patroni_loop_wait: 10
-patroni_retry_timeout: 10
+patroni_retry_timeout: 25
 # A replica more than this many bytes behind is never promoted (it would lose committed data).
 patroni_maximum_lag_on_failover: 1048576
 # Failsafe: when etcd is unreachable, the primary keeps running if it can still reach EVERY member's
