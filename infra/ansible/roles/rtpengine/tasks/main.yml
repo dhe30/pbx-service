@@ -62,64 +62,6 @@
     state: started
     daemon_reload: true
 
-# ---- Per-call audio record (docs/incidents/2026-11-14-codec-flip.md) ---------------------------
-# pbx-call-audio follows rtpengine's journal and turns each call's "Final packet stats" (log-level 6)
-# into one JSON line in {{ call_audio_jsonl }} plus verdict counters for node_exporter. Read-only:
-# it never talks to rtpengine, so restarting it never touches calls.
-- name: pbx-call-audio script
-  ansible.builtin.copy:
-    src: pbx-call-audio.py
-    dest: /usr/local/bin/pbx-call-audio
-    mode: "0755"
-  notify: Restart pbx-call-audio
-
-- name: Directories for the call audio record and its metrics
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: "0755"
-  loop:
-    - "{{ call_audio_jsonl | dirname }}"
-    - /var/lib/prometheus/node-exporter
-
-- name: pbx-call-audio service
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/pbx-call-audio.service
-    content: |
-      [Unit]
-      Description=Per-call audio verdicts from rtpengine final stats
-      After={{ rtpengine_service }}.service
-
-      [Service]
-      ExecStart=/usr/local/bin/pbx-call-audio --follow --unit {{ rtpengine_service }} --jsonl {{ call_audio_jsonl }} --prom /var/lib/prometheus/node-exporter/pbx_call_audio.prom{% for ip in call_audio_test_peers %} --test-peer {{ ip }}{% endfor %}
-
-      Restart=always
-      RestartSec=5
-      Nice=10
-
-      [Install]
-      WantedBy=multi-user.target
-    mode: "0644"
-  notify: Restart pbx-call-audio
-
-- name: Rotate the call audio record (14 days)
-  ansible.builtin.copy:
-    dest: /etc/logrotate.d/pbx-call-audio
-    content: |
-      {{ call_audio_jsonl }} {
-          daily
-          rotate 14
-          compress
-          delaycompress
-          missingok
-          notifempty
-          copytruncate
-      }
-    mode: "0644"
-
-- name: Start pbx-call-audio
-  ansible.builtin.systemd:
-    name: pbx-call-audio
-    enabled: true
-    state: started
-    daemon_reload: true
+# ---- Per-call audio record: tasks/call-audio.yml (also deployed alone by call-audio.yml) -------
+- name: Per-call audio record (pbx-call-audio)
+  ansible.builtin.include_tasks: call-audio.yml

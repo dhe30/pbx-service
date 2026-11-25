@@ -1,0 +1,15 @@
+# Update ONLY pbx-call-audio (per-call audio verdicts) on the rtpengine nodes: its script, unit
+# (with the pbx node list, call_audio_pbx_peers) and logrotate rule, then restart that one service.
+# rtpengine itself is not touched: no calls are affected. Use it after changing the script or adding
+# a pbx node, instead of a full rtpengine role run (which could restart rtpengine).
+#   ansible-playbook call-audio.yml --ask-vault-pass --check --diff
+#   ansible-playbook call-audio.yml --ask-vault-pass
+- name: pbx-call-audio only (rtpengine keeps running)
+  hosts: "{{ 'media' if groups.get('media') else 'edge' }}"
+  become: true
+  serial: 1
+  tasks:
+    - name: pbx-call-audio tasks of the rtpengine role
+      ansible.builtin.include_role:
+        name: rtpengine
+        tasks_from: call-audio.yml

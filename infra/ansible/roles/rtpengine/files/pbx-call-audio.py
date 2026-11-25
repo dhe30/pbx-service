@@ -8,7 +8,7 @@ verdict per party-facing leg, so a silent leg shows up on our side, with its Cal
 after it happens (docs/incidents/2026-11-14-codec-flip.md: every failed call had a leg where we
 sent the phone a different packet size than it sent us).
 
-Verdicts (per leg toward a party, i.e. a peer that is not a private address = not Asterisk):
+Verdicts (per leg toward a party, i.e. a peer that is not Asterisk):
   ok
   no_media            no packets either way (e.g. answered, then hung up at once)
   silent_from_party   the party sent nothing while we sent it audio
@@ -17,8 +17,12 @@ Verdicts (per leg toward a party, i.e. a peer that is not a private address = no
                       PCMU 172 B, G.729 32 B, G.723 36 B per 20/30 ms packet incl. RTP header).
                       Not detectable: PCMU vs PCMA (same size). Opus legs are never judged on size.
 
+Which leg is Asterisk's: with --pbx-peer (the pbx nodes' private IPs, set by Ansible) exactly those
+peers; without it, any private address (the old rule). The old rule is wrong since the course's
+phones also reach us over the private network (2026-11-23): their legs were never judged.
+
 Usage:
-  pbx-call-audio --follow [--jsonl FILE] [--prom FILE] [--test-peer IP ...]   (systemd service)
+  pbx-call-audio --follow [--jsonl FILE] [--prom FILE] [--test-peer IP ...] [--pbx-peer IP ...]
   journalctl -u rtpengine-daemon -o short-unix ... | pbx-call-audio --stdin [--summary]
 Input lines must be journalctl "-o short-unix" format.
 """
@@ -89,9 +93,19 @@ def judge(leg):
     return 'ok'
 
 
+def leg_side(peer_ip, pbx_peers):
+    """'none' (no peer: an unanswered fork branch), 'pbx' (Asterisk) or 'party'."""
+    if not peer_ip:
+        return 'none'
+    if pbx_peers:
+        return 'pbx' if peer_ip in pbx_peers else 'party'
+    return 'pbx' if is_private(peer_ip) else 'party'
+
+
 class Call:
-    def __init__(self, cid, ts, host):
+    def __init__(self, cid, ts, host, pbx_peers=frozenset()):
         self.cid, self.ts, self.host = cid, ts, host
+        self.pbx_peers = pbx_peers
         self.legs = []
         self._tag = None
         self._media = None
@@ -110,7 +124,7 @@ class Call:
         if m and self._media is not None and not m['rtcp']:
             peer_ip, _, peer_port = m['peer'].rpartition(':')
             # No peer address: a fork branch that never answered, or a call cancelled while ringing.
-            side = 'none' if not peer_ip else ('pbx' if is_private(peer_ip) else 'party')
+            side = leg_side(peer_ip, self.pbx_peers)
             leg = {
                 'tag': self._tag['tag'],
                 'peer': peer_ip, 'peer_port': int(peer_port or 0),
@@ -143,8 +157,9 @@ class Call:
 
 
 class Parser:
-    def __init__(self, test_peers, emit):
+    def __init__(self, test_peers, emit, pbx_peers=()):
         self.test_peers = set(test_peers)
+        self.pbx_peers = frozenset(pbx_peers)
         self.emit = emit
         self.open = {}      # cid -> Call (inside a "Final packet stats" block)
         self.last = {}      # cid -> time of last stats line (for the idle flush)
@@ -158,7 +173,7 @@ class Parser:
             return
         if msg.startswith('Final packet stats'):
             self.flush(cid)
-            self.open[cid] = Call(cid, m['ts'], m['host'])
+            self.open[cid] = Call(cid, m['ts'], m['host'], self.pbx_peers)
             self.last[cid] = time.monotonic()
             return
         call = self.open.get(cid)
@@ -231,6 +246,8 @@ def main():
     ap.add_argument('--jsonl', help='append one JSON record per call to this file')
     ap.add_argument('--prom', help='node_exporter textfile to (re)write with the verdict counters')
     ap.add_argument('--test-peer', action='append', default=[], help='peer IP of our own test calls')
+    ap.add_argument('--pbx-peer', action='append', default=[],
+                    help="a pbx node's private IP (Asterisk's side); without any, every private address")
     ap.add_argument('--summary', action='store_true', help='--stdin: print verdict counts at the end')
     ap.add_argument('--bad-only', action='store_true', help='--stdin: print only calls not ok')
     args = ap.parse_args()
@@ -257,7 +274,7 @@ def main():
         if args.stdin and not out and (not args.bad_only or rec['verdict'] not in ('ok', 'no_party_leg')):
             print(line)
 
-    parser = Parser(args.test_peer, emit)
+    parser = Parser(args.test_peer, emit, args.pbx_peer)
 
     if args.stdin:
         for raw in sys.stdin:
