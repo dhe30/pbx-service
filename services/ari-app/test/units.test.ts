@@ -269,3 +269,145 @@ describe('ConfigCache background refresh (calls never wait for the DB)', () => {
     }
   });
 });
+
+describe('ConfigCache with a slow DB (incident 2026-11-25: queries hung 20-80 s)', () => {
+  type Deferred<T> = { resolve: (v: T) => void; reject: (e: unknown) => void; promise: Promise<T> };
+  const defer = <T,>(): Deferred<T> => {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => ((resolve = res), (reject = rej)));
+    return { resolve, reject, promise };
+  };
+  const quietLog = { debug() {}, info() {}, warn() {}, error() {} } as unknown as ConstructorParameters<typeof ConfigCache>[2];
+  const WAIT_MS = 30;
+  type Cfg = { id: string; version: number } | null;
+  const setup = () => {
+    let version = 0;
+    const repo = {
+      loadTenant: vi.fn(async (id: string): Promise<Cfg> => ({ id, version: ++version })),
+      tenantIdForSipUser: vi.fn(async (): Promise<string | null> => 't1'),
+      tenantIdForDid: vi.fn(async (): Promise<string | null> => 't1'),
+      loadRates: vi.fn(async (): Promise<unknown> => ({ v: 1 })),
+    };
+    const cache = new ConfigCache(repo as unknown as ConstructorParameters<typeof ConfigCache>[0], 30, quietLog, WAIT_MS);
+    return { repo, cache };
+  };
+  const version = (t: unknown) => (t as { version: number } | null)?.version;
+  const timed = async <T,>(p: Promise<T>) => {
+    const t0 = Date.now();
+    const v = await p;
+    return { v, ms: Date.now() - t0 };
+  };
+
+  it('an invalidated snapshot is used after staleWaitMs while the reload hangs, then replaced', async () => {
+    const { repo, cache } = setup();
+    expect(version(await cache.tenant('t1'))).toBe(1);
+    const slow = defer<Cfg>();
+    repo.loadTenant.mockImplementationOnce(() => slow.promise);
+    cache.invalidateTenant('t1');
+    const { v, ms } = await timed(cache.tenant('t1'));
+    expect(version(v)).toBe(1); // previous snapshot, not a hung call
+    expect(ms).toBeLessThan(1000);
+    slow.resolve({ id: 't1', version: 7 });
+    await new Promise((r) => setImmediate(r));
+    expect(version(await cache.tenant('t1'))).toBe(7); // the slow reload was stored
+    expect(repo.loadTenant).toHaveBeenCalledTimes(2);
+  });
+
+  it('a fast reload after an invalidation still returns the new snapshot (no stale read)', async () => {
+    const { cache } = setup();
+    await cache.tenant('t1');
+    cache.invalidateTenant('t1');
+    expect(version(await cache.tenant('t1'))).toBe(2);
+  });
+
+  it('calls behind an already slow reload get the fallback at once, with one query', async () => {
+    const { repo, cache } = setup();
+    await cache.tenant('t1');
+    const slow = defer<Cfg>();
+    repo.loadTenant.mockImplementationOnce(() => slow.promise);
+    cache.invalidateTenant('t1');
+    await cache.tenant('t1'); // waits WAIT_MS
+    const { v, ms } = await timed(cache.tenant('t1'));
+    expect(version(v)).toBe(1);
+    expect(ms).toBeLessThan(WAIT_MS);
+    expect(repo.loadTenant).toHaveBeenCalledTimes(2);
+    slow.resolve(null);
+  });
+
+  it('without a previous snapshot the call still waits for the DB', async () => {
+    const { repo, cache } = setup();
+    const slow = defer<Cfg>();
+    repo.loadTenant.mockImplementationOnce(() => slow.promise);
+    let done = false;
+    const p = cache.tenant('t1').then((t) => ((done = true), t));
+    await new Promise((r) => setTimeout(r, WAIT_MS * 3));
+    expect(done).toBe(false);
+    slow.resolve({ id: 't1', version: 5 });
+    expect(version(await p)).toBe(5);
+  });
+
+  it('a reload that fails after the call stopped waiting is handled (no unhandled rejection)', async () => {
+    const { repo, cache } = setup();
+    await cache.tenant('t1');
+    const slow = defer<Cfg>();
+    repo.loadTenant.mockImplementationOnce(() => slow.promise);
+    cache.invalidateTenant('t1');
+    expect(version(await cache.tenant('t1'))).toBe(1);
+    slow.reject(new Error('connection terminated'));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(version(await cache.tenant('t1'))).toBe(2); // next call reloads
+  });
+
+  it('a deleted account (reload returns null) leaves no fallback behind', async () => {
+    const { repo, cache } = setup();
+    await cache.tenant('t1');
+    repo.loadTenant.mockImplementationOnce(async () => null);
+    cache.invalidateTenant('t1');
+    expect(await cache.tenant('t1')).toBeNull();
+    const slow = defer<Cfg>();
+    repo.loadTenant.mockImplementationOnce(() => slow.promise);
+    let done = false;
+    const p = cache.tenant('t1').then(() => (done = true));
+    await new Promise((r) => setTimeout(r, WAIT_MS * 3));
+    expect(done).toBe(false); // waits: nothing to fall back to
+    slow.resolve(null);
+    await p;
+  });
+
+  it('SIP user -> account falls back to the previous id after an invalidation', async () => {
+    const { repo, cache } = setup();
+    await cache.tenantForSipUser('u1');
+    const slowId = defer<string | null>();
+    const slowCfg = defer<Cfg>();
+    repo.tenantIdForSipUser.mockImplementationOnce(() => slowId.promise);
+    repo.loadTenant.mockImplementationOnce(() => slowCfg.promise);
+    cache.invalidateTenant('t1');
+    const { v, ms } = await timed(cache.tenantForSipUser('u1'));
+    expect(version(v)).toBe(1);
+    expect(ms).toBeLessThan(1000);
+    slowId.resolve('t1');
+    slowCfg.resolve({ id: 't1', version: 3 });
+  });
+
+  it('an unknown SIP user is never answered from a stale "unknown"', async () => {
+    const { repo, cache } = setup();
+    repo.tenantIdForSipUser.mockImplementationOnce(async () => null);
+    expect(await cache.tenantForSipUser('new')).toBeNull();
+    cache.invalidateTenant('t1'); // e.g. the extension was just created
+    expect(version(await cache.tenantForSipUser('new'))).toBe(1);
+  });
+
+  it('a LISTEN reconnect (clear) keeps snapshots, ids and rates as fallbacks', async () => {
+    const { repo, cache } = setup();
+    await cache.tenantForDid(['+15551230000']);
+    await cache.getRates();
+    cache.clear();
+    const hang = new Promise<never>(() => {});
+    repo.tenantIdForDid.mockImplementationOnce(() => hang);
+    repo.loadTenant.mockImplementationOnce(() => hang);
+    repo.loadRates.mockImplementationOnce(() => hang);
+    expect(version(await cache.tenantForDid(['+15551230000']))).toBe(1);
+    expect(await cache.getRates()).toEqual({ v: 1 });
+  });
+});

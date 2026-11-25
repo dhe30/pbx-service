@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   const sql = createDb(cfg.DATABASE_URL, { max: cfg.DB_POOL_MAX, applicationName: `ari-app@${cfg.PBX_NODE}` });
   const repo = new Repo(sql, log.child({ mod: 'repo' }));
   const store = new ObjectStore(cfg);
-  const cache = new ConfigCache(repo, cfg.CONFIG_TTL_SEC, log.child({ mod: 'cache' }));
+  const cache = new ConfigCache(repo, cfg.CONFIG_TTL_SEC, log.child({ mod: 'cache' }), cfg.CONFIG_STALE_WAIT_MS);
   const cdr = new CdrWriter(cfg.CDR_SPOOL_DIR, repo, async () => (await cache.getRates()).pricing, log.child({ mod: 'cdr' }), cfg.CDR_FLUSH_MS);
   const uploader = new Uploader(cfg.SPOOL_DIR, repo, store, log.child({ mod: 'uploader' }));
   const media = new MediaCache(cfg.SOUNDS_CACHE_DIR, repo, store, log.child({ mod: 'media' }));
