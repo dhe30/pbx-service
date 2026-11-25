@@ -9,6 +9,9 @@ Type=simple
 User=asterisk
 Group=asterisk
 EnvironmentFile=/etc/pbx/ari-app.env
+# libuv's thread pool runs every fs call (default 4 threads). On 2026-11-25 a frozen root disk
+# held all 4 in fsync and greeting lookups waited 4+ min (src/cdr.ts, src/greetings.ts).
+Environment=UV_THREADPOOL_SIZE={{ ari_app_uv_threadpool_size }}
 WorkingDirectory=/opt/pbx/src/services/ari-app
 ExecStart=/usr/bin/node dist/index.js
 # Crash-only: the app exits when it loses ARI; systemd brings it back in 2 s.

@@ -186,6 +186,7 @@ describe('§5 CDR durability (B6)', () => {
       const failing = { insertCdrs: async () => Promise.reject(new Error('db down')) } as unknown as typeof repo;
       const w1 = new CdrWriter(dir, failing, async () => DEFAULT_CALL_PRICING, log, 5);
       await w1.submit(leg(a, {}));
+      await w1.spoolIdle(); // the file is written in the background (incident 2026-11-25)
       w1.stop();
       expect(readdirSync(dir).filter((f) => f.endsWith('.cdr.json'))).toHaveLength(1);
       const w2 = new CdrWriter(dir, repo, async () => DEFAULT_CALL_PRICING, log, 5);
