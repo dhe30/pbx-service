@@ -42,6 +42,11 @@ const EnvSchema = z.object({
   CDR_FLUSH_MS: z.coerce.number().int().min(10).default(250),
   /** Max age of cached account config (s). NOTIFY invalidates sooner; this bounds a missed one. */
   CONFIG_TTL_SEC: z.coerce.number().int().min(1).max(55).default(30),
+  /**
+   * Max wait (ms) for a config reload on the call path when a previous snapshot exists; after it
+   * the call uses that snapshot (a slow DB must not hold calls: cache.ts, incident 2026-11-25).
+   */
+  CONFIG_STALE_WAIT_MS: z.coerce.number().int().min(0).max(10_000).default(500),
 
   VOICEMAIL_MAX_SEC: z.coerce.number().int().min(10).max(600).default(120),
   /**
