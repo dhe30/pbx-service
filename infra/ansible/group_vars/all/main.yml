@@ -94,6 +94,10 @@ rtpengine_ips: "{{ (groups.get('media') or groups['edge']) | map('extract', host
 # a NEW call uses is a live switch on each edge (kamcmd cfg.set_now_int pbx media_rtp N|0); its
 # value after a Kamailio restart is rtpengine_media_new_calls. In-dialog requests follow the call's
 # own set (Record-Route ;rs=N), so flipping the switch never moves a call in progress.
+# From this set on, each member gets its host var `rtp_weight` (unset = 1) in the set's
+# rtpengine_sock list, so a node's share of new calls follows its size (weight / sum). Set 1 was
+# deployed without weights and must keep rendering exactly as it did (its calls hash over it).
+rtpengine_weights_from_set: 2
 rtpengine_edge_ips: "{{ groups['edge'] | map('extract', hostvars, 'private_ip') | list }}"
 rtpengine_media_ips: "{{ groups.get('media', []) | map('extract', hostvars, 'private_ip') | list }}"
 # 1 since 2026-11-15 (switched live at ~21:35 UTC; media-1 + media-2 carry new calls).

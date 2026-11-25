@@ -31,17 +31,19 @@
 {# Media sets 1..N from the media hosts' `rtp_sets` inventory var (unset = 1; `rtp_sets=1,2` in the
    INI inventory reaches us as the tuple (1, 2), so brackets and spaces are stripped first). Each
    set lists its members in inventory order, so a set's list (and its Call-ID hash) changes only
-   when a host's rtp_sets does. #}
+   when a host's rtp_sets does. Sets from rtpengine_weights_from_set on (group_vars, 2) give each
+   member its `rtp_weight` (unset = 1; rtpengine_sock "udp:ip:port=weight": a node's share of new
+   calls is weight / sum). Earlier sets render without weights, exactly as they always did. #}
 {% set media_hosts = groups.get('media', []) %}
 {% set media_host_sets = {} %}
 {% for h in media_hosts %}{% set _ = media_host_sets.update({h: ((hostvars[h].rtp_sets | default(1) | string) | regex_replace('[()\\[\\] ]', '')).split(',') | reject('equalto', '') | map('int') | list}) %}{% endfor %}
 {% set media_set_ids = media_host_sets.values() | list | flatten | unique | sort %}
 {% set media_sets = [] %}
-{% for id in media_set_ids %}{% set _ = media_sets.append({'id': id, 'ips': media_hosts | select('in', media_host_sets | dict2items | selectattr('value', 'contains', id) | map(attribute='key') | list) | map('extract', hostvars, 'private_ip') | list}) %}{% endfor %}
+{% for id in media_set_ids %}{% set socks = [] %}{% for h in media_hosts %}{% if id in media_host_sets[h] %}{% set _ = socks.append('udp:' ~ hostvars[h].private_ip ~ ':2223' ~ (('=' ~ (hostvars[h].rtp_weight | default(1) | int)) if id >= (rtpengine_weights_from_set | default(2) | int) else '')) %}{% endif %}{% endfor %}{% set _ = media_sets.append({'id': id, 'socks': socks}) %}{% endfor %}
 {% if MEDIA %}
 #
 # rtpengine sets (inventory has a `media` group). Set 0 = the edges' rtpengines; sets 1..N = the
-# media nodes, one set per GENERATION of the media group ({% for ms in media_sets %}set {{ ms.id }}: {{ ms.ips | length }} nodes{% if not loop.last %}, {% endif %}{% endfor %}).
+# media nodes, one set per GENERATION of the media group ({% for ms in media_sets %}set {{ ms.id }}: {{ ms.socks | length }} nodes{% if not loop.last %}, {% endif %}{% endfor %}).
 # Kamailio picks a node by hashing the Call-ID over ONE set and remembers the choice only in
 # memory, so changing a set's members and restarting would move calls in progress to an rtpengine
 # that doesn't know them (the simulator's phones re-INVITE every 30 s: silence within a minute).
@@ -350,7 +352,7 @@ modparam("dispatcher", "hash_pvar", "$avp(dshash)")
 # anchored on an edge hashes to the same node after the restart. Set 1 = the media nodes.
 modparam("rtpengine", "rtpengine_sock", "{% for ip in rtpengine_edge_ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
 {% for ms in media_sets %}
-modparam("rtpengine", "rtpengine_sock", "{{ ms.id }} == {% for ip in ms.ips %}udp:{{ ip }}:2223{% if not loop.last %} {% endif %}{% endfor %}")
+modparam("rtpengine", "rtpengine_sock", "{{ ms.id }} == {{ ms.socks | join(' ') }}")
 {% endfor %}
 # Set per message from this AVP (unset = set 0). Transaction AVPs reach reply and failure routes.
 modparam("rtpengine", "setid_avp", "$avp(rtpset)")

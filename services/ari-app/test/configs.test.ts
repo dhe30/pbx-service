@@ -569,7 +569,8 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
     const socks = [...kam.matchAll(/^modparam\("rtpengine", "rtpengine_sock", "(\d+) == ([^"]+)"\)$/gm)];
     expect(socks.map((m) => [m[1], m[2]])).toEqual([
       ['1', 'udp:127.0.0.51:2223 udp:127.0.0.52:2223'],
-      ['2', 'udp:127.0.0.51:2223 udp:127.0.0.52:2223 udp:127.0.0.53:2223'],
+      // Weighted from set 2 on (rtpengine_weights_from_set): media-3 has rtp_weight=2, the others 1.
+      ['2', 'udp:127.0.0.51:2223=1 udp:127.0.0.52:2223=1 udp:127.0.0.53:2223=2'],
     ]);
     // Both inventory spellings (rtp_sets=1,2 -> tuple, rtp_sets="1,2" -> string) parse the same.
     expect(kam).toMatch(/one set per GENERATION of the media group \(set 1: 2 nodes, set 2: 3 nodes\)/);

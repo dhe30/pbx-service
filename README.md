@@ -294,6 +294,9 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   media-5 ... rtp_sets=1,2
   media-6 ... rtp_sets=2          # the new node: new set only
   ```
+  Sets from `rtpengine_weights_from_set` (group_vars, 2) on are weighted by each host's
+  `rtp_weight` (unset = 1; we use 1 per 2 vCPU), so a node's share of new calls follows its
+  size; set 1 stays unweighted as deployed. A weight change is a member change: new set.
   Steps 2 and 3 above (`--limit media-6`, then `firewall.yml`), then:
   1. Diff only, per edge: `ansible-playbook kamailio-config.yml --ask-vault-pass --limit edge-1`
      (renders `kamailio.cfg.new`, runs `kamailio -c`, prints the diff). It must ADD a `2 == ...`
