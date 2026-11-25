@@ -31,6 +31,9 @@
 // (renewals never raise it). Per-minute prices are global: the billing scheduler switches the
 // call_pricing row (CALL_PRICING below) at the window edges. ALT_PRICING=off disables the
 // alternate list (tests).
+// REPRICED (2026-11-25): standard plan $1.89 with 1,400 included US minutes (alternate 1,500),
+// local $1.44, toll-free $2.44, add-ons $0.09 (alternate $0.08). A prorated add-on purchase under
+// MIN_CHARGE_CENTS is waived, so a mid-period add-on is free until its first renewal.
 export interface Plan {
   name: string;
   /** Plan price per period. Ceiling: $11.50 per included extension. */
@@ -53,23 +56,22 @@ export interface ItemPrices {
   recordingCents: number;
 }
 
-export const STANDARD_PLAN: Plan = { name: 'Business', priceCents: 289, includedExtensions: 70, includedUsMinutes: 650 };
-export const ALT_PLAN: Plan = { name: 'Business', priceCents: 99, includedExtensions: 500, includedUsMinutes: 1000 };
+export const STANDARD_PLAN: Plan = { name: 'Business', priceCents: 189, includedExtensions: 70, includedUsMinutes: 1400 };
+export const ALT_PLAN: Plan = { name: 'Business', priceCents: 99, includedExtensions: 500, includedUsMinutes: 1500 };
 
 export const STANDARD_PRICES: ItemPrices = {
   extensionCents: 8,
-  localNumberCents: 145,
-  tollFreeNumberCents: 245,
-  intlCallingCents: 55,
-  recordingCents: 55,
+  localNumberCents: 144,
+  tollFreeNumberCents: 244,
+  intlCallingCents: 9,
+  recordingCents: 9,
 };
 export const ALT_PRICES: ItemPrices = {
   extensionCents: 1,
   localNumberCents: 99,
   tollFreeNumberCents: 199,
-  /** Not lower: a prorated purchase under MIN_CHARGE_CENTS is waived and never reaches the card. */
-  intlCallingCents: 50,
-  recordingCents: 50,
+  intlCallingCents: 8,
+  recordingCents: 8,
 };
 
 import { inAltWindow } from '@pbx/shared';
