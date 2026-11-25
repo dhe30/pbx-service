@@ -256,8 +256,7 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
 - **Adding media nodes** (rtpengine off the edges; the edges' CPU is mostly rtpengine). Kamailio
   then has two rtpengine sets: set 0 = the edges (where calls in progress live), set 1 = the media
   nodes, and a live switch decides which set NEW calls use. In this order:
-  1. Create the VMs (public IP, Debian 13; cloud firewall SSH + UDP 20000-60000, the
-     `rtpengine_media_port_*` range) and fill in the
+  1. Create the VMs (public IP, Debian 13; cloud firewall SSH + UDP 30000-40000) and fill in the
      `[media]` group in `inventory/production.ini` (same variables as the edges).
   2. `--limit media`: rtpengine + firewall on the new nodes. Check `rtpengine --codecs` and
      `systemctl status rtpengine-daemon` there.
@@ -299,13 +298,6 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   `rtp_weight` (unset = 1; give a node with twice the vCPUs twice the weight), so a node's share of
   new calls follows its size; set 1 stays unweighted as deployed. A weight change is a member
   change: new set. (Set 2, 2026-11-25: all seven nodes 8 vCPU, every weight 1.)
-- **Media port range** (`rtpengine_media_port_min/max`, 20000-60000 since 2026-11-25; edges keep
-  30000-40000): open it in the cloud firewall first, then `firewall.yml` (host nftables, no
-  restart). rtpengine reads it only at startup and `--limit media-N` RESTARTS rtpengine when its
-  config changed, which drops that node's calls. New nodes get it on install. For a node in
-  service: drain it first (`kamcmd rtpengine.enable udp:<ip>:2223 0` on both edges, wait for 0
-  sessions), then `--limit media-N`, check `grep port- /etc/rtpengine/rtpengine.conf` and
-  `nft list ruleset | grep -c 'jump rtpengine'` (2), re-enable it. One node at a time.
   Steps 2 and 3 above (`--limit media-6`, then `firewall.yml`), then:
   1. Diff only, per edge: `ansible-playbook kamailio-config.yml --ask-vault-pass --limit edge-1`
      (renders `kamailio.cfg.new`, runs `kamailio -c`, prints the diff). It must ADD a `2 == ...`

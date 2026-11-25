@@ -13,10 +13,9 @@ listen-ng = {{ private_ip }}:2223
 # Prometheus metrics at http://{{ private_ip }}:2225/metrics
 listen-http = {{ private_ip }}:2225
 
-# Public media ports (group_vars rtpengine_{edge,media}_port_{min,max}; the cloud firewall must open
-# the same UDP range). Read only at startup.
-port-min = {{ rtpengine_port_min }}
-port-max = {{ rtpengine_port_max }}
+# Public media ports (open UDP 30000-40000 in the cloud firewall).
+port-min = 30000
+port-max = 40000
 
 # B3: in-kernel forwarding for streams that need no transcoding (table 0 = the module's first
 # forwarding table). Transcoded streams (G.729, G.723.1, Opus, PCMA <-> PCMU) always run in

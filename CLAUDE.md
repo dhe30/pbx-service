@@ -258,9 +258,7 @@ route[SEND_PUBLIC] forces the public socket for new requests to the internet (20
 ---------------------------------------------------------------------------------------------
 - interface = internal/<edge private IP>;external/<edge public IP>
 - listen-ng = <edge private IP>:2223 (bind private only; host firewall allows only edge peers)
-- port-min/port-max: media nodes 20000/60000 (since 2026-11-25, ports ran out), edges 30000/40000
-  (group_vars rtpengine_{media,edge}_port_*; the cloud firewall opens the same UDP range). Media
-  nodes move the kernel's ephemeral range above it (60001-65535).
+- port-min/port-max = 30000/40000 (open UDP range on public IP in cloud firewall)
 - Built with transcoding (ffmpeg) + bcg729 for G.729; `rtpengine --codecs` lists PCMU, PCMA,
   G723, G729 (+G729a), opus as fully supported (encode+decode), checked 2026-11-12 (V-T1).
 - Transcoded calls run in userspace => CPU is the capacity limit; measure with the SIPp codec
@@ -415,7 +413,7 @@ business hours, blocklist, CDR search, voicemail state, pricing/rates, account s
 ---------------------------------------------------------------------------------------------
 Public (edge only): UDP 5060 (carrier, vendors, phones), TCP 5061 (SIP over TLS for phones),
 TCP 80 (ACME HTTP-01, else redirect to HTTPS), TCP 443 (HTTPS + WSS via HAProxy),
-UDP 20000–60000 on media nodes / 30000–40000 on edges (rtpengine media), TCP 22 (prefer restricting via host firewall).
+UDP 30000–40000 (rtpengine media), TCP 22 (prefer restricting via host firewall).
 Private: Kamailio UDP 5070 (internal socket: Asterisk, peer edge, DMQ) + WS 8080, rtpengine ng 2223, Asterisk UDP 5060 + RTP 10000–20000,
 ARI 8088 (localhost only), API 3000, Postgres 5432, Patroni 8008, etcd 2379/2380, object store,
 node_exporter 9100 and other exporters.

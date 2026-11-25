@@ -55,25 +55,6 @@
     mode: "0644"
   notify: Restart rtpengine
 
-# Media nodes: rtpengine's port range (20000-60000) covers most of Linux's default ephemeral range
-# (32768-60999). A UDP port the kernel hands to an outgoing socket (DNS, NTP) is one rtpengine can't
-# bind, so outgoing sockets get the ports above the media range instead. Takes effect for new
-# sockets at once; no restart.
-- name: Ephemeral ports above the media range (media nodes)
-  ansible.builtin.copy:
-    dest: /etc/sysctl.d/92-rtpengine-ports.conf
-    content: |
-      # Managed by Ansible (role rtpengine). Media ports: {{ rtpengine_port_min }}-{{ rtpengine_port_max }}.
-      net.ipv4.ip_local_port_range = {{ rtpengine_port_max | int + 1 }} 65535
-    mode: "0644"
-  register: rtpengine_port_sysctl
-  when: inventory_hostname in groups.get('media', []) and rtpengine_port_max | int < 65000
-
-- name: Apply the ephemeral port range now
-  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/92-rtpengine-ports.conf
-  when: rtpengine_port_sysctl is changed
-  changed_when: true
-
 - name: Start rtpengine
   ansible.builtin.systemd:
     name: "{{ rtpengine_service }}"
