@@ -29,6 +29,8 @@ export interface FakeChannel {
   vars: Record<string, string>;
   timers: NodeJS.Timeout[];
   hangupReason?: HangupReason;
+  /** Snoop channel: the channel it watches. */
+  spyOn?: string;
 }
 
 const CAUSE: Record<HangupReason, number> = {
@@ -56,7 +58,9 @@ export class FakeAsterisk implements Ari {
   onEvent: (ev: AriEvent) => void = () => {};
   readonly channels = new Map<string, FakeChannel>();
   readonly bridges = new Map<string, Set<string>>();
-  readonly recordings = new Map<string, { target: string; kind: 'channel' | 'bridge' }>();
+  readonly recordings = new Map<string, { target: string; kind: 'channel' }>();
+  /** Every snoop channel created (call recording), in order. */
+  readonly snoops: { snoopId: string; channelId: string }[] = [];
   readonly finishedRecordings: string[] = [];
   private nextSipCallId = 1;
   /** Every channel recording started, with the options that matter to tests (in order). */
@@ -230,6 +234,7 @@ export class FakeAsterisk implements Ari {
       if (r.kind === 'channel' && r.target === channelId) this.finishRecording(name);
     }
     for (const m of this.bridges.values()) m.delete(channelId);
+    for (const s of [...this.channels.values()]) if (s.spyOn === channelId) this.destroy(s.id, 16);
     const ch = this.chan(c);
     if (c.inStasis) this.emit({ type: 'StasisEnd', channel: ch });
     this.emit({ type: 'ChannelDestroyed', cause, cause_txt: `cause ${cause}`, channel: ch });
@@ -332,12 +337,15 @@ export class FakeAsterisk implements Ari {
 
   async destroyBridge(bridgeId: string): Promise<void> {
     this.bridges.delete(bridgeId);
-    for (const [name, r] of this.recordings) if (r.kind === 'bridge' && r.target === bridgeId) this.finishRecording(name);
   }
 
-  async recordBridge(bridgeId: string, name: string): Promise<LiveRecording> {
-    this.recordings.set(name, { target: bridgeId, kind: 'bridge' });
-    return { name, format: 'wav', target_uri: `bridge:${bridgeId}`, state: 'recording' };
+  /** Snoop channel on `channelId`: enters Stasis ("snoop"), ends when the watched channel ends. */
+  async snoop(channelId: string, snoopId: string): Promise<Channel> {
+    this.need(channelId);
+    const c = this.newChannel({ id: snoopId, name: `Snoop/${channelId}-${this.seq}`, inStasis: true, answered: true, spyOn: channelId });
+    this.snoops.push({ snoopId, channelId });
+    this.emit({ type: 'StasisStart', args: ['snoop'], channel: this.chan(c) });
+    return this.chan(c);
   }
 
   async stopRecording(name: string): Promise<void> {

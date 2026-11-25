@@ -10,7 +10,7 @@ import { CallSession } from './session.js';
 //   Stasis(pbx-app, <source>, <sip user>)
 // where Kamailio set the source header: "carrier" (PSTN call to a DID) or "device" (a call placed by
 // one of our phones, X-PBX-User = its SIP username). Legs we originate enter Stasis with
-// "outbound:<caller channel>" when they answer.
+// "outbound:<caller channel>" when they answer, call recordings' snoop channels with "snoop".
 
 export class PbxApp {
   /** Session by its primary channel id (the channel whose hangup ends the flow). */
@@ -41,6 +41,8 @@ export class PbxApp {
           // A leg answered after we stopped waiting for it (caller left, or someone else won).
           this.log.info({ ch: ev.channel.id }, 'late answer on abandoned leg; hanging up');
           void this.ctx.ari.hangupQuietly(ev.channel.id).catch(() => {});
+        } else if (src === 'snoop') {
+          // A call recording's snoop channel (conversation.ts): its conversation drives it.
         } else if (!src.startsWith('outbound:')) {
           this.log.warn({ args: ev.args }, 'unknown Stasis source; hanging up');
           void this.ctx.ari.hangupQuietly(ev.channel.id, 'failure').catch(() => {});

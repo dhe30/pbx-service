@@ -250,12 +250,21 @@ export class AriClient extends EventEmitter<AriClientEvents> {
     }
   }
 
-  recordBridge(bridgeId: string, name: string): Promise<LiveRecording> {
-    return this.request('POST', `/bridges/${enc(bridgeId)}/record`, {
-      name,
-      format: 'wav',
-      ifExists: 'overwrite',
-      beep: false,
+  /**
+   * A snoop channel on `channelId` (spy=both: what the channel sends AND what it hears, mixed),
+   * placed in our Stasis app with appArgs "snoop". Call recording records this channel instead of
+   * the bridge: a bridge recording adds a third member (Recorder), which switches the bridge to
+   * softmix, and softmix corrupted the heap under load (Asterisk 22.11 aborted in
+   * ast_slinfactory_feed <- softmix_bridge_write_voice, recorded calls, 2026-11-25). A snoop is an
+   * audiohook on the channel (as MixMonitor): the bridge stays a 2-party simple bridge.
+   */
+  snoop(channelId: string, snoopId: string): Promise<Channel> {
+    return this.request('POST', `/channels/${enc(channelId)}/snoop`, {
+      spy: 'both',
+      whisper: 'none',
+      app: this.opts.app,
+      appArgs: 'snoop',
+      snoopId,
     });
   }
 
@@ -300,7 +309,7 @@ export type Ari = Pick<
   | 'addToBridge'
   | 'removeFromBridge'
   | 'destroyBridge'
-  | 'recordBridge'
+  | 'snoop'
   | 'stopRecording'
 >;
 

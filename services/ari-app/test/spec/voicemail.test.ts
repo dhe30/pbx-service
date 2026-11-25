@@ -132,12 +132,20 @@ describe('§3 Voicemail: leaving a message', () => {
     try {
       const c = new AriClient({ url: 'http://127.0.0.1:8088', user: 'u', password: 'p', app: 'pbx-app' });
       await c.recordChannel('ch', { name: 'vm-x', maxDurationSeconds: 120, maxSilenceSeconds: 5, beep: true, terminateOn: '#' });
-      await c.recordBridge('br', 'rec-x');
+      await c.snoop('ch', 'sn-1');
+      await c.recordChannel('sn-1', { name: 'rec-x', maxDurationSeconds: 0, maxSilenceSeconds: 0, beep: false, terminateOn: 'none' });
     } finally {
       globalThis.fetch = realFetch;
     }
-    for (const c of calls) expect(new URL(c.url).searchParams.get('format')).toBe('wav');
+    const records = calls.filter((c) => new URL(c.url).pathname.endsWith('/record'));
+    expect(records).toHaveLength(2);
+    for (const c of records) expect(new URL(c.url).searchParams.get('format')).toBe('wav');
     expect(new URL(calls[0]!.url).searchParams.get('terminateOn')).toBe('#');
+    // Call recording: a snoop on the channel (both directions) in our app, never a bridge recording.
+    const snoop = new URL(calls[1]!.url);
+    expect(snoop.pathname).toBe('/ari/channels/ch/snoop');
+    expect(Object.fromEntries(snoop.searchParams)).toMatchObject({ spy: 'both', app: 'pbx-app', appArgs: 'snoop', snoopId: 'sn-1' });
+    expect(calls.some((c) => c.url.includes('/bridges/'))).toBe(false);
   });
 });
 
