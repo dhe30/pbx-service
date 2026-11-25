@@ -1,1 +1,4 @@
 ---
+# libuv thread pool size for the ARI app (Node default 4). Every fs call runs there; a stalled
+# disk once held all 4 threads in fsync (2026-11-25). Applied via the systemd unit's Environment=.
+ari_app_uv_threadpool_size: 16
