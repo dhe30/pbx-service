@@ -223,13 +223,18 @@ groups:
           summary: "{{ $labels.instance }}: call record inserts are failing"
           description: Check the database (PatroniNoPrimary?) and the ARI app log.
 
-      # Recordings/voicemail wait in the local spool until the object store accepts them.
+      # Recordings/voicemail wait in the local spool until the object store accepts them. Uploads
+      # start when a recording ends and the sweep retries every minute, so a finished recording
+      # older than 10 min means uploads are failing (object store or DB), not just busy.
+      # Not the file count: until 2026-11-26 it included recordings of calls in progress and
+      # fired at peak load (pbx-7: 131 sidecars, 0 finished, 0 upload failures).
       - alert: UploadBacklogGrowing
-        expr: pbx_upload_backlog > 100
-        for: 15m
+        expr: pbx_upload_oldest_waiting_seconds > 600
+        for: 5m
         labels: { severity: warning }
         annotations:
-          summary: "{{ $labels.instance }}: {{ $value }} recordings waiting for upload to the object store"
+          summary: "{{ $labels.instance }}: a finished recording has waited {{ $value | humanizeDuration }} for upload to the object store"
+          description: Look for "upload failed" in the ARI app log (journalctl -u pbx-ari-app); pbx_upload_backlog is how many are waiting.
 
       # A PSTN vendor with a $0 prepaid balance answers 402, which Asterisk reports as Q.850 cause
       # 127 (interworking; what it arrived as in production, 2026-11-16) or 21 (call rejected).

@@ -36,6 +36,19 @@ const ORPHAN_MS = 10 * 60_000;
 const MIN_VOICEMAIL_MS = 1000;
 const SWEEP_INTERVAL_MS = 60_000;
 
+type SpoolState = 'recording' | 'upload' | 'drop';
+
+/**
+ * What to do with a spooled recording: still being written, ready to upload, or drop (no audio
+ * file). A recording is finished when ARI said so (ready) or its wav stopped growing for STALE_MS
+ * (the app died mid-call).
+ */
+function spoolState(meta: SpoolMeta, wav: { mtimeMs: number } | null, now: number): SpoolState {
+  if (!wav) return meta.ready || now - Date.parse(meta.createdAt) > ORPHAN_MS ? 'drop' : 'recording';
+  if (!meta.ready && now - wav.mtimeMs < STALE_MS) return 'recording';
+  return 'upload';
+}
+
 export class Uploader {
   private readonly inFlight = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
@@ -86,8 +99,34 @@ export class Uploader {
       this.log.error({ err, dir: this.spoolDir }, 'cannot read spool dir');
       return;
     }
-    metrics.uploadBacklog.set(names.length);
+    await this.updateGauges(names);
     for (const name of names) await this.process(name);
+  }
+
+  /**
+   * Backlog = finished recordings not uploaded yet, NOT every sidecar: recordings of calls in
+   * progress are counted separately, or a busy node looks stuck while every upload succeeds.
+   * Waiting time counts from the wav's last write (about when the recording ended).
+   */
+  private async updateGauges(names: string[]): Promise<void> {
+    const now = Date.now();
+    let waiting = 0;
+    let recording = 0;
+    let oldest = now;
+    for (const name of names) {
+      const meta = await this.readMeta(name).catch(() => null);
+      if (!meta) continue;
+      const wav = await stat(this.wavPath(name)).catch(() => null);
+      const state = spoolState(meta, wav, now);
+      if (state === 'recording') recording++;
+      else if (state === 'upload') {
+        waiting++;
+        oldest = Math.min(oldest, wav!.mtimeMs);
+      }
+    }
+    metrics.uploadBacklog.set(waiting);
+    metrics.recordingsInProgress.set(recording);
+    metrics.uploadOldestWaiting.set(Math.max(0, Math.round((now - oldest) / 1000)));
   }
 
   private async process(name: string): Promise<void> {
@@ -101,15 +140,13 @@ export class Uploader {
         return; // already processed by a concurrent run, or unreadable (logged by sweep later)
       }
       const wav = await stat(this.wavPath(name)).catch(() => null);
-
-      if (!wav) {
-        if (meta.ready || Date.now() - Date.parse(meta.createdAt) > ORPHAN_MS) {
-          this.log.warn({ name }, 'recording has no audio file; dropping');
-          await this.abandon(name);
-        }
+      const state = spoolState(meta, wav, Date.now());
+      if (state === 'drop') {
+        this.log.warn({ name }, 'recording has no audio file; dropping');
+        await this.abandon(name);
         return;
       }
-      if (!meta.ready && Date.now() - wav.mtimeMs < STALE_MS) return; // still recording
+      if (state === 'recording' || !wav) return; // still recording (or about to start)
 
       const durationMs = wavDurationMs(wav.size);
       if (meta.kind === 'voicemail' && durationMs < MIN_VOICEMAIL_MS) {
