@@ -11,6 +11,12 @@ ExecStart=/usr/local/bin/garage -c /etc/garage.toml server
 Restart=always
 RestartSec=2
 LimitNOFILE=42000
+{% if garage_memory_max_mb | string | length > 0 %}
+# Above MemoryHigh the kernel reclaims Garage's memory and slows it; at MemoryMax it kills Garage
+# (restarted in 2 s) instead of the whole VM running out of memory. See defaults/main.yml.
+MemoryHigh={{ garage_memory_high_mb }}M
+MemoryMax={{ garage_memory_max_mb }}M
+{% endif %}
 
 [Install]
 WantedBy=multi-user.target

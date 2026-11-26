@@ -1,11 +1,43 @@
 # 2026-11-26: memory runs out on the db nodes -> db-2/db-3 stop responding, two Patroni failovers
 
-Status: **open, still happening** (last data 17:17 UTC; db-3 back, db-2 down, memory growing again
-fastest on db-1, the primary). The db nodes have been losing memory to a
-process outside Postgres since 15:27-15:47 UTC. db-2 and db-3 (4 GB each) ran out twice and are
-unresponsive again; db-1 (the primary, 8 GB) is next if the growth there picks up again. The process
-has not been named yet: nobody has looked on the db nodes. Everything below comes from read-only
-checks: Patroni's REST API (via app-1), Prometheus on mon-1, and Garage's `/health`.
+Status: **mitigated 18:08 UTC** (root cause below; the sections after it are the 17:17 write-up,
+made before anyone looked on the db nodes). All three db nodes up, db-1 primary (timeline 10), Garage
+memory capped, uploads succeeding, spooled recordings draining.
+
+## Root cause (checked on the db and pbx nodes, 17:50-18:10 UTC)
+1. **~15:23: the Garage Volumes filled up.** `/var/lib/garage/data2` (250 GB, 240G declared capacity)
+   reached 246 GB on all three db nodes. Every PUT failed:
+   `Could not reach quorum of 2 ... IO error: No space left on device (os error 28)`.
+2. **Upload retry storm.** Every pbx node's uploader kept retrying every finished recording: oldest
+   waiting item 15:23-15:44, ~17,800 recordings (~50 GB) pending at 18:00 (pbx-7 6,830 / 21 GB,
+   pbx-3 3,099, pbx-6 2,949), ~99 % of uploads failing. Each pbx node held ~45 connections to Garage,
+   with MBs of unread data in Garage's receive queues; db-1 logged `TCP: out of memory`.
+3. **Garage memory** (the growing anonymous memory above) reached 2-2.5 GB on the 4 GB db-2/db-3
+   and 5.2 GB on db-1. No swap and no cgroup limit, so the VMs thrashed (journal nearly silent,
+   etcd unresponsive) instead of killing Garage.
+4. **etcd lost quorum, so Patroni demoted the primary.** Recovery came each time from the kernel
+   OOM-killing Garage: db-3 at **17:14:03** (etcd leader 17:14:06, db-1 promoted 17:14:08), db-3 at
+   17:41:17 and db-2 at 17:41:37 (second outage, no primary 17:41:10-17:42:21, timeline 10).
+
+Fixes:
+- 17:56-17:58: the Volumes were grown to 500 GB (online `resize2fs`); PUTs succeed from ~18:00.
+- 18:06-18:08: Garage capped live, one node at a time (`systemctl set-property garage`;
+  db-2/db-3 MemoryHigh=1200M MemoryMax=1500M, db-1 2500M/3G). Setting it killed and restarted
+  Garage on each node: db-2 went from 104 MB to 2.7 GB available. Afterwards Garage's working memory
+  was 280-500 MB (the cgroup at MemoryHigh is mostly page cache), with 0 upload failures in 2 min.
+- Role: `garage_memory_{max,high}_mb` (37.5 % / 30 % of RAM) in the Garage unit, the live drop-ins
+  removed, `garage_volume_capacity=470G` in the production inventory.
+
+Still open:
+- Why the Volume could fill: nothing alerted. `DiskSpaceLow` (70 %) should have fired on data2;
+  check that the alert covers mounts other than /.
+- The uploader makes a backlog worse: in `services/ari-app/src/uploader.ts`, `sweep()` runs
+  sequentially but a new sweep starts every interval while the old ones still run, so upload
+  concurrency grows with the backlog.
+- Lost rows and grader tickets for 16:20-16:30, 17:00-17:14 and 17:41-17:42 (step 6 below).
+- Forensics: pg_rewind copies the source's `log/` directory, so on db-2/db-3 the start of
+  `postgresql-Thu.log` holds db-1's lines. The volatile journals on db-2/db-3 keep only about 1 h
+  (Patroni's ConnectionReset tracebacks), so the 16:22 trigger is no longer in the logs there.
 
 ## What happened (UTC)
 - 11:00-15:27: steady. Available memory flat on all three db nodes (db-1 ~6.9 GB, db-2 ~2.4 GB,
