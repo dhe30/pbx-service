@@ -32,6 +32,15 @@ export const metrics = {
   cdrSpoolPending: new Gauge({ name: 'pbx_cdr_spool_pending', help: 'CDR spool file operations queued or running (rises while the disk is stalled)', registers: reg }),
   cdrsWritten: new Counter({ name: 'pbx_cdrs_written_total', help: 'CDR legs inserted', registers: reg }),
   cdrWriteErrors: new Counter({ name: 'pbx_cdr_write_errors_total', help: 'Failed CDR batch inserts', registers: reg }),
-  uploadBacklog: new Gauge({ name: 'pbx_upload_backlog', help: 'Recordings in the spool waiting for upload', registers: reg }),
+  // Set by each spool sweep (every minute). Until 2026-11-26 pbx_upload_backlog also counted
+  // recordings of calls still in progress, so a busy node crossed the alert threshold while every
+  // upload succeeded.
+  uploadBacklog: new Gauge({ name: 'pbx_upload_backlog', help: 'Finished recordings in the spool waiting for upload', registers: reg }),
+  uploadOldestWaiting: new Gauge({
+    name: 'pbx_upload_oldest_waiting_seconds',
+    help: 'How long the oldest finished recording has waited for upload (0 = none waiting)',
+    registers: reg,
+  }),
+  recordingsInProgress: new Gauge({ name: 'pbx_recordings_in_progress', help: 'Recordings (and voicemails) still being written', registers: reg }),
   uploadsTotal: new Counter({ name: 'pbx_uploads_total', help: 'Recording uploads by result', labelNames: ['result'] as const, registers: reg }),
 };
