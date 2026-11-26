@@ -37,8 +37,10 @@
 // REPRICED (2026-11-25, evening): standard plan $0.49 with 2,200 included US minutes (alternate
 // $0.48 / 2,250), local and toll-free numbers $0.99 (alternate $0.98), add-ons $0.04 (alternate
 // $0.03). Existing items keep their price.
-// REPRICED (2026-11-26, migration 20261126000000_pricing_e.sql): standard per-minute prices US
-// $0.0067, incoming toll-free $0.025; the alternate list's per-minute prices are unchanged.
+// 2026-11-26: standard per-minute prices US $0.0067 / incoming toll-free $0.025 were published
+// (migration 20261126000000_pricing_e.sql) while the pbx nodes still rated calls at $0.0066 / $0.012,
+// so call records disagreed with the published price. Back to $0.0066 / $0.012 until the API and every
+// pbx node can switch together: a per-minute price change must reach both inside the alternate window.
 export interface Plan {
   name: string;
   /** Plan price per period. Ceiling: $11.50 per included extension. */
