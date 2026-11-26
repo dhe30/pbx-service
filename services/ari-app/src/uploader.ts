@@ -5,7 +5,7 @@ import type { Logger } from './log.js';
 import { metrics } from './metrics.js';
 import type { ObjectStore } from './object-store.js';
 import type { Repo } from './repo.js';
-import { wavDurationMs } from './wav.js';
+import { mixWavs, wavDurationMs } from './wav.js';
 
 // Moves finished recordings from Asterisk's local spool to the object store + DB.
 //
@@ -13,6 +13,10 @@ import { wavDurationMs } from './wav.js';
 // Asterisk will write `<name>.wav`. The sidecar carries everything needed to file the recording,
 // so after a crash the startup sweep can still upload it. Local files are deleted only after both
 // the upload and the DB insert succeeded; until then the sweep keeps retrying every minute.
+//
+// A call recording is written as one file per party (`<name>-a.wav`, `<name>-b.wav`, each the snoop
+// of what that party says; conversation.ts). When it is finished they are mixed into `<name>.wav`
+// here, then uploaded like any other recording. Voicemail is a single `<name>.wav`.
 
 export interface SpoolMeta {
   kind: 'voicemail' | 'recording';
@@ -32,6 +36,8 @@ const META_SUFFIX = '.meta.json';
 const STALE_MS = 2 * 60_000;
 /** A sidecar with no wav after this long belongs to a recording that never started. */
 const ORPHAN_MS = 10 * 60_000;
+/** Per-party parts of a call recording (conversation.ts records one snoop per party). */
+export const PART_SLOTS = ['a', 'b'] as const;
 /** Voicemails shorter than this are hang-ups at the beep; drop them. */
 const MIN_VOICEMAIL_MS = 1000;
 const SWEEP_INTERVAL_MS = 60_000;
@@ -80,6 +86,36 @@ export class Uploader {
   async abandon(name: string): Promise<void> {
     await unlink(this.metaPath(name)).catch(() => {});
     await unlink(this.wavPath(name)).catch(() => {});
+    for (const p of this.partPaths(name)) await unlink(p).catch(() => {});
+  }
+
+  /**
+   * The recording's audio as far as it exists: `<name>.wav`, else its per-party parts (newest write,
+   * total size). null = no audio file yet.
+   */
+  private async audio(name: string): Promise<{ mtimeMs: number; size: number; parts: string[] } | null> {
+    const whole = await stat(this.wavPath(name)).catch(() => null);
+    if (whole) return { mtimeMs: whole.mtimeMs, size: whole.size, parts: [] };
+    const parts: string[] = [];
+    let mtimeMs = 0;
+    let size = 0;
+    for (const p of this.partPaths(name)) {
+      const st = await stat(p).catch(() => null);
+      if (!st) continue;
+      parts.push(p);
+      mtimeMs = Math.max(mtimeMs, st.mtimeMs);
+      size = Math.max(size, st.size);
+    }
+    return parts.length ? { mtimeMs, size, parts } : null;
+  }
+
+  /** Mix the per-party parts into `<name>.wav` (written aside, then renamed), then delete them. */
+  private async mixParts(name: string, parts: string[]): Promise<void> {
+    const inputs = await Promise.all(parts.map((p) => readFile(p)));
+    const tmp = `${this.wavPath(name)}.tmp`;
+    await writeFile(tmp, mixWavs(inputs));
+    await rename(tmp, this.wavPath(name));
+    for (const p of parts) await unlink(p).catch(() => {});
   }
 
   start(): void {
@@ -116,7 +152,7 @@ export class Uploader {
     for (const name of names) {
       const meta = await this.readMeta(name).catch(() => null);
       if (!meta) continue;
-      const wav = await stat(this.wavPath(name)).catch(() => null);
+      const wav = await this.audio(name);
       const state = spoolState(meta, wav, now);
       if (state === 'recording') recording++;
       else if (state === 'upload') {
@@ -139,14 +175,16 @@ export class Uploader {
       } catch {
         return; // already processed by a concurrent run, or unreadable (logged by sweep later)
       }
-      const wav = await stat(this.wavPath(name)).catch(() => null);
-      const state = spoolState(meta, wav, Date.now());
+      const audio = await this.audio(name);
+      const state = spoolState(meta, audio, Date.now());
       if (state === 'drop') {
         this.log.warn({ name }, 'recording has no audio file; dropping');
         await this.abandon(name);
         return;
       }
-      if (state === 'recording' || !wav) return; // still recording (or about to start)
+      if (state === 'recording' || !audio) return; // still recording (or about to start)
+      if (audio.parts.length) await this.mixParts(name, audio.parts);
+      const wav = await stat(this.wavPath(name));
 
       const durationMs = wavDurationMs(wav.size);
       if (meta.kind === 'voicemail' && durationMs < MIN_VOICEMAIL_MS) {
@@ -172,6 +210,10 @@ export class Uploader {
 
   private wavPath(name: string): string {
     return join(this.spoolDir, `${name}.wav`);
+  }
+
+  private partPaths(name: string): string[] {
+    return PART_SLOTS.map((slot) => join(this.spoolDir, `${name}-${slot}.wav`));
   }
 
   private metaPath(name: string): string {

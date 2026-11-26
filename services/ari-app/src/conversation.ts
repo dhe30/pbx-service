@@ -4,6 +4,7 @@ import type { AriEvent, ChannelTransfer } from './ari/types.js';
 import type { Ctx } from './ctx.js';
 import { metrics } from './metrics.js';
 import type { CallSession, Party } from './session.js';
+import { PART_SLOTS } from './uploader.js';
 
 // A connected call: two parties in one Asterisk bridge, driven until it ends.
 //
@@ -14,12 +15,13 @@ import type { CallSession, Party } from './session.js';
 // third member (the bridge recorder) and a softmix bridge, which drops hold frames, so we always
 // do it here.
 //
-// Recording (add-on): a snoop channel on one party (spy=both, so both directions) is recorded,
-// NOT the bridge. Bridge recording made every recorded call a 3-member softmix bridge, and softmix
-// corrupted Asterisk's heap under load (abort in ast_slinfactory_feed <- softmix_bridge_write_voice
-// on a recorded call, 2026-11-25): each crash dropped every call on that node. The snoop follows
-// the party it watches; if that party leaves in an attended transfer, recording moves to the party
-// that stays and appends to the same file.
+// Recording (add-on): each party gets a snoop channel recording what that party says (spy=in) into
+// its own part (<name>-a, <name>-b); the uploader mixes the parts into one WAV (uploader.ts). NOT the
+// bridge: bridge recording made every recorded call a 3-member softmix bridge, and softmix corrupted
+// Asterisk's heap under load (abort in ast_slinfactory_feed <- softmix_bridge_write_voice on a
+// recorded call, 2026-11-25). One snoop with spy=both on one party held only that party's own audio
+// (live 2026-11-26), hence one per party. If a party leaves in an attended transfer, its part
+// continues on the party that joins (appended, same file).
 // A hold from BEFORE the bridge (IVR, extension still ringing) comes from ctx.holds (hold-state.ts).
 //
 // Transfer: every party gets PJSIP_TRANSFER_HANDLING()=ari-only, so a REFER from a phone becomes a
@@ -114,7 +116,7 @@ export class Conversation {
       await ctx.ari.createBridge(this.bridgeId);
       await ctx.ari.addToBridge(this.bridgeId, this.parties);
       await Promise.all(this.parties.map((p) => this.enableAriTransfer(p)));
-      if (this.opts.record) await this.startRecording(this.parties[0]!);
+      if (this.opts.record) await this.startRecording();
       // A party may have held before we bridged (caller in the IVR or while the extension rang):
       // its ChannelHold came before our subscription. Apply that state now; holds and resumes from
       // here on arrive as events (already queued ones included), and setHold() ignores repeats.
@@ -270,11 +272,14 @@ export class Conversation {
       await this.enableAriTransfer(target);
       await ctx.ari.transferProgress(transferer, 'channel_answered').catch(() => {});
       await ctx.ari.hangupQuietly(transferer).catch(() => {});
-      // The recording watched the phone that just left: continue it on the party that stays.
-      if (this.rec && this.rec.target === transferer) {
-        const name = this.rec.name;
-        await this.finishRecording(false);
-        await this.startRecording(remaining, name);
+      // The part that recorded the phone that just left continues on the party that joined.
+      const part = this.rec?.parts.find((p) => p.target === transferer);
+      if (this.rec && part) {
+        const rec = this.rec;
+        await this.stopPart(rec.name, part);
+        rec.parts = rec.parts.filter((p) => p !== part);
+        const moved = await this.startPart(rec.name, part.slot, target, true);
+        if (moved) rec.parts.push(moved);
       }
       return null; // keep driving the joined call
     }
@@ -294,69 +299,88 @@ export class Conversation {
     return { reason: 'blind_transfer', remaining, target };
   }
 
-  /**
-   * Record `target` through a snoop channel. `continueName`: append to that earlier recording
-   * (an attended transfer took away the party it watched).
-   */
-  private async startRecording(target: string, continueName?: string): Promise<void> {
+  /** Record the call: one snoop per party, each into its own part of the same recording. */
+  private async startRecording(): Promise<void> {
     const { ctx, s } = this;
     if (!s.tenant) return;
-    let name = continueName;
-    if (!name) {
-      const mediaId = randomUUID();
-      name = `rec-${mediaId}`;
-      await ctx.uploader.begin(name, { kind: 'recording', mediaId, tenantId: s.tenant.id, callId: s.callId, mailboxId: null });
+    const mediaId = randomUUID();
+    const name = `rec-${mediaId}`;
+    await ctx.uploader.begin(name, { kind: 'recording', mediaId, tenantId: s.tenant.id, callId: s.callId, mailboxId: null });
+    const rec: Recording = { name, parts: [] };
+    for (let i = 0; i < this.parties.length && i < PART_SLOTS.length; i++) {
+      const part = await this.startPart(name, PART_SLOTS[i]!, this.parties[i]!, false);
+      if (part) rec.parts.push(part);
     }
+    if (rec.parts.length) this.rec = rec;
+    else await ctx.uploader.abandon(name);
+  }
+
+  /**
+   * Record what `target` says (snoop spy=in) into part `slot` of recording `name`. `append`: continue
+   * that part (an attended transfer replaced the party it recorded). null when it could not start.
+   */
+  private async startPart(name: string, slot: string, target: string, append: boolean): Promise<RecordingPart | null> {
+    const { ctx, s } = this;
+    const partName = `${name}-${slot}`;
     const snoopId = randomUUID();
     // Both subscriptions before the actions: the snoop enters Stasis asynchronously, and the
     // recording ends by itself (RecordingFinished) if the watched party hangs up first.
     const started = ctx.bus.subscribe(onChannel(snoopId, 'StasisStart', 'ChannelDestroyed'));
-    const done = ctx.bus.subscribe(onRecordingDone(name));
+    const done = ctx.bus.subscribe(onRecordingDone(partName));
     try {
-      await ctx.ari.snoop(target, snoopId);
+      await ctx.ari.snoop(target, snoopId, 'in');
       const ev = await started.next({ timeoutMs: 3000 });
       if (ev?.type !== 'StasisStart') throw new Error(`snoop channel did not enter Stasis (${ev?.type ?? 'timeout'})`);
       await ctx.ari.recordChannel(snoopId, {
-        name,
+        name: partName,
         maxDurationSeconds: 0, // 0 = no limit
         maxSilenceSeconds: 0,
         beep: false,
         terminateOn: 'none',
-        ifExists: continueName ? 'append' : 'overwrite',
+        ifExists: append ? 'append' : 'overwrite',
       });
-      this.rec = { name, snoopId, target, done: done as Subscription<AriEvent> };
+      return { slot, snoopId, target, done: done as Subscription<AriEvent> };
     } catch (err) {
-      s.log.error({ err, target }, 'could not start call recording');
+      s.log.error({ err, target, slot }, 'could not start call recording');
       done.close();
       await ctx.ari.hangupQuietly(snoopId).catch(() => {});
-      // A continued recording keeps what it already has: file it.
-      if (continueName) await ctx.uploader.finish(name);
-      else await ctx.uploader.abandon(name);
+      return null;
     } finally {
       started.close();
     }
   }
 
-  /** Stop the recording and its snoop channel. `file`: hand the file to the uploader (call over). */
+  /** Stop one part and its snoop channel (waits for Asterisk to close the file). */
+  private async stopPart(name: string, p: RecordingPart): Promise<void> {
+    try {
+      await this.ctx.ari.stopRecording(`${name}-${p.slot}`).catch(() => {});
+      const ev = await p.done.next({ timeoutMs: 5000 });
+      await this.ctx.ari.hangupQuietly(p.snoopId).catch(() => {});
+      // Without the event the file may still be open; the uploader's stale-file sweep handles it.
+      if (!ev) this.s.log.warn({ name, slot: p.slot }, 'no RecordingFinished event; leaving recording to the sweep');
+    } finally {
+      p.done.close();
+    }
+  }
+
+  /** Stop every part. `file`: hand the recording to the uploader (call over), which mixes the parts. */
   private async finishRecording(file: boolean): Promise<void> {
     const r = this.rec;
     if (!r) return;
     this.rec = null;
-    try {
-      await this.ctx.ari.stopRecording(r.name).catch(() => {});
-      const ev = await r.done.next({ timeoutMs: 5000 });
-      await this.ctx.ari.hangupQuietly(r.snoopId).catch(() => {});
-      // Without the event the file may still be open; the uploader's stale-file sweep handles it.
-      if (!ev) this.s.log.warn({ name: r.name }, 'no RecordingFinished event; leaving recording to the sweep');
-      else if (file) await this.ctx.uploader.finish(r.name);
-    } finally {
-      r.done.close();
-    }
+    await Promise.all(r.parts.map((p) => this.stopPart(r.name, p)));
+    if (file) await this.ctx.uploader.finish(r.name);
   }
 }
 
 interface Recording {
   name: string;
+  parts: RecordingPart[];
+}
+
+interface RecordingPart {
+  /** 'a' / 'b': the file <name>-<slot>.wav. */
+  slot: string;
   /** The snoop channel being recorded. */
   snoopId: string;
   /** The party it watches. */

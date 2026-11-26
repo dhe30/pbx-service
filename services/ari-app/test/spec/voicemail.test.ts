@@ -141,10 +141,10 @@ describe('§3 Voicemail: leaving a message', () => {
     expect(records).toHaveLength(2);
     for (const c of records) expect(new URL(c.url).searchParams.get('format')).toBe('wav');
     expect(new URL(calls[0]!.url).searchParams.get('terminateOn')).toBe('#');
-    // Call recording: a snoop on the channel (both directions) in our app, never a bridge recording.
+    // Call recording: a snoop on each party (what it says) in our app, never a bridge recording.
     const snoop = new URL(calls[1]!.url);
     expect(snoop.pathname).toBe('/ari/channels/ch/snoop');
-    expect(Object.fromEntries(snoop.searchParams)).toMatchObject({ spy: 'both', app: 'pbx-app', appArgs: 'snoop', snoopId: 'sn-1' });
+    expect(Object.fromEntries(snoop.searchParams)).toMatchObject({ spy: 'in', app: 'pbx-app', appArgs: 'snoop', snoopId: 'sn-1' });
     expect(calls.some((c) => c.url.includes('/bridges/'))).toBe(false);
   });
 });

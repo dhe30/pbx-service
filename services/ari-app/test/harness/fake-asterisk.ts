@@ -60,7 +60,7 @@ export class FakeAsterisk implements Ari {
   readonly bridges = new Map<string, Set<string>>();
   readonly recordings = new Map<string, { target: string; kind: 'channel' }>();
   /** Every snoop channel created (call recording), in order. */
-  readonly snoops: { snoopId: string; channelId: string }[] = [];
+  readonly snoops: { snoopId: string; channelId: string; spy: string }[] = [];
   readonly finishedRecordings: string[] = [];
   private nextSipCallId = 1;
   /** Every channel recording started, with the options that matter to tests (in order). */
@@ -340,10 +340,10 @@ export class FakeAsterisk implements Ari {
   }
 
   /** Snoop channel on `channelId`: enters Stasis ("snoop"), ends when the watched channel ends. */
-  async snoop(channelId: string, snoopId: string): Promise<Channel> {
+  async snoop(channelId: string, snoopId: string, spy = 'in'): Promise<Channel> {
     this.need(channelId);
     const c = this.newChannel({ id: snoopId, name: `Snoop/${channelId}-${this.seq}`, inStasis: true, answered: true, spyOn: channelId });
-    this.snoops.push({ snoopId, channelId });
+    this.snoops.push({ snoopId, channelId, spy });
     this.emit({ type: 'StasisStart', args: ['snoop'], channel: this.chan(c) });
     return this.chan(c);
   }
