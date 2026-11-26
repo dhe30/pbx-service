@@ -1,4 +1,4 @@
-import { createDb } from '@pbx/shared';
+import { createDb, isPostgresClosedSocketWrite } from '@pbx/shared';
 import { hostname } from 'node:os';
 import { buildApp } from './app.js';
 import { FfmpegConverter } from './audio.js';
@@ -83,6 +83,11 @@ async function main(): Promise<void> {
   // A bug that escapes every handler: log it as one JSON line like every other API log and exit,
   // as Node would anyway; systemd restarts us and the other app node keeps serving meanwhile.
   const crash = (kind: string) => (err: unknown) => {
+    // A DB connection that closed under a queued write (postgres.js): harmless, the pool reconnects.
+    if (isPostgresClosedSocketWrite(err)) {
+      app.log.warn({ err }, 'postgres connection closed under a queued write; continuing');
+      return;
+    }
     app.log.fatal({ err }, `${kind}; exiting`);
     process.exit(1);
   };

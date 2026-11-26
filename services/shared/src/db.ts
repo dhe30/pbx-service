@@ -75,3 +75,20 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     }
   }
 }
+
+/**
+ * postgres.js 3.4.9 queues a write with setImmediate (connection.js nextWrite); if the connection
+ * closes before it runs, it calls write on a socket that is already null and throws a TypeError
+ * outside any query. The connection is gone either way and its queries were already rejected; the
+ * pool reconnects on the next query. Every app process saw it at the same second when the DB proxy
+ * cut all sessions (2026-11-26 18:07 UTC): treated as fatal, it restarted the ARI app on six pbx
+ * nodes at once and dropped their calls. Process-level handlers log this one and keep running.
+ */
+export function isPostgresClosedSocketWrite(err: unknown): boolean {
+  return (
+    err instanceof TypeError &&
+    /reading 'write'/.test(err.message) &&
+    /nextWrite/.test(err.stack ?? '') &&
+    /postgres[\/](src|cjs|cf)[\/]connection\.js/.test(err.stack ?? '')
+  );
+}
