@@ -21,6 +21,9 @@ memory capped, uploads succeeding, spooled recordings draining.
 
 Fixes:
 - 17:56-17:58: the Volumes were grown to 500 GB (online `resize2fs`); PUTs succeed from ~18:00.
+- ~19:30: grown again to 1500 GB (online `resize2fs`, 20 % used): recordings were ~105 GB/day per
+  node on 11-25 (224k recording minutes; Garage compresses the WAVs ~2:1), so 7 days need ~1-1.4 TB.
+  `garage_volume_capacity=1440G`.
 - 18:06-18:08: Garage capped live, one node at a time (`systemctl set-property garage`;
   db-2/db-3 MemoryHigh=1200M MemoryMax=1500M, db-1 2500M/3G). Setting it killed and restarted
   Garage on each node: db-2 went from 104 MB to 2.7 GB available. Afterwards Garage's working memory
