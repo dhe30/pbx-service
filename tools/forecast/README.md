@@ -27,7 +27,8 @@ Installed by `roles/forecast` (mon play in `site.yml`). On mon-1:
     sudo -u pbxforecast python3 /opt/pbx-forecast/report.py            # collect + full report
     sudo -u pbxforecast python3 /opt/pbx-forecast/report.py --summary  # our data only
 
-The 6-hourly timer (`forecast_timer_enabled`, off by default) runs `--summary --discord`.
+The 6-hourly timer (`forecast_timer_enabled`, off by default) runs `--remind --discord`: it stores the
+new hours and posts a request for the dashboard data. Forecasts run only when that data arrives.
 `touch /var/lib/pbx-forecast/OFF` stops everything.
 
 ## Load on production
