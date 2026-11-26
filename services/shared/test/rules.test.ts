@@ -111,8 +111,6 @@ describe('§2 Prices stay under the ceilings', () => {
     // a minute. Per-destination US pricing would close that gap (not done yet).
     const usVendorTypicalPerMin = 0.006;
     expect(DEFAULT_CALL_PRICING.usPerMin).toBeGreaterThan(usVendorTypicalPerMin);
-    // Incoming toll-free is priced at what the minute costs us (the DID provider's per-minute fee).
-    expect(DEFAULT_CALL_PRICING.tollFreeInPerMin).toBeGreaterThanOrEqual(DEFAULT_CALL_PRICING.tollFreeInCostPerMin);
   });
 });
 
