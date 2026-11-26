@@ -1,4 +1,4 @@
-import { createDb } from '@pbx/shared';
+import { createDb, isPostgresClosedSocketWrite } from '@pbx/shared';
 import { PbxApp } from './app.js';
 import { AriClient } from './ari/client.js';
 import { EventBus } from './ari/events.js';
@@ -70,6 +70,12 @@ async function main(): Promise<void> {
   // A bug that escapes every handler: log it as one JSON line like every other log and exit, as
   // Node would anyway; systemd restarts us and Kamailio sends new calls to the other pbx node.
   const crash = (kind: string) => (err: unknown) => {
+    // A DB connection that closed under a queued write (postgres.js): harmless, the pool
+    // reconnects. Exiting here dropped every call on six nodes at once (2026-11-26).
+    if (isPostgresClosedSocketWrite(err)) {
+      log.warn({ err }, 'postgres connection closed under a queued write; continuing');
+      return;
+    }
     log.fatal({ err, activeCalls: app.activeCalls }, `${kind}; exiting`);
     process.exit(1);
   };
