@@ -41,8 +41,7 @@ export async function routeTo(ctx: Ctx, s: CallSession, dest: Destination | null
           d = g.noAnswer;
           break;
         }
-        const caller = callerNumberOf(s);
-        const targetsOf = (e: ExtensionCfg) => extensionTargets(e, caller);
+        const targetsOf = (e: ExtensionCfg) => extensionTargets(e);
         const r =
           g.strategy === 'sequential'
             ? await ringSequential(ctx, s, members.map(targetsOf), g.ringTimeoutSec, g.totalTimeoutSec)
@@ -151,7 +150,7 @@ export async function ringExtension(
     s.log.info({ ext: ext.number, to: always }, 'forward always');
     return always;
   }
-  const r: RingResult = await ringTargets(ctx, s, extensionTargets(ext, callerNumberOf(s)), ext.ringTimeoutSec);
+  const r: RingResult = await ringTargets(ctx, s, extensionTargets(ext), ext.ringTimeoutSec);
   if (r.winner) {
     await connect(ctx, s, r.winner);
     return null;
@@ -164,10 +163,6 @@ export async function ringExtension(
   return null;
 }
 
-/** The PSTN caller's number (E.164), never rung as one of an extension's external numbers. */
-function callerNumberOf(s: CallSession): string | null {
-  return s.main?.direction === 'incoming' ? s.main.fromNumber : null;
-}
 
 /** Bridge the caller with whoever answered and drive the call; follows blind transfers. */
 export async function connect(ctx: Ctx, s: CallSession, winner: Winner): Promise<void> {

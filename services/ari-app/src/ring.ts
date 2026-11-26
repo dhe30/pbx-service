@@ -60,17 +60,18 @@ interface Leg {
 }
 
 /**
- * All targets for one extension: its devices + its external numbers. An external number equal to
- * the caller is skipped: ringing it would connect the caller to itself (seen live 2026-11-13: a
- * customer's mobile called the shop, the shop's extension rang that same mobile, and the call
- * "answered" for 31 minutes).
+ * All targets for one extension: its devices + every listed external number (course spec §3: "a
+ * call rings all of an extension's devices, its softphone, and its listed external numbers at
+ * once"), including one equal to the PSTN caller. Skipping that number (2026-11-13 to 11-25, after
+ * a call that rang the caller's own mobile "answered" for 31 minutes) drew simultaneous_ring
+ * tickets: the course calls FROM an extension's external number and expects it to ring
+ * ("+16315551559 never rang", Thomas Dance Academy, 26 failures on 11-25). Same reasoning as the
+ * forwarding rules in router.ts (450b246).
  */
-export function extensionTargets(ext: ExtensionCfg, callerNumber: string | null = null): RingTarget[] {
+export function extensionTargets(ext: ExtensionCfg): RingTarget[] {
   return [
     { kind: 'sip', sipUsername: ext.sipUsername, extension: ext },
-    ...ext.externalNumbers
-      .filter((number) => number !== callerNumber)
-      .map((number): RingTarget => ({ kind: 'external', number, extension: ext })),
+    ...ext.externalNumbers.map((number): RingTarget => ({ kind: 'external', number, extension: ext })),
   ];
 }
 
