@@ -1,12 +1,12 @@
 # Managed by Ansible (roles/forecast).
 [Unit]
-Description=Forecast tool: collect new hours and post the summary
+Description=Forecast tool: collect new hours and ask for the dashboard data
 After=network-online.target
 
 [Service]
 Type=oneshot
 User={{ forecast_user }}
-ExecStart=/usr/bin/python3 {{ forecast_dir }}/report.py --summary --discord
+ExecStart=/usr/bin/python3 {{ forecast_dir }}/report.py --remind --discord
 # Never compete with Prometheus/Grafana/backups on this host.
 Nice=19
 IOSchedulingClass=idle

@@ -2,7 +2,9 @@
 """Forecast tool, step 3: the report. Suggests; never changes anything.
 
     report.py                 collect new hours, then a full report (needs a fresh market.json)
-    report.py --summary       short summary from our own data + the last market.json (timer, Discord)
+    report.py --remind        collect new hours, then only ask for the dashboard data (the timer
+                              runs this with --discord); no forecast without fresh market data
+    report.py --summary       short summary from our own data only
     report.py --discord       also post the result to the team channel (webhook in config.json)
 
 Files (all in data_dir on mon-1, never in the repository):
@@ -23,6 +25,14 @@ import urllib.request
 import model
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REMINDER = """Forecast due: send the dashboard data for a report (screenshots, all from the course dashboard):
+  1. Leaderboard (Day): every provider's extensions, customers, calls, success rate, SIP/API p99
+  2. Market analysis: the whole price table (every line, every provider, incl. signup fee and
+     billing), the weekly bills (small / mid / large) and signup shares, reputation grades
+  3. Course Services -> Activity: the bank balance, and the balances on the DID provider,
+     US vendor, international vendor and loan tabs
+No forecast or price advice runs until they arrive."""
+
 CHECKLIST = """Need a fresh market.json (older than {age} h or missing). From the course dashboard:
   1. Leaderboard: every provider's extensions, customers, success rate
   2. Market analysis: every provider's price lines, weekly bills (small / mid / large),
@@ -189,6 +199,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default="/etc/pbx-forecast/config.json")
     ap.add_argument("--summary", action="store_true")
+    ap.add_argument("--remind", action="store_true")
     ap.add_argument("--discord", action="store_true")
     ap.add_argument("--no-collect", action="store_true")
     args = ap.parse_args()
@@ -198,6 +209,11 @@ def main():
         return 0
     if not args.no_collect:
         subprocess.run([sys.executable, os.path.join(HERE, "collect.py"), "--config", args.config], check=True)
+    if args.remind:
+        print(REMINDER)
+        if args.discord and cfg.get("discord_webhook"):
+            post_discord(cfg["discord_webhook"], REMINDER.splitlines(), code=False)
+        return 0
     now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
     snaps, settings, market, market_path = build(cfg, now)
     max_age = settings.get("max_market_age_hours", 3)
