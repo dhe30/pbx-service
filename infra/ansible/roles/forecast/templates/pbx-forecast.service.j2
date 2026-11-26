@@ -1,0 +1,15 @@
+# Managed by Ansible (roles/forecast).
+[Unit]
+Description=Forecast tool: collect new hours and post the summary
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ forecast_user }}
+ExecStart=/usr/bin/python3 {{ forecast_dir }}/report.py --summary --discord
+# Never compete with Prometheus/Grafana/backups on this host.
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=200M
+TimeoutStartSec=15min

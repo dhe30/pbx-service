@@ -1,0 +1,15 @@
+{
+  "_comment": "Format of data_dir/settings.json (our limits; the real file lives only on mon-1). Example values.",
+  "us": "us",
+  "rival": "provider-a",
+  "end": "2026-12-07T23:59:00-05:00",
+  "floor": 1000,
+  "floor_final": 300,
+  "floor_final_from": "2026-12-05T00:00:00-05:00",
+  "rival_cut": 0.15,
+  "usage_growth_per_day": 0.0,
+  "max_market_age_hours": 3,
+  "min_prices": { "plan": 0.01, "extra_extension": 0.01, "local_number": 0.01, "toll_free_number": 0.01,
+                  "recording": 0.01, "intl_calling": 0.01, "us_per_min": 0.001, "uk_per_min": 0.001,
+                  "tf_in_per_min": 0.001 }
+}

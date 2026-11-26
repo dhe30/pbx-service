@@ -1,0 +1,17 @@
+---
+# Forecast tool (tools/forecast) on mon-1: hourly snapshots of our own business data, a cash
+# forecast and price suggestions. It only suggests; nothing here can change a price.
+#
+# Safety: mon-1 reads through a forced SSH command on the db nodes (pbx-forecast-query) that runs
+# one fixed, read-only SQL file and refuses the Patroni primary. Runs are short, at idle priority
+# and capped in memory/CPU; nothing stays running between them.
+forecast_dir: /opt/pbx-forecast
+forecast_data_dir: /var/lib/pbx-forecast
+forecast_user: pbxforecast
+# Summary (and catch-up collection) times, New York time.
+forecast_schedule: "*-*-* 00,06,12,18:07:00 America/New_York"
+forecast_backfill_hours: 72
+# Optional: Discord webhook of the team's forecast channel (secret: vault only).
+forecast_discord_webhook: "{{ vault_forecast_discord_webhook | default('') }}"
+# The 6-hourly timer stays off until the tool has been run by hand once (report.py) and checked.
+forecast_timer_enabled: false

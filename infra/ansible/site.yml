@@ -76,4 +76,4 @@
 
 - hosts: mon
   become: true
-  roles: [monitoring, backups]
+  roles: [monitoring, backups, forecast]
