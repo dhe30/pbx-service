@@ -36,7 +36,7 @@
 // MIN_CHARGE_CENTS is waived, so a mid-period add-on is free until its first renewal.
 // REPRICED (2026-11-25, evening): standard plan $0.49 with 2,200 included US minutes (alternate
 // $0.48 / 2,250), local and toll-free numbers $0.99 (alternate $0.98), add-ons $0.04 (alternate
-// $0.03). Numbers are now below their DID cost; existing items keep their price.
+// $0.03). Existing items keep their price.
 export interface Plan {
   name: string;
   /** Plan price per period. Ceiling: $11.50 per included extension. */
