@@ -1,5 +1,5 @@
 {
-  "_comment": "Format of data_dir/settings.json (our limits; the real file lives only on mon-1). Example values.",
+  "_comment": "Format of data_dir/settings.json (our limits; the real file lives only on mon-1). Made-up values. our_prices/alt_window: our two price lists and when the alternate one applies (New York time); omit both for a single list.",
   "us": "us",
   "rival": "provider-a",
   "end": "2026-12-07T23:59:00-05:00",
@@ -10,7 +10,49 @@
   "cloud_cost_per_day": 50.0,
   "growth_half_life_days": 2.0,
   "max_market_age_hours": 3,
-  "min_prices": { "plan": 0.01, "extra_extension": 0.01, "local_number": 0.01, "toll_free_number": 0.01,
-                  "recording": 0.01, "intl_calling": 0.01, "us_per_min": 0.001, "uk_per_min": 0.001,
-                  "tf_in_per_min": 0.001 }
+  "min_prices": {
+    "plan": 0.01,
+    "extra_extension": 0.01,
+    "local_number": 0.01,
+    "toll_free_number": 0.01,
+    "recording": 0.01,
+    "intl_calling": 0.01,
+    "us_per_min": 0.001,
+    "uk_per_min": 0.001,
+    "tf_in_per_min": 0.001
+  },
+  "our_prices": {
+    "standard": {
+      "plan": 1.0,
+      "included_extensions": 50,
+      "included_us_minutes": 1000,
+      "extra_extension": 0.1,
+      "local_number": 1.0,
+      "toll_free_number": 2.0,
+      "recording": 0.1,
+      "intl_calling": 0.1,
+      "us_per_min": 0.007,
+      "uk_per_min": 0.012,
+      "tf_in_per_min": 0.02,
+      "signup_fee": 0
+    },
+    "alt": {
+      "plan": 0.9,
+      "included_extensions": 50,
+      "included_us_minutes": 1000,
+      "extra_extension": 0.1,
+      "local_number": 1.0,
+      "toll_free_number": 2.0,
+      "recording": 0.1,
+      "intl_calling": 0.1,
+      "us_per_min": 0.006,
+      "uk_per_min": 0.012,
+      "tf_in_per_min": 0.02,
+      "signup_fee": 0
+    }
+  },
+  "alt_window": {
+    "start_hour": 0,
+    "end_hour": 8
+  }
 }

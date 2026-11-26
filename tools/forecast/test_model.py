@@ -157,6 +157,47 @@ class Search(unittest.TestCase):
         self.assertAlmostEqual(model.first_charge(0.99), 0.891)
 
 
+class TwoLists(unittest.TestCase):
+    def setUp(self):
+        self.snaps = [snapshot(h) for h in range(48)]
+        self.econ = model.economics(model.last_hours(self.snaps, 24))
+        self.m = market()
+        fits = model.fit_dashboard_profiles(self.m, model.shape_from_snapshots(self.snaps))
+        self.profiles = {k: v[0] for k, v in fits.items()}
+        self.s = settings()
+        std = dict(self.m["providers"]["us"]["prices"])
+        alt = dict(std, plan=1.5, us_per_min=0.005, extra_extension=0.01, included_extensions=500)
+        self.s["our_prices"] = {"standard": std, "alt": alt}
+        self.s["alt_window"] = {"start_hour": 0, "end_hour": 8}
+        self.now = dt.datetime(2026, 12, 2, tzinfo=UTC)
+
+    def test_alt_never_dearer_than_standard(self):
+        std, alt = model.our_lists(self.m, self.s)
+        c = model.clamp_alt(alt, std)
+        self.assertEqual(c["plan"], std["plan"])                     # a dearer night plan is cut to the day price
+        self.assertLessEqual(c["us_per_min"], std["us_per_min"])
+        self.assertGreaterEqual(c["included_extensions"], std["included_extensions"])
+
+    def test_cheaper_night_list_wins_more_share_at_night_but_costs_on_calls(self):
+        std, alt = model.our_lists(self.m, self.s)
+        r = model.evaluate(self.m, self.s, self.econ, self.profiles, self.econ["new_mix"], 2.0, 0.5, std, self.now,
+                           self.s["end"], alt=dict(alt, plan=0.5))     # a plan everyone pays, cheaper at night
+        self.assertGreater(r["share_alt"], r["share_std"])
+        same = model.evaluate(self.m, self.s, self.econ, self.profiles, self.econ["new_mix"], 2.0, 0.5, std, self.now,
+                              self.s["end"], alt=std)
+        self.assertAlmostEqual(same["share_alt"], same["share_std"])
+
+    def test_search_reports_three_window_options(self):
+        r = model.search_prices(self.m, self.s, self.econ, self.profiles, self.econ["new_mix"], 2.0, 0.5, self.now,
+                                self.s["end"])
+        self.assertEqual(len(r["window"]), 3)
+        rival = self.m["providers"]["provider-a"]["prices"]
+        for k in model.LINES:
+            self.assertLessEqual(r["prices"][k], rival[k] + 1e-9)
+        for k in model.INCLUDED:
+            self.assertGreaterEqual(r["prices"][k], rival[k])
+
+
 class Cloud(unittest.TestCase):
     def m(self, t, bal, topup=0.0):
         return {"taken_at": t, "bank": {"cloud": bal, "cloud_topups_since_last": topup}}

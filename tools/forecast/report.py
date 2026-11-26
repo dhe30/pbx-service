@@ -65,6 +65,7 @@ def build(cfg, now):
         if k in settings:
             settings[k] = ts(settings[k])
     settings["_hour_profile"] = model.hour_profile(snaps)
+    settings["_signup_profile"] = model.signup_hour_profile(snaps)
     settings["_data_dir"] = d
     market_path = os.path.join(d, "market.json")
     market = load_json(market_path) if os.path.exists(market_path) else None
@@ -158,7 +159,7 @@ def full_report(snaps, settings, market, now):
                f"fit error {rms * 100:.1f} pts" + ("  <-- poor fit" if rms > 0.05 else ""))
 
     end = settings["end"]
-    cur = market["providers"][us]["prices"]
+    cur, cur_alt = model.our_lists(market, settings)
     cases = [("as now", {}), ("rival cuts", {"cut_rival": True}), ("no signups", {"signups_on": False})]
     out.append(f"Cash to {end:%b %d} at current prices (floor {money(settings['floor'])}, "
                f"{money(settings['floor_final'])} from {settings['floor_final_from']:%b %d}):")
@@ -169,15 +170,29 @@ def full_report(snaps, settings, market, now):
                    + (f"  BELOW FLOOR from {below:%b %d %H:%M}" if below else ""))
 
     s = model.search_prices(market, settings, econ, profiles, mix, bfit, gfit, now, end)
+    if settings.get("alt_window"):
+        w = settings["alt_window"]
+        out.append(f"Options for the alternate list ({w['start_hour']:02d}:00-{w['end_hour']:02d}:00 New York), "
+                   "each with its best standard list:")
+        for name, o in s["window"].items():
+            out.append(f"  {name:36} share day/night {o['base']['share_std'] * 100:3.0f}/{o['base']['share_alt'] * 100:3.0f} %  "
+                       f"+{o['base']['ext_gain']:,.0f} ext  cash end {money(o['base']['final']):>8}  "
+                       f"rival cuts: lowest {money(o['stress']['low']):>8}" + ("" if o["safe"] else "  NOT SAFE")
+                       + ("   <-- best" if name == s["option"] else ""))
     if s["safe"]:
-        out.append("Suggested prices (never above the rival; smallest change that wins; cash stays above the floor "
-                   f"even if the rival cuts {settings['rival_cut'] * 100:.0f} %):")
+        out.append(f"Suggested ({s['option']}): never above the rival; smallest change that wins; cash stays above "
+                   f"the floor even if the rival cuts {settings['rival_cut'] * 100:.0f} %. Standard list:")
     else:
-        out.append("No price list keeps cash above the floor if the rival cuts. Safest list:")
+        out.append(f"No option keeps cash above the floor if the rival cuts. Safest ({s['option']}), standard list:")
     if not s["changes"]:
         out.append("  keep current prices")
     for k, (a, bb) in s["changes"].items():
-        out.append(f"  {k:18} {a:>9} -> {bb:<9} (rival {market['providers'][rival]['prices'].get(k)})")
+        out.append(f"  {k:20} {a:>9} -> {bb:<9} (rival {market['providers'][rival]['prices'].get(k)})")
+    if settings.get("alt_window"):
+        _, cur_alt = model.our_lists(market, settings)
+        alt_changes = {k: (cur_alt[k], s["alt"][k]) for k in cur_alt if k in s["alt"] and cur_alt[k] != s["alt"][k]}
+        out.append("  alternate list: " + (", ".join(f"{k} {a} -> {bb}" for k, (a, bb) in alt_changes.items())
+                                           if alt_changes else "unchanged"))
     out.append(f"  expected: share {s['base']['share'] * 100:.0f} %, +{s['base']['ext_gain']:,.0f} extensions by {end:%b %d}, "
                f"cash end {money(s['base']['final'])} (rival cuts: lowest {money(s['stress']['low'])})")
     gap = market["providers"][rival]["extensions"] - market["providers"][us]["extensions"]

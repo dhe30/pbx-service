@@ -258,7 +258,8 @@ def trend_multiplier(growth_per_day, half_life_days, days):
 
 
 def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, signup, churn_per_day=0.0,
-                 usage_ratio=None, growth_per_day=0.0, half_life_days=2.0, cloud_per_day=0.0):
+                 usage_ratio=None, growth_per_day=0.0, half_life_days=2.0, cloud_per_day=0.0,
+                 signups_by_hour=None, ratio_by_hour=None, revenue_by_hour=None):
     """Hour-by-hour cash until `end`. Returns (list of (time, cash), minimum cash, final cash, totals).
 
     Prepaid cash model: top-ups refill what calls used (cash in = usage charged), renewals are
@@ -267,32 +268,38 @@ def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, s
     Usage: existing accounts keep today's (shrinking at churn_per_day); each new account adds the
     per-day usage of an active account of its size. usage_ratio scales the charge side (price change).
     cloud_per_day: what the VMs and volumes cost (paid from the cloud balance, part of total cash).
+    Two price lists (a window with an alternate list): signups_by_hour, ratio_by_hour and
+    revenue_by_hour give, per New York hour (0-23), the signups per hour, the charge ratio and the
+    first-purchase revenue per signup under the list in force then; they override the flat values.
     """
     h = econ["hours"] or 24
     per_day = 24 / h
     r = usage_ratio if usage_ratio is not None else 1.0
-    base_cost, base_charge = econ["usage_cost"] * per_day, econ["usage_charge"] * per_day * r
+    base_cost, base_charge = econ["usage_cost"] * per_day, econ["usage_charge"] * per_day
     refills_day = econ["payments"].get("topup", {}).get("n", 0) * per_day
     renew_in_day = econ["payments"].get("invoice", {}).get("amount", 0.0) * per_day
     renew_n_day = econ["payments"].get("invoice", {}).get("n", 0) * per_day
     did_renew_day = econ["did_renewals_per_day"]
     mix, size = econ["new_mix"], econ["by_size"]
     new_cost_day = sum(mix[s] * size[s]["cost_per_acct_day"] for s in mix)          # per new account
-    new_charge_day = sum(mix[s] * size[s]["charge_per_acct_day"] for s in mix) * r
+    new_charge_day = sum(mix[s] * size[s]["charge_per_acct_day"] for s in mix)
     nums = signup["numbers_per_signup"]
     did_first = sum(nums[k] * DID_FIRST[k] for k in DID_FIRST)
     did_week_new = sum(nums[k] * DID_WEEK[k] for k in DID_WEEK) / 7
-    su = signups_per_day / 24
     cash, t, pts, low, new_accts = start_cash, now, [], start_cash, 0.0
     tot = {"usage_cost": 0.0, "usage_charge": 0.0, "cash_in": 0.0, "fees": 0.0, "did": 0.0, "cloud": 0.0}
     while t < end:
         days = (t - now).total_seconds() / 86400
         keep = (1 - churn_per_day) ** days * trend_multiplier(growth_per_day, half_life_days, days)
-        frac = profile_by_hour[(t.hour - 5) % 24]               # this New York hour's share of a day
+        nyh = (t.hour - 5) % 24                                  # New York hour
+        frac = profile_by_hour[nyh]                              # this hour's share of a day's usage
+        su = signups_by_hour[nyh] if signups_by_hour else signups_per_day / 24
+        rh = ratio_by_hour[nyh] if ratio_by_hour else r
+        rev = revenue_by_hour[nyh] if revenue_by_hour else signup["revenue"]
         usage_cost = (base_cost * keep + new_accts * new_cost_day) * frac
-        usage_charge = (base_charge * keep + new_accts * new_charge_day) * frac
+        usage_charge = (base_charge * keep + new_accts * new_charge_day) * frac * rh
         cash_in = (usage_charge + renew_in_day * keep / 24 + new_accts * signup["renewal_per_day"] / 24
-                   + su * (signup["first_topup"] + signup["revenue"]))
+                   + su * (signup["first_topup"] + rev))
         charges = refills_day * keep * frac + renew_n_day * keep / 24 + su * (1 + sum(nums.values()))
         fees = charges * CARD_FIXED + cash_in * CARD_PCT
         did = su * did_first + (did_renew_day * keep + new_accts * did_week_new) / 24
@@ -341,26 +348,87 @@ def usage_ratio(econ, old, new):
     return after / before if before else 1.0
 
 
-def evaluate(market, settings, econ, profiles, mix, b, g, ours, now, end, cut_rival=False, signups_on=True):
-    """Cash path and extension gain for our price list `ours` (a full price dict)."""
+def signup_hour_profile(snapshots, days=3):
+    """Share of our signups that happen in each New York hour (0-23), from recent history."""
+    ny = dt.timezone(dt.timedelta(hours=-5))
+    tot = [0.0] * 24
+    for snap in last_hours(snapshots, days * 24):
+        for h in snap["hourly"]:
+            t = dt.datetime.strptime(h["hour"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+            tot[t.astimezone(ny).hour] += h["signups"]
+    total = sum(tot)
+    return [x / total for x in tot] if total else [1 / 24] * 24
+
+
+def in_window(ny_hour, settings):
+    w = settings.get("alt_window")
+    return bool(w) and w["start_hour"] <= ny_hour < w["end_hour"]
+
+
+def our_lists(market, settings):
+    """Our current (standard, alternate) price lists: settings.our_prices if given, else the
+    dashboard's (then both the same)."""
+    op = settings.get("our_prices") or {}
+    std = op.get("standard") or market["providers"][settings["us"]]["prices"]
+    return dict(std), dict(op.get("alt") or std)
+
+
+INCLUDED = ("included_extensions", "included_us_minutes")
+
+
+def clamp_alt(alt, std):
+    """The alternate list is never dearer than the standard one: price lines at most the standard
+    price, included quantities at least the standard ones."""
+    out = dict(alt)
+    for k in LINES:
+        if k in std and k in out:
+            out[k] = min(out[k], std[k])
+    for k in INCLUDED:
+        if k in std and k in out:
+            out[k] = max(out[k], std[k])
+    return out
+
+
+def evaluate(market, settings, econ, profiles, mix, b, g, std, now, end, cut_rival=False, signups_on=True, alt=None):
+    """Cash path and extension gain if our standard list is `std` and the alternate list (inside
+    settings.alt_window, New York time) is `alt` (default: the current alternate list, kept no
+    dearer than `std`)."""
     us, rival = settings["us"], settings["rival"]
-    over = {us: ours}
+    cur_std, cur_alt = our_lists(market, settings)
+    alt = clamp_alt(alt if alt is not None else cur_alt, std)
+    rival_over = {}
     if cut_rival:
         rp = market["providers"][rival]["prices"]
-        over[rival] = {k: round(rp[k] * (1 - settings["rival_cut"]), 6) for k in LINES if k in rp}
-    share_now = market["providers"][us]["signup_share"]
-    market_signups = econ["signups"] / max(0.01, share_now) * 24 / max(1, econ["hours"])
-    share = predict_shares(market, profiles, mix, b, g, over).get(us, 0.0)
-    spd = market_signups * share if signups_on else 0.0
-    si = signup_inputs(econ, ours)
+        rival_over = {rival: {k: round(rp[k] * (1 - settings["rival_cut"]), 6) for k in LINES if k in rp}}
+
+    def share(ours):
+        return predict_shares(market, profiles, mix, b, g, dict(rival_over, **{us: ours})).get(us, 0.0)
+
+    def share_now(ours):     # the market as it is, to scale our observed signups to the whole market
+        return predict_shares(market, profiles, mix, b, g, {us: ours}).get(us, 0.0)
+
+    sp = settings.get("_signup_profile") or [1 / 24] * 24
+    win = [in_window(h, settings) for h in range(24)]
+    s_std, s_alt = share(std), share(alt)
+    now_std, now_alt = share_now(cur_std), share_now(cur_alt)
+    observed = econ["signups"] * 24 / max(1, econ["hours"])
+    market_day = observed / max(0.01, sum(sp[h] * (now_alt if win[h] else now_std) for h in range(24)))
+    on = 1 if signups_on else 0
+    by_hour = [market_day * sp[h] * (s_alt if win[h] else s_std) * on for h in range(24)]
+    ratio = [usage_ratio(econ, cur_alt if win[h] else cur_std, alt if win[h] else std) for h in range(24)]
+    rev_std, rev_alt = signup_inputs(econ, std)["revenue"], signup_inputs(econ, alt)["revenue"]
+    revenue = [rev_alt if win[h] else rev_std for h in range(24)]
+    si = signup_inputs(econ, std)
+    spd = sum(by_hour)
     pts, low, final, _ = project_cash(market["cash_total"], econ, settings.get("_hour_profile") or [1 / 24] * 24,
-                                   end, now, spd, si, settings.get("churn_per_day", 0.0),
-                                   usage_ratio(econ, market["providers"][us]["prices"], ours),
-                                   settings.get("_growth_per_day", 0.0), settings.get("growth_half_life_days", 2.0),
-                                   settings.get("_cloud_per_day", settings.get("cloud_cost_per_day", 0.0)))
+                                      end, now, spd, si, settings.get("churn_per_day", 0.0), None,
+                                      settings.get("_growth_per_day", 0.0), settings.get("growth_half_life_days", 2.0),
+                                      settings.get("_cloud_per_day", settings.get("cloud_cost_per_day", 0.0)),
+                                      by_hour, ratio, revenue)
     days = (end - now).total_seconds() / 86400
-    return {"share": share, "signups_per_day": spd, "ext_gain": spd * si["ext_per_signup"] * days,
-            "low": low, "final": final, "points": pts}
+    avg_share = sum(sp[h] * (s_alt if win[h] else s_std) for h in range(24))
+    return {"share": avg_share, "share_std": s_std, "share_alt": s_alt, "signups_per_day": spd,
+            "ext_gain": spd * si["ext_per_signup"] * days, "low": low, "final": final, "points": pts}
 
 
 def floor_at(settings, t):
@@ -372,21 +440,33 @@ def safe(result, settings):
     return all(c >= floor_at(settings, t) for t, c in result["points"])
 
 
+PER_MIN = ("us_per_min", "uk_per_min", "tf_in_per_min")
+WINDOW_OPTIONS = {
+    # name -> how the alternate list follows a given standard list
+    "keep the window as it is": lambda cur_alt, std: dict(cur_alt),
+    "window without its per-minute cuts": lambda cur_alt, std: dict(cur_alt, **{k: std[k] for k in PER_MIN if k in std}),
+    "no window (one list all day)": lambda cur_alt, std: dict(std),
+}
+
+
 def search_prices(market, settings, econ, profiles, mix, b, g, now, end):
-    """Coordinate search over our price lines. Rules: never above the rival on any line; candidates
-    are the rival's price and 1-2 steps under it, the current price and the minimum allowed.
-    A list is acceptable if cash stays above the floor even when the rival cuts every line by
-    settings['rival_cut']. Among acceptable lists: most extensions gained, and when two are within
-    1 % the one with more cash left wins (never lower than needed). If no list is acceptable: the
-    one whose lowest cash (rival cuts) is highest."""
-    us, rival = settings["us"], settings["rival"]
-    cur = dict(market["providers"][us]["prices"])
-    rp = market["providers"][rival]["prices"]
+    """For each window option (keep the alternate list, keep it without its per-minute cuts, or one
+    list all day), a coordinate search over our STANDARD list; then the best option overall.
+    Rules: never above the rival on any price line and never fewer included extensions/minutes than
+    the rival; price candidates are the rival's price and 1-2 steps under it, the current price and
+    the minimum allowed; included quantities: current, the rival's and the current alternate list's.
+    The alternate list is never dearer than the standard one. A plan is acceptable if cash stays above
+    the floor even when the rival cuts every line by settings['rival_cut']. Among acceptable plans:
+    most extensions gained; within 1 %, more cash left wins (never lower than needed). If none is
+    acceptable: highest lowest-cash. Without a window only the last option is searched."""
+    cur, cur_alt = our_lists(market, settings)
+    rp = market["providers"][settings["rival"]]["prices"]
     mins = settings.get("min_prices", {})
 
-    def score(p):
-        return (evaluate(market, settings, econ, profiles, mix, b, g, p, now, end),
-                evaluate(market, settings, econ, profiles, mix, b, g, p, now, end, cut_rival=True))
+    def score(p, follow):
+        alt = follow(cur_alt, p)
+        return (evaluate(market, settings, econ, profiles, mix, b, g, p, now, end, alt=alt),
+                evaluate(market, settings, econ, profiles, mix, b, g, p, now, end, cut_rival=True, alt=alt))
 
     def better(a, c):  # (prices, base, stress)
         sa, sc = safe(a[2], settings), safe(c[2], settings)
@@ -398,21 +478,43 @@ def search_prices(market, settings, econ, profiles, mix, b, g, now, end):
             return a[1]["final"] > c[1]["final"]
         return a[1]["ext_gain"] > c[1]["ext_gain"]
 
-    best = (cur, *score(cur))
-    for _ in range(2):
-        for line, step in LINES.items():
-            if line not in rp or line not in cur:
-                continue
-            for c in sorted({cur[line], rp[line], rp[line] - step, rp[line] - 2 * step, mins.get(line, step)}):
-                c = round(c, 6)
-                if c > rp[line] or c < mins.get(line, step) or c == best[0][line]:
+    def candidates(line):
+        if line in INCLUDED:
+            return {cur[line], rp[line], cur_alt.get(line, cur[line])}, (lambda c: c >= rp[line])
+        step = LINES[line]
+        lo = mins.get(line, step)
+        return {cur[line], rp[line], rp[line] - step, rp[line] - 2 * step, lo}, (lambda c: lo <= c <= rp[line])
+
+    def search(follow):
+        best = (cur, *score(cur, follow))
+        for _ in range(2):
+            for line in list(LINES) + list(INCLUDED):
+                if line not in rp or line not in cur:
                     continue
-                p = dict(best[0], **{line: c})
-                cand = (p, *score(p))
-                if better(cand, best):
-                    best = cand
-    return {"prices": best[0], "base": best[1], "stress": best[2], "safe": safe(best[2], settings),
-            "changes": {k: (cur[k], best[0][k]) for k in cur if cur[k] != best[0][k]}}
+                cands, ok = candidates(line)
+                for c in sorted(cands):
+                    c = round(c, 6)
+                    if not ok(c) or c == best[0][line]:
+                        continue
+                    p = dict(best[0], **{line: c})
+                    cand = (p, *score(p, follow))
+                    if better(cand, best):
+                        best = cand
+        return best
+
+    names = list(WINDOW_OPTIONS) if settings.get("alt_window") else ["no window (one list all day)"]
+    window, winner = {}, None
+    for name in names:
+        follow = WINDOW_OPTIONS[name]
+        best = search(follow)
+        window[name] = {"prices": best[0], "alt": clamp_alt(follow(cur_alt, best[0]), best[0]),
+                        "base": best[1], "stress": best[2], "safe": safe(best[2], settings),
+                        "changes": {k: (cur[k], best[0][k]) for k in cur if k in best[0] and cur[k] != best[0][k]}}
+        if winner is None or better(best, winner[1]):
+            winner = (name, best)
+    w = window[winner[0]]
+    return {"option": winner[0], "prices": w["prices"], "alt": w["alt"], "base": w["base"], "stress": w["stress"],
+            "safe": w["safe"], "changes": w["changes"], "window": window}
 
 
 # ----------------------------------------------------------------------------- cloud cost ----
