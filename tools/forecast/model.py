@@ -258,7 +258,7 @@ def trend_multiplier(growth_per_day, half_life_days, days):
 
 
 def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, signup, churn_per_day=0.0,
-                 usage_ratio=None, growth_per_day=0.0, half_life_days=2.0):
+                 usage_ratio=None, growth_per_day=0.0, half_life_days=2.0, cloud_per_day=0.0):
     """Hour-by-hour cash until `end`. Returns (list of (time, cash), minimum cash, final cash, totals).
 
     Prepaid cash model: top-ups refill what calls used (cash in = usage charged), renewals are
@@ -266,6 +266,7 @@ def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, s
     cost; numbers cost the DID provider; every card charge pays 2.9 % + $0.30.
     Usage: existing accounts keep today's (shrinking at churn_per_day); each new account adds the
     per-day usage of an active account of its size. usage_ratio scales the charge side (price change).
+    cloud_per_day: what the VMs and volumes cost (paid from the cloud balance, part of total cash).
     """
     h = econ["hours"] or 24
     per_day = 24 / h
@@ -283,7 +284,7 @@ def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, s
     did_week_new = sum(nums[k] * DID_WEEK[k] for k in DID_WEEK) / 7
     su = signups_per_day / 24
     cash, t, pts, low, new_accts = start_cash, now, [], start_cash, 0.0
-    tot = {"usage_cost": 0.0, "usage_charge": 0.0, "cash_in": 0.0, "fees": 0.0, "did": 0.0}
+    tot = {"usage_cost": 0.0, "usage_charge": 0.0, "cash_in": 0.0, "fees": 0.0, "did": 0.0, "cloud": 0.0}
     while t < end:
         days = (t - now).total_seconds() / 86400
         keep = (1 - churn_per_day) ** days * trend_multiplier(growth_per_day, half_life_days, days)
@@ -295,9 +296,9 @@ def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, s
         charges = refills_day * keep * frac + renew_n_day * keep / 24 + su * (1 + sum(nums.values()))
         fees = charges * CARD_FIXED + cash_in * CARD_PCT
         did = su * did_first + (did_renew_day * keep + new_accts * did_week_new) / 24
-        cash += cash_in - fees - usage_cost - did
+        cash += cash_in - fees - usage_cost - did - cloud_per_day / 24
         for k, v in (("usage_cost", usage_cost), ("usage_charge", usage_charge), ("cash_in", cash_in),
-                     ("fees", fees), ("did", did)):
+                     ("fees", fees), ("did", did), ("cloud", cloud_per_day / 24)):
             tot[k] += v
         low = min(low, cash)
         pts.append((t, cash))
@@ -355,7 +356,8 @@ def evaluate(market, settings, econ, profiles, mix, b, g, ours, now, end, cut_ri
     pts, low, final, _ = project_cash(market["cash_total"], econ, settings.get("_hour_profile") or [1 / 24] * 24,
                                    end, now, spd, si, settings.get("churn_per_day", 0.0),
                                    usage_ratio(econ, market["providers"][us]["prices"], ours),
-                                   settings.get("_growth_per_day", 0.0), settings.get("growth_half_life_days", 2.0))
+                                   settings.get("_growth_per_day", 0.0), settings.get("growth_half_life_days", 2.0),
+                                   settings.get("_cloud_per_day", settings.get("cloud_cost_per_day", 0.0)))
     days = (end - now).total_seconds() / 86400
     return {"share": share, "signups_per_day": spd, "ext_gain": spd * si["ext_per_signup"] * days,
             "low": low, "final": final, "points": pts}
@@ -411,6 +413,24 @@ def search_prices(market, settings, econ, profiles, mix, b, g, now, end):
                     best = cand
     return {"prices": best[0], "base": best[1], "stress": best[2], "safe": safe(best[2], settings),
             "changes": {k: (cur[k], best[0][k]) for k in cur if cur[k] != best[0][k]}}
+
+
+# ----------------------------------------------------------------------------- cloud cost ----
+def cloud_cost_per_day(history, fallback):
+    """VM + volume cost per day, measured from the cloud balance in successive market snapshots:
+    (earlier balance + top-ups in between - later balance) / days. An interval where the balance
+    rose without a recorded top-up (bank.cloud_topups_since_last) is skipped. Uses the newest
+    measurable interval of at least 1 h; else `fallback` (settings.cloud_cost_per_day).
+    Returns (cost per day, "measured over N h" | "setting")."""
+    pts = sorted((m for m in history if m.get("bank", {}).get("cloud") is not None),
+                 key=lambda m: dt.datetime.fromisoformat(m["taken_at"]))
+    for a, b in reversed(list(zip(pts, pts[1:]))):
+        ta, tb = (dt.datetime.fromisoformat(m["taken_at"]) for m in (a, b))
+        hours = (tb - ta).total_seconds() / 3600
+        spent = a["bank"]["cloud"] + b["bank"].get("cloud_topups_since_last", 0.0) - b["bank"]["cloud"]
+        if hours >= 1 and spent > 0:
+            return spent / hours * 24, f"measured over {hours:.0f} h"
+    return fallback, "setting"
 
 
 # ------------------------------------------------------------------------------- backtest ----

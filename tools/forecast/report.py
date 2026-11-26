@@ -29,8 +29,9 @@ REMINDER = """Forecast due: send the dashboard data for a report (screenshots, a
   1. Leaderboard (Day): every provider's extensions, customers, calls, success rate, SIP/API p99
   2. Market analysis: the whole price table (every line, every provider, incl. signup fee and
      billing), the weekly bills (small / mid / large) and signup shares, reputation grades
-  3. Course Services -> Activity: the bank balance, and the balances on the DID provider,
-     US vendor, international vendor and loan tabs
+  3. Course Services: the bank balance and the DID provider, US PSTN vendor, International PSTN
+     vendor and Clanode (cloud) balances (top of the page), the Loan (owed) tab, and any payments
+     to Clanode since the last report
 No forecast or price advice runs until they arrive."""
 
 CHECKLIST = """Need a fresh market.json (older than {age} h or missing). From the course dashboard:
@@ -110,9 +111,16 @@ def full_report(snaps, settings, market, now):
         out.append(f"  (only {econ['hours']} h of data: daily figures are scaled up from them)")
     us, rival = settings["us"], settings["rival"]
     b = market["bank"]
-    market["cash_total"] = b["bank"] + b.get("did", 0) + b.get("us_vendor", 0) + b.get("intl_vendor", 0) - b.get("loan_owed", 0)
-    out.append(f"Cash: bank {money(b['bank'])} + vendors {money(market['cash_total'] - b['bank'] + b.get('loan_owed', 0))}"
+    vendors = b.get("did", 0) + b.get("us_vendor", 0) + b.get("intl_vendor", 0)
+    market["cash_total"] = b["bank"] + vendors + b.get("cloud", 0) - b.get("loan_owed", 0)
+    out.append(f"Cash: bank {money(b['bank'])} + vendors {money(vendors)} + cloud {money(b.get('cloud', 0))}"
                f" - loan {money(b.get('loan_owed', 0))} = {money(market['cash_total'])}  (market data from {market['taken_at']})")
+    history = market_history(settings, market)
+    cloud, src = model.cloud_cost_per_day(history, settings.get("cloud_cost_per_day", 0.0))
+    settings["_cloud_per_day"] = cloud
+    left = b.get("cloud", 0) / cloud * 24 if cloud else float("inf")
+    out.append(f"VMs + volumes: {money(cloud)}/day ({src}); cloud balance lasts ~{left:.0f} h"
+               + ("  <-- TOP UP the cloud balance" if left < 48 else ""))
 
     bt = model.backtest(snaps, settings)
     if bt:
@@ -145,7 +153,6 @@ def full_report(snaps, settings, market, now):
         out.append(f"  {size:5}: {p['extensions']:.0f} ext, {p['local_numbers'] + p['toll_free_numbers']:.1f} numbers, "
                    f"{p['us_min']:,.0f} US min/week; bills off by {money(err)} on average{flag}")
     mix = econ["new_mix"]
-    history = market_history(settings, market)
     bfit, gfit, rms = model.fit_share_model(history, profiles, mix)
     out.append(f"Signup model ({len(history)} market snapshot(s)): share ~ bill^-{bfit:.1f} x e^({gfit:.1f} x grade), "
                f"fit error {rms * 100:.1f} pts" + ("  <-- poor fit" if rms > 0.05 else ""))

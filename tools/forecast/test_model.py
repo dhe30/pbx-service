@@ -157,5 +157,31 @@ class Search(unittest.TestCase):
         self.assertAlmostEqual(model.first_charge(0.99), 0.891)
 
 
+class Cloud(unittest.TestCase):
+    def m(self, t, bal, topup=0.0):
+        return {"taken_at": t, "bank": {"cloud": bal, "cloud_topups_since_last": topup}}
+
+    def test_measured_from_balance_drop(self):
+        h = [self.m("2026-12-01T00:00:00-05:00", 100), self.m("2026-12-01T12:00:00-05:00", 76)]
+        self.assertEqual(model.cloud_cost_per_day(h, 99), (48.0, "measured over 12 h"))
+
+    def test_topup_counted_or_interval_skipped(self):
+        h = [self.m("2026-12-01T00:00:00-05:00", 100), self.m("2026-12-01T12:00:00-05:00", 76),
+             self.m("2026-12-02T00:00:00-05:00", 176, topup=125)]
+        self.assertAlmostEqual(model.cloud_cost_per_day(h, 99)[0], 50.0)
+        h[-1]["bank"]["cloud_topups_since_last"] = 0           # top-up not recorded: skip, keep the last rate
+        self.assertAlmostEqual(model.cloud_cost_per_day(h, 99)[0], 48.0)
+        self.assertEqual(model.cloud_cost_per_day(h[:1], 99), (99, "setting"))
+
+    def test_cloud_cost_reduces_cash(self):
+        e = model.economics([snapshot(h, signups=0, ext=0, topups=(0, 0)) for h in range(24)])
+        now = dt.datetime(2026, 12, 2, tzinfo=UTC)
+        si = {"numbers_per_signup": {"local": 0, "toll_free": 0}, "revenue": 0, "renewal_per_day": 0, "first_topup": 0}
+        _, _, a, _ = model.project_cash(1000, e, [1 / 24] * 24, now + dt.timedelta(days=1), now, 0, si)
+        _, _, b, t = model.project_cash(1000, e, [1 / 24] * 24, now + dt.timedelta(days=1), now, 0, si, cloud_per_day=48)
+        self.assertAlmostEqual(a - b, 48.0)
+        self.assertAlmostEqual(t["cloud"], 48.0)
+
+
 if __name__ == "__main__":
     unittest.main()
