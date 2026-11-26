@@ -103,8 +103,15 @@ scrape_configs:
 {{ scrape(gateway_pbx_hosts, gateway_port) }}
 
   # Asterisk (res_prometheus): channels, bridges, endpoints. Same gateway.
+  # The per-channel and per-bridge series carry the channel/bridge name as a label, so every call
+  # creates new series (about 2/3 of all series at peak). No alert or dashboard uses them (call
+  # counts come from ari_app), so they are dropped before storage.
   - job_name: asterisk
     metrics_path: /metrics/asterisk
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: "asterisk_channels_(state|duration_seconds)|asterisk_bridges_channels_count"
+        action: drop
 {{ scrape(gateway_pbx_hosts, gateway_port) }}
 {% endif %}
 
