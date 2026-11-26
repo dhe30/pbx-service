@@ -56,6 +56,13 @@
     enabled: false
 
 # ---- Repository user, directories, config ----------------------------------------------------
+# Without this check the role would create an empty repository on the root disk when the Volume
+# isn't mounted (nofail lets the VM boot without it): WAL would then fill the root disk.
+- name: Backup Volume is mounted
+  ansible.builtin.command: mountpoint -q {{ backup_repo_path }}
+  changed_when: false
+  when: backup_repo_on_volume | bool
+
 - name: pgbackrest user (owns the repository)
   ansible.builtin.user:
     name: pgbackrest

@@ -6,6 +6,9 @@
 # Put backup_repo_path on its own Volume if possible: the repository must survive mon-1's disk
 # filling up with metrics, and it should be sized for (retention + 1) full backups + a week of WAL.
 backup_repo_path: /var/lib/pgbackrest
+# true when a Volume is mounted at backup_repo_path (fstab, UUID, nofail; formatted and mounted by
+# hand, like the db nodes' Garage Volumes). The role then refuses to run if it isn't mounted.
+backup_repo_on_volume: false
 
 # Full backups kept (one per night = a week). Older ones and the WAL they need are expired
 # automatically after each backup.
