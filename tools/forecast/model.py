@@ -1,22 +1,33 @@
-"""Forecast tool, step 2: the model. Pure functions, stdlib only, unit-tested (test_model.py).
+"""Forecast tool, step 2: the model (v2). Pure functions, stdlib only, unit-tested (test_model.py).
 
 Inputs
-  snapshots  hourly JSON snapshots of our own data (collect.py)
-  market     what only the course dashboard shows, entered per report (market.example.json):
-             bank and vendor balances, every provider's price list, weekly bill estimates,
-             share of new signups and reputation grade
-  settings   our own limits (settings.example.json): cash floor, end date, how far a rival may cut
+  snapshots  hourly JSON snapshots of our own data (collect.py, snapshot.sql)
+  market     what only the course dashboard shows, entered per report (market.example.json)
+  settings   our limits and price lists (settings.example.json)
 
-Outputs (report.py prints them)
-  economics  last 24 h: cash in / out by kind, usage margin by call type
-  customers  the dashboard's typical small / mid / large customer, fitted to every provider's bill
-  shares     a signup-share model fitted to the dashboard: share ~ exp(-b * ln(bill) + g * grade)
-  cash       hour-by-hour cash forecast to the end date, for: as now / a rival cuts / no signups.
-             Existing accounts keep today's usage; each new account adds the usage of an account
-             of its size; accounts leave at the observed churn rate.
-  backtest   the same forecast run on the day before, compared with what actually happened
-  prices     the price list that gains the most extensions by the end date while the
-             "rival cuts" case keeps cash above the floor (or, if none does, the safest one)
+How the forecast works (hour by hour until the end date)
+  base       the last 24 h, measured exactly: accounts active in the day (union of the hourly
+             active sets), their extensions by customer size, call cost and charge PER ACTIVE
+             EXTENSION by size, payments, numbers, first top-ups, renewals
+  growth     extensions grow from new accounts (signups x extensions a new account brings, by size)
+             and from active accounts adding extensions (upgrade rate); they shrink with churn
+             (accounts active the day before but not in the last day, weighted by extensions)
+  usage      active extensions x usage per extension x a trend: per-extension usage grew g per day
+             recently; g fades with a half-life (fitted when 3 days exist, else the setting)
+  cash       calls are prepaid: top-ups refill what calls used (cash in = calls charged); new
+             accounts pay a first top-up and their first items; renewals are invoiced weekly at the
+             lower of the item's price and the current list (so list cuts lower them too); vendors
+             cost what calls cost; numbers cost the DID provider (first period + renewals); VMs and
+             volumes cost what the cloud balance shows; every card charge pays 2.9 % + $0.30
+  signups    market signups per hour (scaled from ours and our share) x our share, from a model
+             fitted to the dashboard (bills recomputed from every provider's prices + grades),
+             calibrated so it reproduces our current share; the list in force each hour (two lists)
+  goal       leaderboard extensions on the end date (our active extensions, calibrated to the
+             dashboard's count), and the gap to the rival, whose growth is measured from the
+             leaderboard history and scaled with its share
+  ranges     expected / low / high: growth trend as measured, off, and fading twice as slowly;
+             signup sensitivity +-30 %
+  checks     backtest: the same model run on the day before, compared with what happened
 """
 import datetime as dt
 import math
@@ -27,6 +38,8 @@ CARD_PCT, CARD_FIXED, MIN_CHARGE = 0.029, 0.30, 0.50
 DID_FIRST = {"local": 1.50, "toll_free": 5.00}
 DID_WEEK = {"local": 1.50, "toll_free": 3.00}
 SIZES = ("small", "mid", "large")
+CLASSES = ("us", "tf_in", "intl")
+NY = dt.timezone(dt.timedelta(hours=-5))           # EST: no DST change before the course ends
 
 # Price lines as the dashboard lists them. "step" = the smallest change worth making on that line.
 LINES = {
@@ -34,6 +47,15 @@ LINES = {
     "recording": 0.01, "intl_calling": 0.01, "us_per_min": 0.0001, "uk_per_min": 0.001,
     "tf_in_per_min": 0.001,
 }
+INCLUDED = ("included_extensions", "included_us_minutes")
+PER_MIN = {"us": "us_per_min", "tf_in": "tf_in_per_min", "intl": "uk_per_min"}
+# Renewing item kinds (account_items, snapshot.renewing_items) -> the list price that caps them.
+ITEM_PRICE = {"plan": "plan", "extension": "extra_extension", "number_local": "local_number",
+              "number_toll_free": "toll_free_number", "recording": "recording", "intl_calling": "intl_calling"}
+
+
+def ts_hour(s):
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
 
 
 def hours_in(snaps):
@@ -51,15 +73,33 @@ def last_hours(snapshots, hours):
     return list(reversed(out))
 
 
-# ---------------------------------------------------------------- our own data (snapshots) ----
+def day_windows(snapshots, days):
+    """Up to `days` consecutive 24 h windows, newest last: [[snaps of day -n], ..., [snaps of last day]]."""
+    out, rest = [], list(snapshots)
+    for _ in range(days):
+        if hours_in(rest) < 24:
+            break
+        d = last_hours(rest, 24)
+        out.insert(0, d)
+        rest = rest[:len(rest) - len(d)]
+    return out
+
+
+# ------------------------------------------------------------------------------- the base day ----
+def size_of(ext):
+    return "small" if ext <= 10 else "mid" if ext <= 40 else "large"
+
+
 def economics(snaps):
-    """Sums of the hourly data in `snaps`, plus per-size usage per active account."""
+    """One period of our own data (normally 24 hourly snapshots), measured exactly where the
+    snapshots allow it. Schema-1 snapshots (no active sets) fall back to per-window estimates."""
     calls, pay = {}, {}
     out = {"hours": hours_in(snaps), "signups": 0, "new_extensions": 0, "numbers": {"local": 0, "toll_free": 0},
            "failed_payments": 0}
-    size = {s: {"cost": 0.0, "charge": 0.0, "new": 0, "active_max": 0} for s in SIZES}
-    for s in snaps:
-        for h in s["hourly"]:
+    usage = {s: {c: {"cost": 0.0, "charge": 0.0, "min": 0.0} for c in CLASSES} for s in SIZES}
+    active, new, active_max = {}, {}, {s: 0 for s in SIZES}
+    for snap in snaps:
+        for h in snap["hourly"]:
             out["signups"] += h["signups"]
             out["new_extensions"] += h["new_extensions"]
             out["failed_payments"] += h["failed_payments"]
@@ -73,43 +113,123 @@ def economics(snaps):
                 p = pay.setdefault(purpose, {"n": 0, "amount": 0.0})
                 p["n"] += v["n"]
                 p["amount"] += v["amount"]
-        for name, v in s["state"].get("by_size", {}).items():
-            z = size.setdefault(name, {"cost": 0.0, "charge": 0.0, "new": 0, "active_max": 0})
-            z["cost"] += sum(u["cost"] for u in v["usage_in_window"].values())
-            z["charge"] += sum(u["charge"] for u in v["usage_in_window"].values())
-            z["new"] += v.get("new_in_window", 0)
-            z["active_max"] = max(z["active_max"], v.get("active_in_window", 0))
-    out["calls"], out["payments"], out["by_size"] = calls, pay, size
+        st = snap["state"]
+        for name, v in st.get("by_size", {}).items():
+            active_max[name] = max(active_max.get(name, 0), v.get("active_in_window", 0))
+            for cls in CLASSES:
+                u = v["usage_in_window"].get(cls)
+                if u:
+                    usage[name][cls]["cost"] += u["cost"]
+                    usage[name][cls]["charge"] += u["charge"]
+                    usage[name][cls]["min"] += u.get("min", 0.0)
+        active.update(st.get("active") or {})           # newest value per account wins
+        new.update(st.get("new_accounts") or {})
+    for k in new:                                      # extensions a new account has by the end
+        if k in active:
+            new[k] = active[k]
+    out["calls"], out["payments"] = calls, pay
     out["usage_cost"] = sum(c["cost"] for c in calls.values())
     out["usage_charge"] = sum(c["charge"] for c in calls.values())
     out["cash_in"] = sum(p["amount"] for p in pay.values())
     out["card_fees"] = sum(p["n"] * CARD_FIXED + p["amount"] * CARD_PCT for p in pay.values())
     out["did_new"] = sum(out["numbers"][k] * DID_FIRST[k] for k in DID_FIRST)
     st = snaps[-1]["state"] if snaps else {}
+    out["state"] = st
     items = st.get("renewing_items") or {}
     out["did_renewals_per_day"] = sum(items.get(f"number_{k}", {}).get("active", 0) * DID_WEEK[k] for k in DID_WEEK) / 7
-    out["state"] = st
-    # Per active account and day, by size: what a new account of that size will cost and bring.
+    out["exact"] = bool(active) or not snaps or "active" in snaps[-1]["state"]
+
+    # Active accounts and extensions in the period, by size.
+    acc = {s: 0 for s in SIZES}
+    ext = {s: 0 for s in SIZES}
+    if out["exact"]:
+        for e, size in active.values():
+            acc[size] += 1
+            ext[size] += e
+    else:                                              # schema 1: busiest window, approximate
+        by = st.get("by_size", {})
+        for s in SIZES:
+            v = by.get(s, {})
+            acc[s] = active_max.get(s, 0)
+            ext[s] = v.get("extensions", 0) * acc[s] / max(1, v.get("accounts", 1))
+    out["active_accounts"], out["active_ext"], out["active_ids"] = acc, ext, active
     per_day = 24 / max(1, out["hours"])
-    for name, z in size.items():
-        n = max(1, z["active_max"])
-        z["cost_per_acct_day"] = z["cost"] * per_day / n
-        z["charge_per_acct_day"] = z["charge"] * per_day / n
-    new_total = sum(z["new"] for z in size.values())
-    out["new_mix"] = {k: (z["new"] / new_total if new_total else 1 / len(size)) for k, z in size.items()}
+    out["per_ext"] = {s: {c: {k: usage[s][c][k] * per_day / max(1, ext[s]) for k in ("cost", "charge", "min")}
+                          for c in CLASSES} for s in SIZES}
+    # New accounts: how many extensions they bring, by size.
+    n_new = {s: 0 for s in SIZES}
+    e_new = {s: 0 for s in SIZES}
+    for e, size in new.values():
+        n_new[size] += 1
+        e_new[size] += e
+    tot_new = sum(n_new.values())
+    out["new_mix"] = {s: (n_new[s] / tot_new if tot_new else 1 / 3) for s in SIZES}
+    out["ext_per_new"] = {s: (e_new[s] / n_new[s] if n_new[s] else 0.0) for s in SIZES}
+    from_new = sum(e_new.values()) if new else 0
+    out["upgrades_per_day"] = max(0.0, out["new_extensions"] - from_new) * per_day
     return out
 
 
-def hour_profile(snapshots, days=3):
-    """Share of a day's usage cost that falls in each New York hour (0-23), from recent history."""
-    ny = dt.timezone(dt.timedelta(hours=-5))   # EST: no DST change before the course ends
+def churn(snapshots):
+    """Accounts active in the day before the last but not in the last day (extension-weighted and
+    by count), as a fraction per day. None without two days of exact snapshots."""
+    days = day_windows(snapshots, 2)
+    if len(days) < 2:
+        return None
+    a, b = economics(days[0]), economics(days[1])
+    if not (a["exact"] and b["exact"]) or not a["active_ids"]:
+        return None
+    gone = [v for k, v in a["active_ids"].items() if k not in b["active_ids"]]
+    tot_ext = sum(e for e, _ in a["active_ids"].values()) or 1
+    return {"accounts": len(gone) / len(a["active_ids"]), "extensions": sum(e for e, _ in gone) / tot_ext,
+            "gone": len(gone)}
+
+
+def usage_trend(snapshots, default_half_life):
+    """Growth per day of call cost per active extension (last day vs the one before) and how fast it
+    fades: with three days the half-life is fitted from the two growth rates, else the setting.
+    Returns (growth per day, half-life days, note)."""
+    days = day_windows(snapshots, 3)
+    if len(days) < 2:
+        return 0.0, default_half_life, "needs 48 h"
+
+    def per_ext_cost(d):
+        e = economics(d)
+        n = sum(e["active_ext"].values())
+        return e["usage_cost"] / n if n else 0.0
+    costs = [per_ext_cost(d) for d in days]
+    rates = [b / a - 1 for a, b in zip(costs, costs[1:]) if a > 0]
+    if not rates:
+        return 0.0, default_half_life, "no usage"
+    g = max(-0.5, min(1.0, rates[-1]))
+    if len(rates) >= 2 and rates[-2] > rates[-1] > 0:
+        hl = max(0.5, min(10.0, math.log(2) / math.log(rates[-2] / rates[-1])))
+        return g, hl, "half-life fitted from 3 days"
+    return g, default_half_life, "half-life from settings"
+
+
+def trend_multiplier(growth_per_day, half_life_days, days):
+    """Usage multiplier after `days` when usage grows `growth_per_day` now and that growth rate
+    halves every `half_life_days` (load ramps do not compound forever)."""
+    if not growth_per_day or half_life_days <= 0:
+        return 1.0
+    k = math.log(2) / half_life_days
+    return math.exp(growth_per_day / k * (1 - math.exp(-k * days)))
+
+
+def hour_profile(snapshots, days=3, key="cost"):
+    """Share of a day's call cost (key="cost") or signups (key="signups") in each New York hour."""
     tot = [0.0] * 24
     for s in last_hours(snapshots, days * 24):
         for h in s["hourly"]:
-            t = dt.datetime.strptime(h["hour"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-            tot[t.astimezone(ny).hour] += sum(c["cost"] for c in h["calls"].values())
+            v = h["signups"] if key == "signups" else sum(c["cost"] for c in h["calls"].values())
+            tot[ts_hour(h["hour"]).astimezone(NY).hour] += v
     total = sum(tot)
     return [x / total for x in tot] if total else [1 / 24] * 24
+
+
+def signup_hour_profile(snapshots, days=3):
+    return hour_profile(snapshots, days, key="signups")
 
 
 # --------------------------------------------------------------------------------- bills ----
@@ -235,131 +355,34 @@ def fit_share_model(markets, profiles, mix):
     return b, g, rms
 
 
-def predict_shares(market, profiles, mix, b, g, overrides=None):
-    """Signup share of every open provider (grade F gets none), with some prices overridden."""
+def predict_shares(market, profiles, mix, b, g, overrides=None, bias=None):
+    """Signup share of every open provider (grade F gets none), with some prices overridden.
+    bias: {provider: weight multiplier} (calibration: what the bill and grade don't explain)."""
     w = {}
     for name, p in market["providers"].items():
         if p.get("closed") or p["reputation"] == "F":
             continue
         prices = dict(p["prices"], **(overrides or {}).get(name, {}))
         w[name] = math.exp(-b * math.log(max(0.01, blended_bill(prices, profiles, mix))) + g * GRADES[p["reputation"]])
+        w[name] *= (bias or {}).get(name, 1.0)
     sw = sum(w.values())
     return {k: v / sw for k, v in w.items()}
 
 
-# ---------------------------------------------------------------------------------- cash ----
-def trend_multiplier(growth_per_day, half_life_days, days):
-    """Usage multiplier after `days` when usage grows `growth_per_day` now and that growth rate
-    halves every `half_life_days` (load ramps do not compound forever)."""
-    if not growth_per_day or half_life_days <= 0:
-        return 1.0
-    k = math.log(2) / half_life_days
-    return math.exp(growth_per_day / k * (1 - math.exp(-k * days)))
+def calibrate_bias(market, profiles, mix, b, g, names):
+    """Weight multipliers so the model reproduces the dashboard's current shares of `names`
+    exactly (the rest of the market absorbs the difference)."""
+    bias = {}
+    for _ in range(20):
+        pred = predict_shares(market, profiles, mix, b, g, bias=bias)
+        for n in names:
+            obs = market["providers"][n].get("signup_share", 0)
+            if n in pred and 0 < obs < 1 and 0 < pred[n] < 1:
+                bias[n] = bias.get(n, 1.0) * (obs / (1 - obs)) / (pred[n] / (1 - pred[n]))
+    return bias
 
 
-def project_cash(start_cash, econ, profile_by_hour, end, now, signups_per_day, signup, churn_per_day=0.0,
-                 usage_ratio=None, growth_per_day=0.0, half_life_days=2.0, cloud_per_day=0.0,
-                 signups_by_hour=None, ratio_by_hour=None, revenue_by_hour=None):
-    """Hour-by-hour cash until `end`. Returns (list of (time, cash), minimum cash, final cash, totals).
-
-    Prepaid cash model: top-ups refill what calls used (cash in = usage charged), renewals are
-    invoiced to the card, each new account pays its first top-up and items; vendors cost what calls
-    cost; numbers cost the DID provider; every card charge pays 2.9 % + $0.30.
-    Usage: existing accounts keep today's (shrinking at churn_per_day); each new account adds the
-    per-day usage of an active account of its size. usage_ratio scales the charge side (price change).
-    cloud_per_day: what the VMs and volumes cost (paid from the cloud balance, part of total cash).
-    Two price lists (a window with an alternate list): signups_by_hour, ratio_by_hour and
-    revenue_by_hour give, per New York hour (0-23), the signups per hour, the charge ratio and the
-    first-purchase revenue per signup under the list in force then; they override the flat values.
-    """
-    h = econ["hours"] or 24
-    per_day = 24 / h
-    r = usage_ratio if usage_ratio is not None else 1.0
-    base_cost, base_charge = econ["usage_cost"] * per_day, econ["usage_charge"] * per_day
-    refills_day = econ["payments"].get("topup", {}).get("n", 0) * per_day
-    renew_in_day = econ["payments"].get("invoice", {}).get("amount", 0.0) * per_day
-    renew_n_day = econ["payments"].get("invoice", {}).get("n", 0) * per_day
-    did_renew_day = econ["did_renewals_per_day"]
-    mix, size = econ["new_mix"], econ["by_size"]
-    new_cost_day = sum(mix[s] * size[s]["cost_per_acct_day"] for s in mix)          # per new account
-    new_charge_day = sum(mix[s] * size[s]["charge_per_acct_day"] for s in mix)
-    nums = signup["numbers_per_signup"]
-    did_first = sum(nums[k] * DID_FIRST[k] for k in DID_FIRST)
-    did_week_new = sum(nums[k] * DID_WEEK[k] for k in DID_WEEK) / 7
-    cash, t, pts, low, new_accts = start_cash, now, [], start_cash, 0.0
-    tot = {"usage_cost": 0.0, "usage_charge": 0.0, "cash_in": 0.0, "fees": 0.0, "did": 0.0, "cloud": 0.0}
-    while t < end:
-        days = (t - now).total_seconds() / 86400
-        keep = (1 - churn_per_day) ** days * trend_multiplier(growth_per_day, half_life_days, days)
-        nyh = (t.hour - 5) % 24                                  # New York hour
-        frac = profile_by_hour[nyh]                              # this hour's share of a day's usage
-        su = signups_by_hour[nyh] if signups_by_hour else signups_per_day / 24
-        rh = ratio_by_hour[nyh] if ratio_by_hour else r
-        rev = revenue_by_hour[nyh] if revenue_by_hour else signup["revenue"]
-        usage_cost = (base_cost * keep + new_accts * new_cost_day) * frac
-        usage_charge = (base_charge * keep + new_accts * new_charge_day) * frac * rh
-        cash_in = (usage_charge + renew_in_day * keep / 24 + new_accts * signup["renewal_per_day"] / 24
-                   + su * (signup["first_topup"] + rev))
-        charges = refills_day * keep * frac + renew_n_day * keep / 24 + su * (1 + sum(nums.values()))
-        fees = charges * CARD_FIXED + cash_in * CARD_PCT
-        did = su * did_first + (did_renew_day * keep + new_accts * did_week_new) / 24
-        cash += cash_in - fees - usage_cost - did - cloud_per_day / 24
-        for k, v in (("usage_cost", usage_cost), ("usage_charge", usage_charge), ("cash_in", cash_in),
-                     ("fees", fees), ("did", did), ("cloud", cloud_per_day / 24)):
-            tot[k] += v
-        low = min(low, cash)
-        pts.append((t, cash))
-        new_accts = new_accts * (1 - churn_per_day / 24) + su
-        t += dt.timedelta(hours=1)
-    return pts, low, cash, tot
-
-
-# ------------------------------------------------------------------------- what-if inputs ----
-def first_charge(price, prorate=0.9):
-    """What a new customer pays for an item on signup: prorated, waived under the minimum charge."""
-    amount = price * prorate
-    return amount if amount >= MIN_CHARGE else 0.0
-
-
-def signup_inputs(econ, our_prices):
-    """Per-signup averages from the data, at our current (or proposed) prices."""
-    n = max(1, econ["signups"])
-    nums = {k: econ["numbers"][k] / n for k in ("local", "toll_free")}
-    topup = econ["payments"].get("topup", {}).get("amount", 0.0)
-    items_week = our_prices["plan"] + nums["local"] * our_prices["local_number"] + nums["toll_free"] * our_prices["toll_free_number"]
-    return {
-        "ext_per_signup": econ["new_extensions"] / n,
-        "numbers_per_signup": nums,
-        "revenue": (first_charge(our_prices["plan"]) + nums["local"] * first_charge(our_prices["local_number"])
-                    + nums["toll_free"] * first_charge(our_prices["toll_free_number"])),
-        # Renewal invoices are one charge per account per week, waived under the minimum charge.
-        "renewal_per_day": (items_week if items_week >= MIN_CHARGE else 0.0) / 7,
-        # Top-ups beyond refilling what calls used = new accounts' first top-ups.
-        "first_topup": max(0.0, topup - econ["usage_charge"]) / n,
-    }
-
-
-def usage_ratio(econ, old, new):
-    """How the charge side of today's calls changes with new per-minute prices (same minutes)."""
-    key = {"us": "us_per_min", "tf_in": "tf_in_per_min", "intl": "uk_per_min"}
-    before = sum(c["charge"] for c in econ["calls"].values())
-    after = sum(c["charge"] * (new[key[k]] / old[key[k]] if k in key and old.get(key[k]) else 1.0)
-                for k, c in econ["calls"].items())
-    return after / before if before else 1.0
-
-
-def signup_hour_profile(snapshots, days=3):
-    """Share of our signups that happen in each New York hour (0-23), from recent history."""
-    ny = dt.timezone(dt.timedelta(hours=-5))
-    tot = [0.0] * 24
-    for snap in last_hours(snapshots, days * 24):
-        for h in snap["hourly"]:
-            t = dt.datetime.strptime(h["hour"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-            tot[t.astimezone(ny).hour] += h["signups"]
-    total = sum(tot)
-    return [x / total for x in tot] if total else [1 / 24] * 24
-
-
+# ---------------------------------------------------------------------------- price lists ----
 def in_window(ny_hour, settings):
     w = settings.get("alt_window")
     return bool(w) and w["start_hour"] <= ny_hour < w["end_hour"]
@@ -371,9 +394,6 @@ def our_lists(market, settings):
     op = settings.get("our_prices") or {}
     std = op.get("standard") or market["providers"][settings["us"]]["prices"]
     return dict(std), dict(op.get("alt") or std)
-
-
-INCLUDED = ("included_extensions", "included_us_minutes")
 
 
 def clamp_alt(alt, std):
@@ -389,46 +409,198 @@ def clamp_alt(alt, std):
     return out
 
 
-def evaluate(market, settings, econ, profiles, mix, b, g, std, now, end, cut_rival=False, signups_on=True, alt=None):
-    """Cash path and extension gain if our standard list is `std` and the alternate list (inside
-    settings.alt_window, New York time) is `alt` (default: the current alternate list, kept no
-    dearer than `std`)."""
-    us, rival = settings["us"], settings["rival"]
-    cur_std, cur_alt = our_lists(market, settings)
-    alt = clamp_alt(alt if alt is not None else cur_alt, std)
-    rival_over = {}
-    if cut_rival:
-        rp = market["providers"][rival]["prices"]
-        rival_over = {rival: {k: round(rp[k] * (1 - settings["rival_cut"]), 6) for k in LINES if k in rp}}
+def first_charge(price, prorate=0.9):
+    """What a new customer pays for an item on signup: prorated, waived under the minimum charge."""
+    amount = price * prorate
+    return amount if amount >= MIN_CHARGE else 0.0
 
-    def share(ours):
-        return predict_shares(market, profiles, mix, b, g, dict(rival_over, **{us: ours})).get(us, 0.0)
 
-    def share_now(ours):     # the market as it is, to scale our observed signups to the whole market
-        return predict_shares(market, profiles, mix, b, g, {us: ours}).get(us, 0.0)
+def charge_ratio(econ, old, new):
+    """Calls charged at list `new` / charged at list `old` (same calls): per-minute prices by call
+    type, and included US minutes (more included minutes = fewer billed)."""
+    before = econ["usage_charge"]
+    if not before:
+        return 1.0
+    after = 0.0
+    for cls, c in econ["calls"].items():
+        k = PER_MIN.get(cls)
+        r = new[k] / old[k] if k and old.get(k) else 1.0
+        ch = c["charge"] * r
+        if cls == "us" and old.get("included_us_minutes") and c["billed_min"] > c["included_min"]:
+            # included minutes are free; scale them with the allowance, billed minutes shrink alike
+            inc_new = min(c["billed_min"], c["included_min"] * new["included_us_minutes"] / old["included_us_minutes"])
+            ch *= (c["billed_min"] - inc_new) / (c["billed_min"] - c["included_min"])
+        after += ch
+    return after / before
 
-    sp = settings.get("_signup_profile") or [1 / 24] * 24
-    win = [in_window(h, settings) for h in range(24)]
-    s_std, s_alt = share(std), share(alt)
-    now_std, now_alt = share_now(cur_std), share_now(cur_alt)
-    observed = econ["signups"] * 24 / max(1, econ["hours"])
-    market_day = observed / max(0.01, sum(sp[h] * (now_alt if win[h] else now_std) for h in range(24)))
-    on = 1 if signups_on else 0
-    by_hour = [market_day * sp[h] * (s_alt if win[h] else s_std) * on for h in range(24)]
-    ratio = [usage_ratio(econ, cur_alt if win[h] else cur_std, alt if win[h] else std) for h in range(24)]
-    rev_std, rev_alt = signup_inputs(econ, std)["revenue"], signup_inputs(econ, alt)["revenue"]
-    revenue = [rev_alt if win[h] else rev_std for h in range(24)]
-    si = signup_inputs(econ, std)
-    spd = sum(by_hour)
-    pts, low, final, _ = project_cash(market["cash_total"], econ, settings.get("_hour_profile") or [1 / 24] * 24,
-                                      end, now, spd, si, settings.get("churn_per_day", 0.0), None,
-                                      settings.get("_growth_per_day", 0.0), settings.get("growth_half_life_days", 2.0),
-                                      settings.get("_cloud_per_day", settings.get("cloud_cost_per_day", 0.0)),
-                                      by_hour, ratio, revenue)
-    days = (end - now).total_seconds() / 86400
-    avg_share = sum(sp[h] * (s_alt if win[h] else s_std) for h in range(24))
-    return {"share": avg_share, "share_std": s_std, "share_alt": s_alt, "signups_per_day": spd,
-            "ext_gain": spd * si["ext_per_signup"] * days, "low": low, "final": final, "points": pts}
+
+def renewal_ratio(econ, std):
+    """Weekly renewals at list `std`: every renewing item renews at the lower of its own price and
+    the list (current state), relative to today's renewal value. Accounts whose items come to less
+    than the minimum charge pay nothing (approximated per average account)."""
+    items = econ["state"].get("renewing_items") or {}
+    cur = sum(v["weekly"] for v in items.values())
+    new = 0.0
+    for kind, v in items.items():
+        line = ITEM_PRICE.get(kind)
+        avg = v["weekly"] / v["active"] if v["active"] else 0.0
+        new += v["active"] * (min(avg, std[line]) if line in std else avg)
+    plans = (items.get("plan") or {}).get("active", 0)
+    if plans and new / plans < MIN_CHARGE:
+        new = 0.0
+    return new / cur if cur else 1.0
+
+
+def signup_inputs(econ, prices):
+    """Per-signup averages from the base day, at a given price list."""
+    n = max(1, econ["signups"])
+    nums = {k: econ["numbers"][k] / n for k in ("local", "toll_free")}
+    topup = econ["payments"].get("topup", {}).get("amount", 0.0)
+    return {
+        "numbers": nums,
+        "revenue": (first_charge(prices["plan"]) + nums["local"] * first_charge(prices["local_number"])
+                    + nums["toll_free"] * first_charge(prices["toll_free_number"])),
+        # Top-ups beyond refilling what calls used = new accounts' first top-ups.
+        "first_topup": max(0.0, topup - econ["usage_charge"]) / n,
+    }
+
+
+# --------------------------------------------------------------------------------- forecast ----
+def project(econ, start_cash, now, end, settings, signups_by_hour, ratio_by_hour, revenue_by_hour,
+            renew_ratio=1.0, growth=0.0, half_life=2.0, churn_ext=0.0, churn_acct=None, cloud_per_day=0.0,
+            usage_profile=None):
+    """Hour-by-hour cash and active extensions until `end`. Per-hour inputs are indexed by New York
+    hour (0-23). Returns {"points": [(t, cash)], "low", "final", "ext_end", "totals"}."""
+    per_day = 24 / max(1, econ["hours"])
+    prof = usage_profile or [1 / 24] * 24
+    ext = dict(econ["active_ext"])
+    ext0 = max(1.0, sum(ext.values()))
+    acc0 = max(1, sum(econ["active_accounts"].values()))
+    acc = float(acc0)
+    churn_acct = churn_ext if churn_acct is None else churn_acct
+    pe = econ["per_ext"]
+    ext_new, mix = econ["ext_per_new"], econ["new_mix"]
+    upgrade_rate = econ["upgrades_per_day"] / ext0                   # per day, relative to the base
+    topup = econ["payments"].get("topup", {"n": 0, "amount": 0.0})
+    refill_size = topup["amount"] / topup["n"] if topup["n"] else 5.0
+    inv = econ["payments"].get("invoice", {"n": 0, "amount": 0.0})
+    renew_in, renew_n = inv["amount"] * per_day * renew_ratio, inv["n"] * per_day
+    did_renew = econ["did_renewals_per_day"]
+    si = signup_inputs(econ, {"plan": 0, "local_number": 0, "toll_free_number": 0})
+    nums = si["numbers"]
+    did_first = sum(nums[k] * DID_FIRST[k] for k in DID_FIRST)
+    tot = {k: 0.0 for k in ("usage_cost", "usage_charge", "cash_in", "fees", "did", "cloud")}
+    cash, low, pts, t = start_cash, start_cash, [], now
+    while t < end:
+        days = (t - now).total_seconds() / 86400
+        m = trend_multiplier(growth, half_life, days)
+        h = t.astimezone(NY).hour
+        frac = prof[h]
+        cost = sum(ext[s] * sum(pe[s][c]["cost"] for c in CLASSES) for s in SIZES) * m * frac
+        charge = sum(ext[s] * sum(pe[s][c]["charge"] for c in CLASSES) for s in SIZES) * m * frac * ratio_by_hour[h]
+        su = signups_by_hour[h]
+        active_share = acc / acc0
+        cash_in = charge + su * (si["first_topup"] + revenue_by_hour[h]) + renew_in * active_share / 24
+        charges = charge / refill_size + su * (1 + sum(nums.values())) + renew_n * active_share / 24
+        fees = charges * CARD_FIXED + cash_in * CARD_PCT
+        did = su * did_first + did_renew * active_share / 24
+        cloud = cloud_per_day / 24
+        cash += cash_in - fees - cost - did - cloud
+        for k, v in (("usage_cost", cost), ("usage_charge", charge), ("cash_in", cash_in), ("fees", fees),
+                     ("did", did), ("cloud", cloud)):
+            tot[k] += v
+        low = min(low, cash)
+        pts.append((t, cash))
+        for s in SIZES:                                             # extensions: new, upgrades, churn
+            ext[s] += su * mix[s] * ext_new[s] + ext[s] * (upgrade_rate - churn_ext) / 24
+        acc += su - acc * churn_acct / 24
+        t += dt.timedelta(hours=1)
+    return {"points": pts, "low": low, "final": cash, "ext_end": sum(ext.values()), "totals": tot}
+
+
+def rival_rate(history, rival):
+    """The rival's leaderboard extensions per day, from the oldest and newest market snapshots at
+    least 6 h apart. None if the history is too short."""
+    pts = sorted(((dt.datetime.fromisoformat(m["taken_at"]), m["providers"][rival]["extensions"])
+                  for m in history if rival in m.get("providers", {})), key=lambda p: p[0])
+    if len(pts) < 2 or (pts[-1][0] - pts[0][0]).total_seconds() < 6 * 3600:
+        return None
+    return (pts[-1][1] - pts[0][1]) / ((pts[-1][0] - pts[0][0]).total_seconds() / 86400)
+
+
+class Context:
+    """Everything a forecast needs that does not depend on the price list being tried."""
+
+    def __init__(self, market, settings, econ, profiles, b, g, now, end, history=None, trend=(0.0, 2.0),
+                 churn_rates=None):
+        self.market, self.settings, self.econ, self.profiles = market, settings, econ, profiles
+        self.b, self.g, self.now, self.end = b, g, now, end
+        self.mix = econ["new_mix"]
+        self.us, self.rival = settings["us"], settings["rival"]
+        self.cur_std, self.cur_alt = our_lists(market, settings)
+        self.win = [in_window(h, settings) for h in range(24)]
+        self.sp = settings.get("_signup_profile") or [1 / 24] * 24
+        self.usage_profile = settings.get("_hour_profile") or [1 / 24] * 24
+        self.growth, self.half_life = trend
+        self.churn = churn_rates or {"extensions": settings.get("churn_per_day", 0.0),
+                                     "accounts": settings.get("churn_per_day", 0.0)}
+        self.cloud = settings.get("_cloud_per_day", settings.get("cloud_cost_per_day", 0.0))
+        # The dashboard's share was observed under the list in force when it was taken.
+        taken = dt.datetime.fromisoformat(market["taken_at"]).astimezone(NY)
+        self.observed_list = self.cur_alt if in_window(taken.hour, settings) else self.cur_std
+        cal = dict(market, providers=dict(market["providers"]))
+        cal["providers"][self.us] = dict(market["providers"][self.us], prices=self.observed_list)
+        self.bias = calibrate_bias(cal, profiles, self.mix, b, g, [self.us])
+        # Leaderboard extensions per active extension of ours (the dashboard counts what it counts).
+        ours = sum(econ["active_ext"].values())
+        self.lb_factor = market["providers"][self.us]["extensions"] / ours if ours else 1.0
+        self.rival_rate = rival_rate(history or [market], self.rival)
+
+    def shares(self, std, alt, cut_rival=False, sens=1.0):
+        rival_over = {}
+        if cut_rival:
+            rp = self.market["providers"][self.rival]["prices"]
+            rival_over = {self.rival: {k: round(rp[k] * (1 - self.settings["rival_cut"]), 6) for k in LINES if k in rp}}
+
+        def one(ours):
+            p = predict_shares(self.market, self.profiles, self.mix, self.b * sens, self.g,
+                               dict(rival_over, **{self.us: ours}), self.bias)
+            return p.get(self.us, 0.0), p.get(self.rival, 0.0)
+        return one(std), one(alt)
+
+    def market_signups_per_day(self):
+        """All new customers per day in the market: ours over our (model) share, hour by hour."""
+        (s_std, _), (s_alt, _) = self.shares(self.cur_std, self.cur_alt)
+        ours = self.econ["signups"] * 24 / max(1, self.econ["hours"])
+        avg = sum(self.sp[h] * (s_alt if self.win[h] else s_std) for h in range(24))
+        return ours / max(0.01, avg)
+
+    def evaluate(self, std, alt=None, cut_rival=False, signups_on=True, growth=None, half_life=None, sens=1.0):
+        alt = clamp_alt(alt if alt is not None else self.cur_alt, std)
+        (s_std, r_std), (s_alt, r_alt) = self.shares(std, alt, cut_rival, sens)
+        market_day = self.market_signups_per_day()
+        on = 1.0 if signups_on else 0.0
+        by_hour = [market_day * self.sp[h] * (s_alt if self.win[h] else s_std) * on for h in range(24)]
+        ratio = [charge_ratio(self.econ, self.cur_alt if self.win[h] else self.cur_std, alt if self.win[h] else std)
+                 for h in range(24)]
+        rev_std = signup_inputs(self.econ, std)["revenue"]
+        rev_alt = signup_inputs(self.econ, alt)["revenue"]
+        revenue = [rev_alt if self.win[h] else rev_std for h in range(24)]
+        r = project(self.econ, self.market["cash_total"], self.now, self.end, self.settings, by_hour, ratio, revenue,
+                    renewal_ratio(self.econ, std), self.growth if growth is None else growth,
+                    self.half_life if half_life is None else half_life, self.churn["extensions"],
+                    self.churn["accounts"], self.cloud, self.usage_profile)
+        share = sum(self.sp[h] * (s_alt if self.win[h] else s_std) for h in range(24))
+        rival_share = sum(self.sp[h] * (r_alt if self.win[h] else r_std) for h in range(24))
+        days = (self.end - self.now).total_seconds() / 86400
+        ours_lb = self.market["providers"][self.us]["extensions"]
+        r.update(share=share, share_std=s_std, share_alt=s_alt, signups_per_day=sum(by_hour),
+                 lb_end=r["ext_end"] * self.lb_factor, lb_gain=r["ext_end"] * self.lb_factor - ours_lb)
+        if self.rival_rate is not None:
+            (now_s, now_r), _ = self.shares(self.cur_std, self.cur_alt)
+            rr = self.rival_rate * (rival_share / now_r if now_r else 1.0)
+            r["rival_end"] = self.market["providers"][self.rival]["extensions"] + rr * days
+        return r
 
 
 def floor_at(settings, t):
@@ -440,43 +612,44 @@ def safe(result, settings):
     return all(c >= floor_at(settings, t) for t, c in result["points"])
 
 
-PER_MIN = ("us_per_min", "uk_per_min", "tf_in_per_min")
+def first_below_floor(result, settings):
+    return next((t for t, c in result["points"] if c < floor_at(settings, t)), None)
+
+
 WINDOW_OPTIONS = {
     # name -> how the alternate list follows a given standard list
-    "keep the window as it is": lambda cur_alt, std: dict(cur_alt),
-    "window without its per-minute cuts": lambda cur_alt, std: dict(cur_alt, **{k: std[k] for k in PER_MIN if k in std}),
-    "no window (one list all day)": lambda cur_alt, std: dict(std),
+    "keep the night prices": lambda cur_alt, std: dict(cur_alt),
+    "night prices without per-minute cuts": lambda cur_alt, std: dict(cur_alt, **{PER_MIN[c]: std[PER_MIN[c]] for c in PER_MIN}),
+    "no night prices": lambda cur_alt, std: dict(std),
 }
 
 
-def search_prices(market, settings, econ, profiles, mix, b, g, now, end):
-    """For each window option (keep the alternate list, keep it without its per-minute cuts, or one
-    list all day), a coordinate search over our STANDARD list; then the best option overall.
-    Rules: never above the rival on any price line and never fewer included extensions/minutes than
-    the rival; price candidates are the rival's price and 1-2 steps under it, the current price and
-    the minimum allowed; included quantities: current, the rival's and the current alternate list's.
-    The alternate list is never dearer than the standard one. A plan is acceptable if cash stays above
-    the floor even when the rival cuts every line by settings['rival_cut']. Among acceptable plans:
-    most extensions gained; within 1 %, more cash left wins (never lower than needed). If none is
-    acceptable: highest lowest-cash. Without a window only the last option is searched."""
-    cur, cur_alt = our_lists(market, settings)
-    rp = market["providers"][settings["rival"]]["prices"]
-    mins = settings.get("min_prices", {})
+def search_prices(ctx):
+    """For each night-window option, a coordinate search over our STANDARD list; then the best.
+    Rules: never above the rival on any price line, never fewer included extensions/minutes; price
+    candidates: the rival's price, 1-2 steps under it, the current price and the minimum allowed;
+    included quantities: current, the rival's, the current night list's. A plan is acceptable if
+    cash stays above the floor even when the rival cuts every line by settings.rival_cut (and with
+    the growth trend as measured). Among acceptable plans: most leaderboard extensions on the end
+    date; within 1 %, more cash left (never lower than needed). If none is acceptable: highest
+    lowest-cash."""
+    s, cur, cur_alt = ctx.settings, ctx.cur_std, ctx.cur_alt
+    rp = ctx.market["providers"][ctx.rival]["prices"]
+    mins = s.get("min_prices", {})
 
     def score(p, follow):
         alt = follow(cur_alt, p)
-        return (evaluate(market, settings, econ, profiles, mix, b, g, p, now, end, alt=alt),
-                evaluate(market, settings, econ, profiles, mix, b, g, p, now, end, cut_rival=True, alt=alt))
+        return ctx.evaluate(p, alt), ctx.evaluate(p, alt, cut_rival=True)
 
     def better(a, c):  # (prices, base, stress)
-        sa, sc = safe(a[2], settings), safe(c[2], settings)
+        sa, sc = safe(a[2], s), safe(c[2], s)
         if sa != sc:
             return sa
         if not sa:
             return a[2]["low"] > c[2]["low"]
-        if abs(a[1]["ext_gain"] - c[1]["ext_gain"]) <= 0.01 * max(1.0, c[1]["ext_gain"]):
+        if abs(a[1]["lb_end"] - c[1]["lb_end"]) <= 0.01 * max(1.0, c[1]["lb_end"]):
             return a[1]["final"] > c[1]["final"]
-        return a[1]["ext_gain"] > c[1]["ext_gain"]
+        return a[1]["lb_end"] > c[1]["lb_end"]
 
     def candidates(line):
         if line in INCLUDED:
@@ -502,19 +675,29 @@ def search_prices(market, settings, econ, profiles, mix, b, g, now, end):
                         best = cand
         return best
 
-    names = list(WINDOW_OPTIONS) if settings.get("alt_window") else ["no window (one list all day)"]
-    window, winner = {}, None
+    names = list(WINDOW_OPTIONS) if s.get("alt_window") else ["no night prices"]
+    options, winner = {}, None
     for name in names:
         follow = WINDOW_OPTIONS[name]
         best = search(follow)
-        window[name] = {"prices": best[0], "alt": clamp_alt(follow(cur_alt, best[0]), best[0]),
-                        "base": best[1], "stress": best[2], "safe": safe(best[2], settings),
-                        "changes": {k: (cur[k], best[0][k]) for k in cur if k in best[0] and cur[k] != best[0][k]}}
+        options[name] = {"prices": best[0], "alt": clamp_alt(follow(cur_alt, best[0]), best[0]),
+                         "base": best[1], "stress": best[2], "safe": safe(best[2], s),
+                         "changes": {k: (cur[k], best[0][k]) for k in cur if k in best[0] and cur[k] != best[0][k]}}
         if winner is None or better(best, winner[1]):
             winner = (name, best)
-    w = window[winner[0]]
-    return {"option": winner[0], "prices": w["prices"], "alt": w["alt"], "base": w["base"], "stress": w["stress"],
-            "safe": w["safe"], "changes": w["changes"], "window": window}
+    w = options[winner[0]]
+    return dict(w, option=winner[0], options=options)
+
+
+def impact(ctx, std, alt, changes):
+    """Each change's share of the result: the plan without that one change (others kept)."""
+    full = ctx.evaluate(std, alt)
+    out = {}
+    for k, (old, _) in changes.items():
+        p = dict(std, **{k: old})
+        r = ctx.evaluate(p, clamp_alt(alt, p))
+        out[k] = {"cash": full["final"] - r["final"], "ext": full["lb_end"] - r["lb_end"]}
+    return out
 
 
 # ----------------------------------------------------------------------------- cloud cost ----
@@ -536,36 +719,39 @@ def cloud_cost_per_day(history, fallback):
 
 
 # ------------------------------------------------------------------------------- backtest ----
-def actual_net(e):
-    """What really happened to cash in a period: payments in, minus card fees, calls and numbers."""
-    return e["cash_in"] - e["card_fees"] - e["usage_cost"] - e["did_new"] - e["did_renewals_per_day"] * e["hours"] / 24
+def actual_net(e, cloud_per_day=0.0):
+    """What really happened to cash in a period: payments in, minus card fees, calls, numbers, VMs."""
+    return (e["cash_in"] - e["card_fees"] - e["usage_cost"] - e["did_new"]
+            - (e["did_renewals_per_day"] + cloud_per_day) * e["hours"] / 24)
 
 
-def backtest(snapshots, settings, growth_per_day=0.0):
-    """Forecast the last 24 h from the 24 h before it (given the signups that really happened) and
-    compare with what happened. Returns {name: (forecast, actual, error %)} or None if < 48 h.
-    With growth_per_day it tests the trend model too (report.py passes the trend measured on the
-    days before, when there are 72 h)."""
-    if hours_in(snapshots) < 48:
+def backtest(snapshots, settings, growth=0.0, half_life=2.0):
+    """Run the model on the day before the last (with the signups that really happened, hour by
+    hour, at the prices that applied) and compare with the last day. Returns
+    {name: (forecast, actual, error %)} or None without 48 h."""
+    days = day_windows(snapshots, 2)
+    if len(days) < 2:
         return None
-    day2 = last_hours(snapshots, 24)
-    day1 = last_hours(snapshots[:len(snapshots) - len(day2)], 24)
-    e1, e2 = economics(day1), economics(day2)
-    si = signup_inputs(e1, {"plan": 0, "local_number": 0, "toll_free_number": 0})
-    n1 = max(1, e1["signups"])
-    items = e1["cash_in"] - e1["payments"].get("topup", {}).get("amount", 0) - e1["payments"].get("invoice", {}).get("amount", 0)
-    si["revenue"], si["renewal_per_day"] = items / n1, 0.0
-    start = dt.datetime.strptime(day2[0]["hourly"][0]["hour"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-    _, _, net, tot = project_cash(0.0, e1, hour_profile(day1, 1), start + dt.timedelta(hours=24), start,
-                                  e2["signups"], si, settings.get("churn_per_day", 0.0), None,
-                                  growth_per_day, settings.get("growth_half_life_days", 2.0))
+    e1, e2 = economics(days[0]), economics(days[1])
+    by_hour = [0.0] * 24
+    for snap in days[1]:
+        for h in snap["hourly"]:
+            by_hour[ts_hour(h["hour"]).astimezone(NY).hour] += h["signups"]
+    items = (e1["cash_in"] - e1["payments"].get("topup", {}).get("amount", 0)
+             - e1["payments"].get("invoice", {}).get("amount", 0))
+    rev = items / max(1, e1["signups"])
+    start = ts_hour(days[1][0]["hourly"][0]["hour"])
+    ch = churn(snapshots[:len(snapshots) - len(days[1])]) or {"extensions": 0.0, "accounts": 0.0}
+    r = project(e1, 0.0, start, start + dt.timedelta(hours=24), settings, by_hour, [1.0] * 24, [rev] * 24,
+                1.0, growth, half_life, ch["extensions"], ch["accounts"], 0.0, hour_profile(days[0], 1))
 
     def row(pred, act):
         return (pred, act, (pred - act) / abs(act) * 100 if act else float("nan"))
-    # Growth of existing usage the flat model missed: the trend the forecast applies from now on.
-    missed = (e2["usage_cost"] - tot["usage_cost"]) / max(1.0, e1["usage_cost"] * 24 / max(1, e1["hours"]))
-    return {"_growth_per_day": missed,
-            "calls cost": row(tot["usage_cost"], e2["usage_cost"]),
-            "calls charged": row(tot["usage_charge"], e2["usage_charge"]),
-            "cash in": row(tot["cash_in"], e2["cash_in"]),
-            "net cash": row(net, actual_net(e2))}
+    t = r["totals"]
+    out = {"calls cost": row(t["usage_cost"], e2["usage_cost"]),
+           "calls charged": row(t["usage_charge"], e2["usage_charge"]),
+           "cash in": row(t["cash_in"], e2["cash_in"]),
+           "net cash": row(r["final"], actual_net(e2))}
+    if e2["exact"] and e1["exact"]:
+        out["active extensions"] = row(r["ext_end"], sum(e2["active_ext"].values()))
+    return out

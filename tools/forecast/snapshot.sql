@@ -112,7 +112,7 @@ renewals AS (
            WHERE i.removed_at IS NULL AND i.paid_through >= win.t1 AND i.paid_through < win.t1 + interval '7 days'
            GROUP BY 1, 2) x)
 SELECT json_build_object(
-  'schema', 1,
+  'schema', 2,
   'from', to_char((SELECT t0 FROM win), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
   'to', to_char((SELECT t1 FROM win), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
   'hourly', (SELECT j FROM hourly),
@@ -121,6 +121,13 @@ SELECT json_build_object(
     'active_in_window', (SELECT count(*) FROM win_tenants),
     'extensions', (SELECT coalesce(sum(ext), 0) FROM acct),
     'active_extensions_in_window', (SELECT coalesce(sum(a.ext), 0) FROM acct a JOIN win_tenants w ON w.tenant_id = a.id),
+    -- Accounts with a call in this window: short id -> [extensions, size]. The tool unions these over
+    -- 24 h (accounts active in a day, their extensions, churn), without rescanning call records.
+    'active', (SELECT coalesce(json_object_agg(left(a.id::text, 8), json_build_array(a.ext, a.size)), '{}'::json)
+                 FROM acct a JOIN win_tenants w ON w.tenant_id = a.id),
+    -- Accounts created in this window, and the extensions they have at its end.
+    'new_accounts', (SELECT coalesce(json_object_agg(left(a.id::text, 8), json_build_array(a.ext, a.size)), '{}'::json)
+                       FROM acct a, win WHERE a.created_at >= win.t0),
     'credit_held', (SELECT round(coalesce(sum(credit), 0), 2) FROM credit_balances),
     'by_size', (SELECT j FROM sizes_j),
     'renewing_items', (SELECT j FROM items),
