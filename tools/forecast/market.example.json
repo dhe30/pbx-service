@@ -1,0 +1,35 @@
+{
+  "_comment": "Format of data_dir/market.json (filled in per report from the course dashboard). Made-up values.",
+  "taken_at": "2026-12-01T12:00:00-05:00",
+  "bank": { "bank": 1000.00, "did": 100.00, "us_vendor": 100.00, "intl_vendor": 10.00, "loan_owed": 0.00 },
+  "providers": {
+    "us": {
+      "extensions": 1000, "customers": 100, "success": 0.98, "reputation": "B", "signup_share": 0.40,
+      "bills": { "small": 2.0, "mid": 30.0, "large": 200.0 },
+      "prices": { "plan": 1.00, "included_extensions": 50, "included_us_minutes": 1000, "extra_extension": 0.10,
+                  "local_number": 1.00, "toll_free_number": 2.00, "recording": 0.10, "intl_calling": 0.10,
+                  "us_per_min": 0.007, "uk_per_min": 0.012, "tf_in_per_min": 0.020, "signup_fee": 0 }
+    },
+    "provider-a": {
+      "extensions": 1200, "customers": 90, "success": 0.99, "reputation": "A", "signup_share": 0.40,
+      "bills": { "small": 2.0, "mid": 35.0, "large": 250.0 },
+      "prices": { "plan": 1.00, "included_extensions": 30, "included_us_minutes": 1000, "extra_extension": 0.20,
+                  "local_number": 1.00, "toll_free_number": 2.00, "recording": 0.10, "intl_calling": 0.10,
+                  "us_per_min": 0.008, "uk_per_min": 0.012, "tf_in_per_min": 0.020, "signup_fee": 0 }
+    },
+    "provider-b": {
+      "extensions": 500, "customers": 40, "success": 0.90, "reputation": "D", "signup_share": 0.20,
+      "bills": { "small": 5.0, "mid": 50.0, "large": 300.0 },
+      "prices": { "plan": 2.00, "included_extensions": 20, "included_us_minutes": 500, "extra_extension": 0.50,
+                  "local_number": 2.00, "toll_free_number": 3.00, "recording": 0.50, "intl_calling": 0.50,
+                  "us_per_min": 0.010, "uk_per_min": 0.015, "tf_in_per_min": 0.010, "signup_fee": 2.00 }
+    },
+    "provider-c": {
+      "extensions": 100, "customers": 10, "success": 0.50, "reputation": "F", "signup_share": 0, "closed": true,
+      "bills": { "small": 8.0, "mid": 60.0, "large": 280.0 },
+      "prices": { "plan": 3.00, "included_extensions": 10, "included_us_minutes": 300, "extra_extension": 0.30,
+                  "local_number": 2.00, "toll_free_number": 3.00, "recording": 1.00, "intl_calling": 1.00,
+                  "us_per_min": 0.009, "uk_per_min": 0.014, "tf_in_per_min": 0.015, "signup_fee": 0 }
+    }
+  }
+}

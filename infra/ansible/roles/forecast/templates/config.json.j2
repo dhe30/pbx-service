@@ -1,0 +1,9 @@
+{
+  "data_dir": "{{ forecast_data_dir }}",
+  "db_hosts": {{ groups['db'] | map('extract', hostvars, 'private_ip') | list | to_json }},
+  "ssh_key": "{{ forecast_data_dir }}/.ssh/id_ed25519",
+  "ssh_user": "postgres",
+  "backfill_hours": {{ forecast_backfill_hours }},
+  "pause_seconds": 2,
+  "discord_webhook": {{ forecast_discord_webhook | to_json }}
+}

@@ -1,0 +1,10 @@
+{
+  "_comment": "Format of /etc/pbx-forecast/config.json on mon-1 (written by Ansible, roles/forecast).",
+  "data_dir": "/var/lib/pbx-forecast",
+  "db_hosts": ["10.0.1.123", "10.0.0.255", "10.0.0.122"],
+  "ssh_key": "/var/lib/pbx-forecast/.ssh/id_ed25519",
+  "ssh_user": "postgres",
+  "backfill_hours": 72,
+  "pause_seconds": 2,
+  "discord_webhook": ""
+}

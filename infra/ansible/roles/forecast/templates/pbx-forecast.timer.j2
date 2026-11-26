@@ -1,0 +1,10 @@
+# Managed by Ansible (roles/forecast).
+[Unit]
+Description=Forecast tool summary ({{ forecast_schedule }})
+
+[Timer]
+OnCalendar={{ forecast_schedule }}
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

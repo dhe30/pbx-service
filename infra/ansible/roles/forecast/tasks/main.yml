@@ -1,0 +1,108 @@
+---
+# Forecast tool on mon-1 (see defaults/main.yml and tools/forecast/). settings.json and market.json
+# in forecast_data_dir are written by hand (our limits and the dashboard's numbers), never by
+# Ansible and never committed.
+
+- name: Skip the forecast tool without db hosts
+  ansible.builtin.meta: end_role
+  when: groups.get('db', []) | length == 0
+
+# ---- mon-1 ---------------------------------------------------------------------------------
+- name: Forecast user (owns the data directory and the SSH key)
+  ansible.builtin.user:
+    name: "{{ forecast_user }}"
+    system: true
+    home: "{{ forecast_data_dir }}"
+    shell: /usr/sbin/nologin
+    generate_ssh_key: true
+    ssh_key_type: ed25519
+    ssh_key_comment: "{{ forecast_user }}@{{ inventory_hostname }} (forecast)"
+
+- name: Forecast directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ forecast_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ forecast_dir }}", owner: root, mode: "0755" }
+    - { path: /etc/pbx-forecast, owner: root, mode: "0750" }
+    - { path: "{{ forecast_data_dir }}", owner: "{{ forecast_user }}", mode: "0750" }
+
+- name: Forecast tool code
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/tools/forecast/{{ item }}"
+    dest: "{{ forecast_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [collect.py, model.py, report.py]
+
+- name: Forecast config (db hosts, optional Discord webhook)
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: /etc/pbx-forecast/config.json
+    owner: root
+    group: "{{ forecast_user }}"
+    mode: "0640"
+
+# ---- db nodes: the only thing the forecast key may run ---------------------------------------
+- name: Read mon-1's forecast public key
+  ansible.builtin.slurp:
+    src: "{{ forecast_data_dir }}/.ssh/id_ed25519.pub"
+  register: forecast_pubkey
+
+- name: Snapshot SQL directory on the db nodes
+  ansible.builtin.file:
+    path: /usr/local/share/pbx-forecast
+    state: directory
+    mode: "0755"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['db'] }}"
+
+- name: Snapshot SQL (read-only transaction, statement timeout)
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/tools/forecast/snapshot.sql"
+    dest: /usr/local/share/pbx-forecast/snapshot.sql
+    mode: "0644"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['db'] }}"
+
+- name: Forced command for the forecast key (replicas only, one fixed query)
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/tools/forecast/db-query.sh"
+    dest: /usr/local/bin/pbx-forecast-query
+    mode: "0755"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['db'] }}"
+
+- name: Let mon-1 run only that command (postgres@db, from mon-1's address, no shell/forwarding)
+  ansible.builtin.lineinfile:
+    path: /var/lib/postgresql/.ssh/authorized_keys
+    regexp: "{{ forecast_user }}@{{ inventory_hostname }} \\(forecast\\)$"
+    line: 'restrict,from="{{ private_ip }}",command="/usr/local/bin/pbx-forecast-query" {{ forecast_pubkey.content | b64decode | trim }}'
+    create: true
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['db'] }}"
+
+# ---- schedule ----------------------------------------------------------------------------------
+- name: Forecast systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop: [pbx-forecast.service, pbx-forecast.timer]
+  notify: Reload systemd
+
+- name: Flush handlers (units known before enabling)
+  ansible.builtin.meta: flush_handlers
+
+- name: Forecast timer on/off (forecast_timer_enabled)
+  ansible.builtin.systemd:
+    name: pbx-forecast.timer
+    enabled: "{{ forecast_timer_enabled | bool }}"
+    state: "{{ 'started' if forecast_timer_enabled | bool else 'stopped' }}"
