@@ -54,6 +54,7 @@ def build(cfg, now):
         if k in settings:
             settings[k] = ts(settings[k])
     settings["_hour_profile"] = model.hour_profile(snaps)
+    settings["_data_dir"] = d
     market_path = os.path.join(d, "market.json")
     market = load_json(market_path) if os.path.exists(market_path) else None
     return snaps, settings, market, market_path
@@ -79,26 +80,65 @@ def our_economics_text(econ):
     return lines
 
 
+def market_history(settings, market):
+    """Every market snapshot so far (market-history.jsonl in the data dir), plus this one; this one
+    is appended if it is new. The signup model is fitted to all of them."""
+    path = os.path.join(settings["_data_dir"], "market-history.jsonl")
+    hist = [json.loads(l) for l in open(path) if l.strip()] if os.path.exists(path) else []
+    if not any(h.get("taken_at") == market["taken_at"] for h in hist):
+        with open(path, "a") as f:
+            f.write(json.dumps({k: v for k, v in market.items() if k != "cash_total"}, separators=(",", ":")) + "\n")
+        hist.append(market)
+    return hist
+
+
 def full_report(snaps, settings, market, now):
-    econ = model.economics(snaps, 24)
+    recent = model.last_hours(snaps, 24)
+    econ = model.economics(recent)
     out = our_economics_text(econ)
+    if econ["hours"] < 24:
+        out.append(f"  (only {econ['hours']} h of data: daily figures are scaled up from them)")
     us, rival = settings["us"], settings["rival"]
     b = market["bank"]
     market["cash_total"] = b["bank"] + b.get("did", 0) + b.get("us_vendor", 0) + b.get("intl_vendor", 0) - b.get("loan_owed", 0)
     out.append(f"Cash: bank {money(b['bank'])} + vendors {money(market['cash_total'] - b['bank'] + b.get('loan_owed', 0))}"
                f" - loan {money(b.get('loan_owed', 0))} = {money(market['cash_total'])}  (market data from {market['taken_at']})")
 
-    profiles, mix = model.profiles_from_snapshots(snaps)
-    out.append("Bill check (our typical customer per size, recomputed at every provider's prices vs the dashboard):")
-    for size in ("small", "mid", "large"):
-        if size in profiles:
-            k, err = model.fit_profile_scale(market, size, profiles[size])
-            p = profiles[size]
-            profiles[size] = dict(p, us_min=p["us_min"] * k, uk_min=p["uk_min"] * k, tf_in_min=p["tf_in_min"] * k)
-            flag = "" if err <= 0.15 * max(1, market["providers"][us]["bills"].get(size, 1)) else "  <-- poor fit: treat price advice with care"
-            out.append(f"  {size:5}: minutes x{k:.2f} to match, mean error {money(err)}{flag}")
-    bfit, gfit, rms = model.fit_share_model(market, profiles, mix)
-    out.append(f"Signup model: share ~ bill^-{bfit:.1f} x e^({gfit:.1f} x grade), fit error {rms * 100:.1f} pts")
+    bt = model.backtest(snaps, settings)
+    if bt:
+        g = max(-0.5, min(1.0, bt.pop("_growth_per_day")))
+        settings["_growth_per_day"] = g
+        out.append("Backtest (the flat model, run on the day before, vs what happened in the last 24 h):")
+        for k, (pred, act, err) in bt.items():
+            out.append(f"  {k:14} forecast {money(pred):>8}  actual {money(act):>8}  error {err:+.0f} %")
+        out.append(f"  -> existing usage grew {g * 100:+.0f} %/day beyond new accounts; the forecast applies that "
+                   f"trend, halving every {settings.get('growth_half_life_days', 2.0):g} days")
+        older = snaps[:len(snaps) - len(model.last_hours(snaps, 24))]
+        prev = model.backtest(older, settings) if model.hours_in(older) >= 48 else None
+        if prev:
+            g0 = max(-0.5, min(1.0, prev.pop("_growth_per_day")))
+            bt2 = model.backtest(snaps, settings, g0)
+            bt2.pop("_growth_per_day")
+            out.append(f"Backtest with the trend measured the day before ({g0 * 100:+.0f} %/day):")
+            for k, (pred, act, err) in bt2.items():
+                out.append(f"  {k:14} forecast {money(pred):>8}  actual {money(act):>8}  error {err:+.0f} %")
+        else:
+            out.append("  (the trend itself can be backtested once there are 72 h of snapshots)")
+    else:
+        out.append("Backtest: needs 48 h of snapshots (no usage trend applied)")
+
+    fits = model.fit_dashboard_profiles(market, model.shape_from_snapshots(recent))
+    profiles = {k: v[0] for k, v in fits.items()}
+    out.append("Dashboard's typical customer per size (fitted to every provider's bill):")
+    for size, (p, err, avg) in fits.items():
+        flag = "" if err <= max(1.0, 0.1 * avg) else "  <-- poor fit: treat price advice with care"
+        out.append(f"  {size:5}: {p['extensions']:.0f} ext, {p['local_numbers'] + p['toll_free_numbers']:.1f} numbers, "
+                   f"{p['us_min']:,.0f} US min/week; bills off by {money(err)} on average{flag}")
+    mix = econ["new_mix"]
+    history = market_history(settings, market)
+    bfit, gfit, rms = model.fit_share_model(history, profiles, mix)
+    out.append(f"Signup model ({len(history)} market snapshot(s)): share ~ bill^-{bfit:.1f} x e^({gfit:.1f} x grade), "
+               f"fit error {rms * 100:.1f} pts" + ("  <-- poor fit" if rms > 0.05 else ""))
 
     end = settings["end"]
     cur = market["providers"][us]["prices"]
@@ -112,9 +152,11 @@ def full_report(snaps, settings, market, now):
                    + (f"  BELOW FLOOR from {below:%b %d %H:%M}" if below else ""))
 
     s = model.search_prices(market, settings, econ, profiles, mix, bfit, gfit, now, end)
-    out.append("Suggested prices (never above the rival; cheapest list that wins, cash safe if the rival cuts "
-               f"{settings['rival_cut'] * 100:.0f} %):" if s["safe"] else
-               "NO price list keeps cash above the floor if the rival cuts: raise prices or the floor first")
+    if s["safe"]:
+        out.append("Suggested prices (never above the rival; smallest change that wins; cash stays above the floor "
+                   f"even if the rival cuts {settings['rival_cut'] * 100:.0f} %):")
+    else:
+        out.append("No price list keeps cash above the floor if the rival cuts. Safest list:")
     if not s["changes"]:
         out.append("  keep current prices")
     for k, (a, bb) in s["changes"].items():
@@ -129,8 +171,7 @@ def full_report(snaps, settings, market, now):
 
 
 def summary(snaps, settings, market):
-    econ = model.economics(snaps, 24)
-    out = our_economics_text(econ)
+    out = our_economics_text(model.economics(model.last_hours(snaps, 24)))
     if market:
         out.append(f"(last market data: {market['taken_at']}; run a full report with fresh screenshots for price advice)")
     return out

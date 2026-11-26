@@ -13,7 +13,7 @@ WITH
 win AS (SELECT :'from'::timestamptz AS t0, :'to'::timestamptz AS t1),
 -- Size buckets by extension count (the dashboard's small / mid-size / large customers).
 acct AS (
-  SELECT t.id, coalesce(x.ext, 0) AS ext,
+  SELECT t.id, t.created_at, coalesce(x.ext, 0) AS ext,
          CASE WHEN coalesce(x.ext, 0) <= 10 THEN 'small' WHEN x.ext <= 40 THEN 'mid' ELSE 'large' END AS size
     FROM tenants t
     LEFT JOIN (SELECT tenant_id, count(*) AS ext FROM extensions GROUP BY 1) x ON x.tenant_id = t.id, win
@@ -89,11 +89,12 @@ items_by_size AS (
    WHERE i.removed_at IS NULL AND i.started_at < win.t1 GROUP BY a.size),
 sizes_j AS (
   SELECT json_object_agg(s.size, json_build_object('accounts', s.accounts,
-           'active_in_window', s.active, 'extensions', s.extensions,
+           'active_in_window', s.active, 'extensions', s.extensions, 'new_in_window', s.new_accounts,
            'local_numbers', coalesce(it.local_numbers, 0), 'toll_free_numbers', coalesce(it.toll_free_numbers, 0),
            'recording', coalesce(it.recording, 0), 'intl_calling', coalesce(it.intl_calling, 0),
            'usage_in_window', coalesce(u.j, '{}'::json))) AS j
-    FROM (SELECT a.size, count(*) accounts, count(w.tenant_id) active, sum(a.ext) extensions
+    FROM (SELECT a.size, count(*) accounts, count(w.tenant_id) active, sum(a.ext) extensions,
+                 count(*) FILTER (WHERE a.created_at >= (SELECT t0 FROM win)) AS new_accounts
             FROM acct a LEFT JOIN win_tenants w ON w.tenant_id = a.id GROUP BY a.size) s
     LEFT JOIN usage_j u USING (size) LEFT JOIN items_by_size it USING (size)),
 items AS (

@@ -18,7 +18,7 @@ def snapshot(hour, signups=1, ext=10, us=(1000, 6.0, 6.5), tf=(100, 2.5, 1.2), t
     t0 = dt.datetime(2026, 12, 1, tzinfo=UTC) + dt.timedelta(hours=hour)
     calls = {"us": {"legs": 100, "billed_min": us[0], "included_min": 0, "cost": us[1], "charge": us[2]},
              "tf_in": {"legs": 10, "billed_min": tf[0], "included_min": 0, "cost": tf[1], "charge": tf[2]}}
-    by_size = {s: {"accounts": n, "active_in_window": n, "extensions": n * e, "local_numbers": n,
+    by_size = {s: {"accounts": n, "active_in_window": n, "extensions": n * e, "local_numbers": n, "new_in_window": signups if s == "small" else 0,
                    "toll_free_numbers": 0, "recording": 0, "intl_calling": 0,
                    "usage_in_window": {"us": {"legs": 1, "min": us[0] * f, "cost": 0, "charge": 0},
                                        "tf_in": {"legs": 1, "min": tf[0] * f, "cost": 0, "charge": 0}}}
@@ -94,6 +94,8 @@ class Shares(unittest.TestCase):
 class Cash(unittest.TestCase):
     def test_economics_sums_hours(self):
         e = model.economics([snapshot(h) for h in range(24)])
+        self.assertEqual(e["hours"], 24)
+        self.assertAlmostEqual(e["new_mix"]["small"], 1.0)
         self.assertEqual(e["signups"], 24)
         self.assertAlmostEqual(e["usage_cost"], 24 * 8.5)
         self.assertAlmostEqual(e["usage_charge"], 24 * 7.7)
@@ -103,8 +105,8 @@ class Cash(unittest.TestCase):
         e = model.economics([snapshot(h, signups=0, ext=0, topups=(0, 0)) for h in range(24)])
         e["did_renewals_per_day"] = 0
         now = dt.datetime(2026, 12, 2, tzinfo=UTC)
-        _, low, final = model.project_cash(1000, e, [1 / 24] * 24, now + dt.timedelta(days=1), now, 0, 10,
-                                           {"local": 1, "toll_free": 0}, 0, 0, 0)
+        si = {"numbers_per_signup": {"local": 1, "toll_free": 0}, "revenue": 0, "renewal_per_day": 0, "first_topup": 0}
+        _, low, final, _ = model.project_cash(1000, e, [1 / 24] * 24, now + dt.timedelta(days=1), now, 0, si)
         # one day: charged 24*7.7 in (minus 2.9 %), cost 24*8.5 out
         self.assertAlmostEqual(final, 1000 + 24 * 7.7 * (1 - model.CARD_PCT) - 24 * 8.5, places=6)
         self.assertLessEqual(low, 1000)
@@ -113,17 +115,30 @@ class Cash(unittest.TestCase):
         e = model.economics([snapshot(h) for h in range(24)])
         now = dt.datetime(2026, 12, 2, tzinfo=UTC)
         end = now + dt.timedelta(days=2)
-        _, _, none = model.project_cash(1000, e, [1 / 24] * 24, end, now, 0, 10, {"local": 1, "toll_free": 0}, 0, 10, 0)
-        _, _, some = model.project_cash(1000, e, [1 / 24] * 24, end, now, 24, 10, {"local": 1, "toll_free": 0}, 0, 10, 0)
+        si = {"numbers_per_signup": {"local": 1, "toll_free": 0}, "revenue": 0, "renewal_per_day": 0, "first_topup": 10}
+        _, _, none, _ = model.project_cash(1000, e, [1 / 24] * 24, end, now, 0, si)
+        _, _, some, t = model.project_cash(1000, e, [1 / 24] * 24, end, now, 24, si)
         self.assertGreater(some, none)
+        # new accounts add usage of their size, not the average of all extensions
+        self.assertLess(t["usage_cost"], 2 * 24 * 8.5 * 1.5)
+
+    def test_backtest_is_exact_when_nothing_changes(self):
+        snaps = [snapshot(h, signups=0, ext=0, topups=(0, 0)) for h in range(48)]
+        bt = model.backtest(snaps, {})
+        self.assertAlmostEqual(bt["calls cost"][2], 0.0, places=6)
+        self.assertAlmostEqual(bt["calls charged"][2], 0.0, places=6)
+        self.assertIsNone(model.backtest(snaps[:30], {}))
 
 
 class Search(unittest.TestCase):
     def setUp(self):
         self.snaps = [snapshot(h) for h in range(48)]
-        self.econ = model.economics(self.snaps)
-        self.profiles, self.mix = model.profiles_from_snapshots(self.snaps)
-        self.m, self.s = market(), settings()
+        self.econ = model.economics(model.last_hours(self.snaps, 24))
+        self.m = market()
+        fits = model.fit_dashboard_profiles(self.m, model.shape_from_snapshots(self.snaps))
+        self.profiles = {k: v[0] for k, v in fits.items()}
+        self.mix = self.econ["new_mix"]
+        self.s = settings()
         self.now = dt.datetime(2026, 12, 2, tzinfo=UTC)
 
     def test_never_above_the_rival_on_any_line(self):
