@@ -257,10 +257,13 @@ export class AriClient extends EventEmitter<AriClientEvents> {
    * softmix, and softmix corrupted the heap under load (Asterisk 22.11 aborted in
    * ast_slinfactory_feed <- softmix_bridge_write_voice, recorded calls, 2026-11-25). A snoop is an
    * audiohook on the channel (as MixMonitor): the bridge stays a 2-party simple bridge.
+   * `spy`: 'in' = what the channel's party says. 'both' on one party was meant to hold both sides,
+   * but live recordings held only the snooped party's own audio (measured 2026-11-26), so each party
+   * gets its own 'in' snoop.
    */
-  snoop(channelId: string, snoopId: string): Promise<Channel> {
+  snoop(channelId: string, snoopId: string, spy: 'in' | 'out' | 'both' = 'in'): Promise<Channel> {
     return this.request('POST', `/channels/${enc(channelId)}/snoop`, {
-      spy: 'both',
+      spy,
       whisper: 'none',
       app: this.opts.app,
       appArgs: 'snoop',

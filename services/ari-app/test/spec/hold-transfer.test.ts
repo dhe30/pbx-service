@@ -121,10 +121,10 @@ describe('§3 Hold', () => {
 
   it('recording keeps running while held (recorded call)', async () => {
     const { h, caller, agent } = await connectedCall({ recordCalls: true });
-    await until(() => h.ari.recordings.size === 1, 2000, 'recording started');
+    await until(() => h.ari.recordings.size === 2, 2000, 'both parts started');
     h.ari.hold(agent);
     await until(() => h.ari.channels.get(caller)!.moh);
-    expect(h.ari.recordings.size).toBe(1);
+    expect(h.ari.recordings.size).toBe(2);
     h.ari.remoteHangup(caller);
     await h.settle();
     expect(h.uploads.begun.find((u) => u.kind === 'recording')).toBeTruthy();
@@ -133,24 +133,27 @@ describe('§3 Hold', () => {
 
 // 2026-11-25: Asterisk aborted (heap corruption in softmix, ast_slinfactory_feed) on a recorded
 // call: a bridge recording adds a Recorder member, and a 3-member bridge mixes with softmix.
-// Recordings now come from a snoop channel on one party; the bridge keeps exactly 2 members.
+// Recordings now come from one snoop channel per party (2026-11-26); the bridge keeps exactly 2 members.
 describe('§3 Call recording (add-on) without a mixing bridge', () => {
-  it('records a snoop on a party, never adds a member to the bridge, files the recording at hangup', async () => {
+  it('records what each party says (one snoop each, parts -a/-b), never adds a member to the bridge, files it at hangup', async () => {
     const { h, caller } = await connectedCall({ recordCalls: true });
-    await until(() => h.ari.recordings.size === 1, 2000, 'recording started');
-    const [snoop] = h.ari.snoops;
-    expect(snoop!.channelId).toBe(caller);
-    expect(h.ari.channelRecordStarts).toEqual([{ name: expect.stringMatching(/^rec-/), channelId: snoop!.snoopId, beep: false, ifExists: 'overwrite' }]);
+    await until(() => h.ari.recordings.size === 2, 2000, 'both parts started');
+    const callee = h.ari.peerOf(caller)!;
+    expect(h.ari.snoops.map((s) => [s.channelId, s.spy])).toEqual([[caller, 'in'], [callee, 'in']]);
+    const rec = h.uploads.begun.find((u) => u.kind === 'recording')!;
+    expect(h.ari.channelRecordStarts).toEqual([
+      { name: `${rec.name}-a`, channelId: h.ari.snoops[0]!.snoopId, beep: false, ifExists: 'overwrite' },
+      { name: `${rec.name}-b`, channelId: h.ari.snoops[1]!.snoopId, beep: false, ifExists: 'overwrite' },
+    ]);
     for (const members of h.ari.bridges.values()) expect(members.size).toBeLessThanOrEqual(2);
     h.ari.remoteHangup(caller);
     await h.settle();
-    const rec = h.uploads.begun.find((u) => u.kind === 'recording')!;
-    expect(h.uploads.finished).toContain(rec.name);
-    expect(h.ari.channels.has(snoop!.snoopId)).toBe(false);
+    expect(h.uploads.finished).toEqual([rec.name]);
+    for (const s of h.ari.snoops) expect(h.ari.channels.has(s.snoopId)).toBe(false);
     expect(h.ctx.bus.size).toBe(0);
   });
 
-  it('attended transfer by the recorded party: recording continues on the party that stays (same file)', async () => {
+  it('attended transfer: the part of the phone that leaves continues on the party that joins (same file)', async () => {
     const { h, a, caller: b } = await connectedCall({ recordCalls: true });
     const out = h.ari.deviceCall(a.ext['101']!.sip, '102');
     const leg102 = await until(() => h.ari.peerOf(out), 2000, '102 connected');
@@ -161,16 +164,19 @@ describe('§3 Call recording (add-on) without a mixing bridge', () => {
     const moved = await until(
       () => h.ari.channelRecordStarts.find((r) => r.name === outRec.name && r.ifExists === 'append'),
       2000,
-      'recording moved',
+      'part moved',
     );
-    expect(h.ari.snoops.find((s) => s.snoopId === moved.channelId)!.channelId).toBe(leg102);
+    // out's part now records B (who joined); leg102's part is untouched.
+    expect(h.ari.snoops.find((s) => s.snoopId === moved.channelId)!.channelId).toBe(b);
     expect(h.ari.recordings.get(outRec.name)?.target).toBe(moved.channelId);
+    const other = outRec.name.endsWith('-a') ? outRec.name.replace(/-a$/, '-b') : outRec.name.replace(/-b$/, '-a');
+    expect(h.ari.snoops.find((s) => s.snoopId === h.ari.recordings.get(other)?.target)?.channelId).toBe(leg102);
     for (const members of h.ari.bridges.values()) expect(members.size).toBeLessThanOrEqual(2);
     h.ari.remoteHangup(leg102);
     await until(() => !h.ari.channels.has(b));
     await h.settle();
-    expect(h.uploads.finished).toContain(outRec.name);
-    expect(h.uploads.finished.filter((n) => n === outRec.name)).toHaveLength(1);
+    const base = outRec.name.replace(/-[ab]$/, '');
+    expect(h.uploads.finished.filter((n) => n === base)).toHaveLength(1);
     expect(h.ctx.bus.size).toBe(0);
   });
 
