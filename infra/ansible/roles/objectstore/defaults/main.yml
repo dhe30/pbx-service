@@ -6,7 +6,17 @@ garage_capacity: 20G
 # The Volume must already be formatted and mounted at this path (fstab, UUID, nofail); the role only
 # checks that it is mounted. Empty = data only on the root disk (single data_dir, as before).
 garage_volume_data_dir: ""
-# Space Garage may use in the Volume dir (leave a few % of the filesystem free).
+# Space Garage may use in the Volume dir (leave a few % of the filesystem free). Production sets it
+# per Volume size in the inventory: keep it in step when a Volume is grown.
 garage_volume_capacity: 240G
+# Memory cap for the Garage service (systemd cgroup; counts its page cache too, which is reclaimed
+# first). Without it, Garage grew to 2-2.5 GB on the 4 GB db nodes (no swap) during an upload retry
+# storm on 2026-11-26: the VMs thrashed, etcd lost quorum and there was no DB primary for 13 min
+# (docs/incidents/2026-11-26-db-double-failover.md). With it, only Garage is killed and restarted
+# (Restart=always). Postgres takes 25 % of RAM for shared_buffers (role postgres_patroni), so Garage
+# gets 37.5 %: 4 GB -> ~1470M max, 8 GB -> ~2980M. MemoryHigh (80 % of max) throttles and reclaims
+# before the hard limit. Empty string = no cap.
+garage_memory_max_mb: "{{ (ansible_memtotal_mb * 0.375) | int }}"
+garage_memory_high_mb: "{{ ((garage_memory_max_mb | int) * 0.8) | int }}"
 # Zone per node: the node's own name, so the 3 copies of every object land on 3 different VMs.
 garage_zone: "{{ inventory_hostname }}"

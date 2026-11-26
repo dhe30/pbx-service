@@ -53,6 +53,15 @@
     mode: "0640"
   notify: Restart garage
 
+# `systemctl set-property` (used live on 2026-11-26 to cap Garage's memory) writes drop-ins here,
+# and they outrank the unit file: remove them so the unit's MemoryHigh/MemoryMax apply.
+- name: Remove live-set Garage memory drop-ins
+  ansible.builtin.file:
+    path: "/etc/systemd/system.control/garage.service.d/{{ item }}"
+    state: absent
+  loop: [50-MemoryHigh.conf, 50-MemoryMax.conf]
+  notify: Restart garage
+
 - name: Garage systemd unit
   ansible.builtin.template:
     src: garage.service.j2
