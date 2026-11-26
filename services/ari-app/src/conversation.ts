@@ -86,6 +86,11 @@ export class Conversation {
     this.who.set(channelId, party);
   }
 
+  /** The account this call belongs to (extension numbers are only unique within one account). */
+  get tenantId(): string | null {
+    return this.s.tenant?.id ?? null;
+  }
+
   /** Extensions of the parties currently holding this call (their phone put it on hold). */
   holdingExtensions(): string[] {
     return [...this.holding].map((ch) => this.who.get(ch)?.extension).filter((e): e is string => !!e);

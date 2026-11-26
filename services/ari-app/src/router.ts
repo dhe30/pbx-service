@@ -118,12 +118,18 @@ function forwardRule(f: ForwardDestination | null | undefined): Destination | nu
  * extension itself rather than its "forward always" (seen live 2026-11-15: 103 held a caller and
  * called 111, which forwards always to an outside number; the transfer joined the caller with that
  * number and 111 never rang). Ordinary calls between extensions still follow the forward.
+ * Only calls of the caller's own account count: every account has a 101, 102, ... and a pbx node
+ * carries many accounts. Comparing the number alone made any account's held 102 turn another
+ * account's ordinary call from 102 into a "consult call", so its target's forward always was
+ * skipped (live 2026-11-25, Pereira Deli 23:44 on pbx-5: "forward always not working: extension
+ * 105 rang"; also Becker 101, Uptown 102).
  */
 function isConsultCall(ctx: Ctx, s: CallSession): boolean {
   const from = s.main?.direction === 'internal' ? s.main.fromExtension : null;
-  if (!from) return false;
+  const tenantId = s.tenant?.id;
+  if (!from || !tenantId) return false;
   for (const conv of new Set(ctx.conversations.values())) {
-    if (conv.holdingExtensions().includes(from)) return true;
+    if (conv.tenantId === tenantId && conv.holdingExtensions().includes(from)) return true;
   }
   return false;
 }

@@ -377,6 +377,35 @@ describe('§3 Attended transfer', () => {
     await h.settle();
   });
 
+  it("another account's 103 holding a call does not make this account's 103 -> 111 a consult call", async () => {
+    // Live 2026-11-25 (Pereira Deli, pbx-5): 102 called 105 (forward always to an outside number)
+    // with nothing on hold, but some other account's 102 held a call on the same node: "consult
+    // call", forward always skipped, 105 rang. Extension numbers are only unique per account.
+    const h = makeHarness(db.sql);
+    const other = await new Account(db.sql).create();
+    await other.extension({ number: '103' });
+    const otherDid = nextDid();
+    await other.number(otherDid, { type: 'extension', id: other.ext['103']!.id });
+    h.ari.sip.set(other.ext['103']!.sip, { answerAfterMs: 5 });
+    const otherCaller = h.ari.carrierCall(otherDid, '+16315550120');
+    const otherAgent = await until(() => h.ari.peerOf(otherCaller), 3000, 'other account connected');
+    h.ari.hold(otherAgent);
+    await until(() => h.ari.channels.get(otherCaller)!.moh, 2000, 'other account on hold');
+
+    const a = await new Account(db.sql).create();
+    await a.extension({ number: '103' });
+    await a.extension({ number: '111', forwardAlways: { type: 'external', number: '+16315550132' } });
+    await a.number(nextDid(), null);
+    h.ari.sip.set(a.ext['111']!.sip, { answerAfterMs: 5 });
+    h.ari.external.set('+16315550132', { answerAfterMs: 5 });
+    const ph = h.ari.deviceCall(a.ext['103']!.sip, '111');
+    await until(() => h.ari.legsTo('+16315550132')[0], 2000, 'forwarded to the outside number');
+    expect(h.ari.legsTo(a.ext['111']!.sip)).toHaveLength(0);
+    h.ari.remoteHangup(ph);
+    h.ari.remoteHangup(otherCaller);
+    await h.settle();
+  });
+
   // Found on the deployed system (2026-11-12, softphone): the phone answers call 1, answers call 2
   // (call waiting, which holds call 1) and transfers call 1 to call 2. Both of the phone's legs are
   // channels WE originated, and each conversation's session routes the CALLER (B / C), so the
