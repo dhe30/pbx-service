@@ -76,6 +76,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--max-hours", type=int, default=None, help="stop after this many hours (default: catch up)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="move snapshots.jsonl aside (kept as snapshots.<time>.jsonl) and fetch the last "
+                         "backfill_hours again, e.g. after the snapshot format changed")
     args = ap.parse_args()
     cfg = load_config(args.config)
 
@@ -94,6 +97,10 @@ def main():
         return 0
 
     now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    if args.rebuild and os.path.exists(out):
+        kept = os.path.join(cfg["data_dir"], f"snapshots.{now:%Y%m%dT%H}.jsonl")
+        os.rename(out, kept)
+        print(f"collect: old snapshots kept as {kept}")
     start = last_snapshot_end(out) or now - cfg["backfill_hours"] * HOUR
     done = 0
     while start + HOUR <= now and (args.max_hours is None or done < args.max_hours):

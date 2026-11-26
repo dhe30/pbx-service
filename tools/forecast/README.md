@@ -9,7 +9,7 @@ cash margin. **It only suggests.** Price changes still go through a branch, a PR
 | `snapshot.sql` | One hour of business data (signups, calls by type with cost and charge, payments, numbers) plus the state of the accounts. Read-only transaction, 5 s statement timeout. |
 | `db-query.sh` | Installed on the db nodes as the forced SSH command of the tool's key: runs `snapshot.sql` for a window of 1-6 h, **refuses the Patroni primary**, accepts nothing else. |
 | `collect.py` | On mon-1: fetches every whole hour since the last stored one (one hour per query, 2 s apart) and appends it to `snapshots.jsonl`. Each call record is read once. |
-| `model.py` | Bills per customer size at any price list, a signup-share model fitted to the market data, an hour-by-hour cash forecast, and the price search. Unit tests: `test_model.py`. |
+| `model.py` | The forecast, hour by hour: active extensions by customer size (new accounts, upgrades, churn), usage per active extension with a fading growth trend, prepaid cash flows (refills, first top-ups, renewals at the current list, numbers, VMs, card fees), signups from a share model fitted to the dashboard and calibrated to our share, two price lists (night window), the price search, ranges and a backtest. Unit tests: `test_model.py`. |
 | `report.py` | The command people run. Prints the report; `--summary` for a short version, `--discord` to post it. |
 
 ## Inputs that are not in the database
@@ -24,8 +24,9 @@ Those two files live only in the data directory on mon-1, not in this repository
 
 Installed by `roles/forecast` (mon play in `site.yml`). On mon-1:
 
-    sudo -u pbxforecast python3 /opt/pbx-forecast/report.py            # collect + full report
-    sudo -u pbxforecast python3 /opt/pbx-forecast/report.py --summary  # our data only
+    sudo -u pbxforecast python3 /opt/pbx-forecast/report.py            # collect + full report (detailed + short)
+    sudo -u pbxforecast python3 /opt/pbx-forecast/report.py --discord  # ... and post the short version
+    sudo -u pbxforecast python3 /opt/pbx-forecast/collect.py --rebuild # refetch history after a format change
 
 The 6-hourly timer (`forecast_timer_enabled`, off by default) runs `--remind --discord`: it stores the
 new hours and posts a request for the dashboard data. Forecasts run only when that data arrives.
