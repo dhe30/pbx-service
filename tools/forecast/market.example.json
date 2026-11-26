@@ -1,7 +1,7 @@
 {
   "_comment": "Format of data_dir/market.json (filled in per report from the course dashboard). Made-up values.",
   "taken_at": "2026-12-01T12:00:00-05:00",
-  "bank": { "bank": 1000.00, "did": 100.00, "us_vendor": 100.00, "intl_vendor": 10.00, "loan_owed": 0.00 },
+  "bank": { "bank": 1000.00, "did": 100.00, "us_vendor": 100.00, "intl_vendor": 10.00, "cloud": 50.00, "cloud_topups_since_last": 0.00, "loan_owed": 0.00 },
   "providers": {
     "us": {
       "extensions": 1000, "customers": 100, "success": 0.98, "reputation": "B", "signup_share": 0.40,
