@@ -39,6 +39,9 @@
 // $0.03). Existing items keep their price.
 // REPRICED (2026-11-26, migration 20261126000000_pricing_e.sql): standard per-minute prices US
 // $0.0067, incoming toll-free $0.025; the alternate list's per-minute prices are unchanged.
+// REPRICED (2026-11-27): 76 included extensions and 3,001 included US minutes (both lists); local
+// and toll-free numbers $0.49 (both lists); recording and international add-ons free. Existing
+// items and existing accounts' allowances keep what they were bought with.
 export interface Plan {
   name: string;
   /** Plan price per period. Ceiling: $11.50 per included extension. */
@@ -61,22 +64,22 @@ export interface ItemPrices {
   recordingCents: number;
 }
 
-export const STANDARD_PLAN: Plan = { name: 'Business', priceCents: 49, includedExtensions: 70, includedUsMinutes: 2200 };
-export const ALT_PLAN: Plan = { name: 'Business', priceCents: 48, includedExtensions: 500, includedUsMinutes: 2250 };
+export const STANDARD_PLAN: Plan = { name: 'Business', priceCents: 49, includedExtensions: 76, includedUsMinutes: 3001 };
+export const ALT_PLAN: Plan = { name: 'Business', priceCents: 48, includedExtensions: 500, includedUsMinutes: 3001 };
 
 export const STANDARD_PRICES: ItemPrices = {
   extensionCents: 8,
-  localNumberCents: 99,
-  tollFreeNumberCents: 99,
-  intlCallingCents: 4,
-  recordingCents: 4,
+  localNumberCents: 49,
+  tollFreeNumberCents: 49,
+  intlCallingCents: 0,
+  recordingCents: 0,
 };
 export const ALT_PRICES: ItemPrices = {
   extensionCents: 1,
-  localNumberCents: 98,
-  tollFreeNumberCents: 98,
-  intlCallingCents: 3,
-  recordingCents: 3,
+  localNumberCents: 49,
+  tollFreeNumberCents: 49,
+  intlCallingCents: 0,
+  recordingCents: 0,
 };
 
 import { inAltWindow } from '@pbx/shared';

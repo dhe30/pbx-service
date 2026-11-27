@@ -55,11 +55,15 @@ describe('catalog', () => {
     }
   });
 
-  it('the alternate list is better than the standard list on every line', () => {
+  // Since 2026-11-27 numbers and add-ons cost the same on both lists.
+  it('the alternate list is never worse than the standard list, and cheaper on the plan and per minute', () => {
     expect(ALT_PLAN.priceCents).toBeLessThan(STANDARD_PLAN.priceCents);
     expect(ALT_PLAN.includedExtensions).toBeGreaterThan(STANDARD_PLAN.includedExtensions);
-    expect(ALT_PLAN.includedUsMinutes).toBeGreaterThan(STANDARD_PLAN.includedUsMinutes);
-    for (const k of Object.keys(STANDARD_PRICES) as (keyof typeof STANDARD_PRICES)[]) expect(ALT_PRICES[k]).toBeLessThan(STANDARD_PRICES[k]);
+    expect(ALT_PLAN.includedUsMinutes).toBeGreaterThanOrEqual(STANDARD_PLAN.includedUsMinutes);
+    for (const k of Object.keys(STANDARD_PRICES) as (keyof typeof STANDARD_PRICES)[]) {
+      expect(ALT_PRICES[k]).toBeLessThanOrEqual(STANDARD_PRICES[k]);
+      expect(ALT_PRICES[k]).toBeGreaterThanOrEqual(0);
+    }
     for (const k of Object.keys(CALL_PRICING.standard) as (keyof typeof CALL_PRICING.standard)[]) {
       expect(CALL_PRICING.alt[k]).toBeLessThan(CALL_PRICING.standard[k]);
     }
