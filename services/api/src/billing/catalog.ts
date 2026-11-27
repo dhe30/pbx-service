@@ -40,8 +40,7 @@
 // REPRICED (2026-11-26, migration 20261126000000_pricing_e.sql): standard per-minute prices US
 // $0.0067, incoming toll-free $0.025; the alternate list's per-minute prices are unchanged.
 // REPRICED (2026-11-27): 76 included extensions and 3,001 included US minutes (both lists); local
-// and toll-free numbers $0.49 (both lists); recording and international add-ons free; standard
-// per-minute US $0.0066 and international at vendor rate x 1.09 (shared billing.ts). Existing
+// and toll-free numbers $0.49 (both lists); recording and international add-ons free. Existing
 // items and existing accounts' allowances keep what they were bought with.
 export interface Plan {
   name: string;
