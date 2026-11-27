@@ -59,7 +59,8 @@ describe('catalog', () => {
     expect(ALT_PLAN.priceCents).toBeLessThan(STANDARD_PLAN.priceCents);
     expect(ALT_PLAN.includedExtensions).toBeGreaterThan(STANDARD_PLAN.includedExtensions);
     expect(ALT_PLAN.includedUsMinutes).toBeGreaterThan(STANDARD_PLAN.includedUsMinutes);
-    for (const k of Object.keys(STANDARD_PRICES) as (keyof typeof STANDARD_PRICES)[]) expect(ALT_PRICES[k]).toBeLessThan(STANDARD_PRICES[k]);
+    // Never dearer; a line already at the smallest price ($0.01) can only be equal.
+    for (const k of Object.keys(STANDARD_PRICES) as (keyof typeof STANDARD_PRICES)[]) expect(ALT_PRICES[k]).toBeLessThanOrEqual(STANDARD_PRICES[k]);
     for (const k of Object.keys(CALL_PRICING.standard) as (keyof typeof CALL_PRICING.standard)[]) {
       expect(CALL_PRICING.alt[k]).toBeLessThan(CALL_PRICING.standard[k]);
     }
