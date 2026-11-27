@@ -322,6 +322,12 @@ ansible-playbook site.yml --ask-vault-pass --limit pbx   # Asterisk + ARI app on
   reach 0 (rtpengine journal "Closing call" lines stop / Prometheus `rtpengine` sessions), then
   work on it; back in: the same with `1`. Before `allow_op` was live, this command broke every call
   on the node at its next re-INVITE (2026-11-24 09:52, V-T24).
+- **rtpengine config changes** (since 2026-11-27): the rtpengine role no longer restarts rtpengine
+  (a site.yml run used to restart every media node at once). It writes the config and
+  `/var/lib/pbx-rtpengine-restart-pending`; then, off-peak, `infra/ansible/scripts/media-rollout.sh`
+  drains, restarts and re-enables the pending nodes one at a time (never more than one out; a node
+  that doesn't drain within `MAX_WAIT_MIN` is enabled again unchanged). `DRY_RUN=1` shows the plan.
+  `-e rtpengine_restart_now=true` restores the immediate restart for a node that carries no calls.
 
 ### 2.5 Testing
 

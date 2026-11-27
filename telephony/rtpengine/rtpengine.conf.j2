@@ -5,15 +5,15 @@
 # Two logical interfaces. Kamailio picks them per leg with direction=internal/external:
 #   internal = private IP, faces Asterisk
 #   external = public IP, faces carriers, vendors, phones and browsers
-# "local!advertised" form is used when the public IP is NATed onto the VM.
-interface = internal/{{ private_ip }};external/{{ public_bind_ip }}{% if public_bind_ip != public_ip %}!{{ public_ip }}{% endif %}
+# Defined in the [interface-*] sections at the end of this file (each with its own port range).
+interfaces-config = interface
 
 # Control socket: private IP only; nftables allows only edge nodes.
 listen-ng = {{ private_ip }}:2223
 # Prometheus metrics at http://{{ private_ip }}:2225/metrics
 listen-http = {{ private_ip }}:2225
 
-# Public media ports (open UDP 30000-40000 in the cloud firewall).
+# Default port range; each interface below sets its own.
 port-min = 30000
 port-max = 40000
 
@@ -36,3 +36,25 @@ tos = 184
 # 6 = info: logs each call's codec negotiation and its final packet statistics (per stream
 # packets/bytes/errors), so a silent leg or a missing transcode shows up afterwards. 5 logged neither.
 log-level = 6
+
+# Interfaces (interfaces-config above). Sections are processed in order: the first is the default.
+# internal: faces Asterisk, on its OWN port range, which the host firewall opens only to our own
+# nodes (nftables: UDP 30000-40000 is open to everyone, @cluster may reach every port). Before
+# 2026-11-27 both interfaces shared 30000-40000 on the same local address, so a phone that kept
+# sending to a port after its call ended reached the Asterisk-facing side of the next call using
+# that port; until Asterisk answered, rtpengine relayed it untranscoded to that call's phone
+# (wrong codec at the phone; strict-source only protects a stream after its peer is learned).
+[interface-internal]
+address = {{ private_ip }}
+port-min = {{ rtpengine_internal_port_min | default(40100) }}
+port-max = {{ rtpengine_internal_port_max | default(49999) }}
+
+# external: carriers, vendors, phones and browsers. UDP 30000-40000 open in the cloud firewall.
+# The local address is the private one when the public IP is NATed onto the VM (advertised).
+[interface-external]
+address = {{ public_bind_ip }}
+{% if public_bind_ip != public_ip %}
+advertised = {{ public_ip }}
+{% endif %}
+port-min = 30000
+port-max = 40000
