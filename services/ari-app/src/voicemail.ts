@@ -18,7 +18,11 @@ import type { CallSession } from './session.js';
 
 const DEFAULT_GREETING = 'sound:vm-intro'; // "Please leave your message after the tone..."
 const GOODBYE = 'sound:vm-goodbye';
-const MAX_SILENCE_SEC = 5;
+// 0 = silence never ends the message (the caller hangs up, presses # or reaches the maximum).
+// With 5, Asterisk stopped after 5 s it judged silent and trimmed that silence off the end, so a
+// quiet caller's whole message became an empty file and the uploader dropped it as too short
+// (53 of ~24,000 messages on 2026-11-27).
+const MAX_SILENCE_SEC = 0;
 
 type HoldEvent = Extract<AriEvent, { type: 'ChannelHold' | 'ChannelUnhold' }>;
 
