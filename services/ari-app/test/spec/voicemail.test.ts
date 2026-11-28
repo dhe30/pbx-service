@@ -54,7 +54,8 @@ describe('§3 Voicemail: leaving a message', () => {
   // the silence, leaving an empty file the uploader dropped.
   it('silence never ends the message: it records until hangup, # or the maximum length', async () => {
     const { h, caller, name } = await voicemailCall();
-    expect(h.ari.channelRecordStarts).toEqual([expect.objectContaining({ name, channelId: caller, maxSilenceSeconds: 0 })]);
+    expect(h.ari.channelRecordStarts).toEqual([expect.objectContaining({ name, channelId: caller })]);
+    expect(h.ari.recordSilenceLimits.get(name)).toBe(0);
     h.ari.remoteHangup(caller);
     await h.settle();
   });
