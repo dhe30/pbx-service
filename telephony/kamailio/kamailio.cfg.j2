@@ -216,6 +216,7 @@ loadmodule "ctl.so"
 loadmodule "db_postgres.so"
 loadmodule "sqlops.so"
 loadmodule "htable.so"
+loadmodule "tcpops.so"
 loadmodule "usrloc.so"
 loadmodule "registrar.so"
 loadmodule "path.so"
@@ -332,6 +333,11 @@ modparam("auth_db", "use_domain", 0)
 modparam("htable", "htable", "didt=>size=12;autoexpire=300;")
 # vendor host -> last IPv4 that resolved, and <host>::at = time of the last lookup (route[VENDOR_DST])
 modparam("htable", "htable", "vdns=>size=4;autoexpire=0;")
+# TLS phones: the latest connection ("ip:port") each phone (tlsu, by SIP user) and each phone host
+# (tlsh, by IP) sent us anything on. Used when the connection a phone registered over is gone
+# (route[TLS_LIVE_DST]).
+modparam("htable", "htable", "tlsu=>size=14;autoexpire=900;")
+modparam("htable", "htable", "tlsh=>size=8;autoexpire=900;")
 
 # ----- dispatcher: set 1 = pbx (Asterisk) nodes -----
 modparam("dispatcher", "list_file", "/etc/kamailio/dispatcher.list")
@@ -453,6 +459,12 @@ request_route {
 	}
 
 	route(NATDETECT);
+
+	# TLS phones: remember the connection this phone (and its host) used last; see route[TLS_LIVE_DST].
+	if (proto == TLS && !isflagset(FLT_PBX) && !isflagset(FLT_PEER) && $fU != $null && $fU != "") {
+		$sht(tlsu=>$fU) = $si + ":" + $sp;
+		$sht(tlsh=>$si) = $si + ":" + $sp;
+	}
 
 	if (has_totag()) {
 		route(WITHINDLG);
@@ -1040,6 +1052,7 @@ branch_route[DEV_BRANCH] {
 		# the public socket.
 		remove_hf("Route");
 		$du = $var(rcv);
+		route(TLS_LIVE_DST);
 		route(SEND_PUBLIC);
 	}
 	# else: leave $du = peer edge; it delivers over its own connection (route FROM_PEER). That
@@ -1153,6 +1166,7 @@ route[FROM_PEER] {
 	}
 	remove_hf("Route");
 	$du = $var(rcv);
+	route(TLS_LIVE_DST);
 	xlog("L_INFO", "devices: relaying for the peer edge to $du [ci=$ci]\n");
 {% if MEDIA %}
 	# Copy the sending edge's set into our own Record-Route, so the BYE we relay later deletes the
@@ -1166,6 +1180,34 @@ route[FROM_PEER] {
 	route(DEV_TIMERS);
 	route(SEND_PUBLIC);
 	route(RELAY);
+}
+
+# ---------------------------------------------------------------------------------------------
+# TLS phones are reachable only over a connection THEY opened (they don't accept connections).
+# Path ;received is the connection a phone registered over, but some phone hosts open new
+# connections every 30-60 s and close old ones, and a phone re-registers only every few minutes.
+# An INVITE in between went to a closed connection: Kamailio tried to connect to the phone's
+# source port, timed out after 10 s and the leg failed with 408 (86 legs on edge-2 on
+# 2026-11-27, e.g. 16:04:40 UTC: re-INVITEs of that phone's own call came over a new connection
+# 1 s before). If the registered connection is gone, use the newest one the same phone sent us
+# anything on, else the newest one from its host (the hosts multiplex their phones: one call's
+# re-INVITEs arrived over three different connections).
+# ---------------------------------------------------------------------------------------------
+route[TLS_LIVE_DST] {
+	if ($(du{uri.transport}) != "tls") return;
+	$var(host) = $(du{uri.host});
+	$var(hp) = $var(host) + ":" + $(du{uri.port});
+	if (tcp_get_conid("$var(hp)", "$var(cid)")) return;   # registered connection still open
+	$var(alt) = $sht(tlsu=>$tU);
+	if ($var(alt) == $null || !tcp_get_conid("$var(alt)", "$var(cid)")) {
+		$var(alt) = $sht(tlsh=>$var(host));
+		if ($var(alt) == $null || !tcp_get_conid("$var(alt)", "$var(cid)")) {
+			xlog("L_WARN", "devices: TLS connection $var(hp) for $tU is closed and no newer one is open [ci=$ci]\n");
+			return;
+		}
+	}
+	xlog("L_INFO", "devices: TLS connection $var(hp) for $tU is closed; using $var(alt) [ci=$ci]\n");
+	$du = "sip:" + $var(alt) + ";transport=tls";
 }
 
 onreply_route[PEER_REPLY] {

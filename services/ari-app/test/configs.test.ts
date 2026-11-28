@@ -214,6 +214,30 @@ describe.skipIf(!rendered)('rendered configs', () => {
       const reinviteTls = block(kam, 'route[INDLG_SDP]');
       expect(reinviteTls).toContain('SDES-only-AES_CM_128_HMAC_SHA1_80');
     });
+
+    // Live 2026-11-27: some phone hosts replace their TLS connections every 30-60 s and a
+    // phone re-registers only every few minutes; INVITEs to the closed registered connection timed
+    // out (408).
+    it('a TLS phone whose registered connection closed is reached over its newest connection', () => {
+      expect(kam).toMatch(/^loadmodule "tcpops\.so"$/m);
+      expect(kam).toContain('modparam("htable", "htable", "tlsu=>');
+      expect(kam).toContain('modparam("htable", "htable", "tlsh=>');
+      // learned on every request a TLS phone sends (initial and in-dialog), before the dispatch
+      const req = block(kam, 'request_route {');
+      const learn = req.indexOf('$sht(tlsu=>$fU) = $si + ":" + $sp;');
+      expect(learn).toBeGreaterThan(0);
+      expect(learn).toBeLessThan(req.indexOf('route(WITHINDLG);'));
+      expect(req).toContain('$sht(tlsh=>$si) = $si + ":" + $sp;');
+      expect(req).toMatch(/proto == TLS && !isflagset\(FLT_PBX\) && !isflagset\(FLT_PEER\)/);
+      // used only when the registered connection is gone: phone first, then its host
+      const live = block(kam, 'route[TLS_LIVE_DST] {');
+      expect(live).toMatch(/if \(tcp_get_conid\("\$var\(hp\)", "\$var\(cid\)"\)\) return;/);
+      expect(live.indexOf('$sht(tlsu=>$tU)')).toBeLessThan(live.indexOf('$sht(tlsh=>$var(host))'));
+      expect(live).toContain('$du = "sip:" + $var(alt) + ";transport=tls";');
+      // both places that deliver to a phone's connection go through it
+      expect(block(kam, 'route[FROM_PEER]')).toMatch(/\$du = \$var\(rcv\);\n\troute\(TLS_LIVE_DST\);/);
+      expect(block(kam, 'branch_route[DEV_BRANCH]')).toMatch(/\$du = \$var\(rcv\);\n\t\troute\(TLS_LIVE_DST\);/);
+    });
   });
 
   describe('§3 outgoing calls / §1 PSTN vendors', () => {
