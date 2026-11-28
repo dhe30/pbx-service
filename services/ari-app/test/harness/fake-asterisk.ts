@@ -65,6 +65,8 @@ export class FakeAsterisk implements Ari {
   private nextSipCallId = 1;
   /** Every channel recording started, with the options that matter to tests (in order). */
   readonly channelRecordStarts: { name: string; channelId: string; beep?: boolean; ifExists?: string }[] = [];
+  /** maxSilenceSeconds of every channel recording started (by recording name). */
+  readonly recordSilenceLimits = new Map<string, number>();
   readonly originates: (OriginateOptions & { target: Target })[] = [];
   readonly plays: { channelId: string; media: string }[] = [];
   readonly transferProgressLog: { channelId: string; state: TransferProgressState }[] = [];
@@ -276,6 +278,7 @@ export class FakeAsterisk implements Ari {
     this.need(channelId);
     if (this.recordings.has(opts.name)) throw new AriError(409, 'POST', `/channels/${channelId}/record`, 'recording in progress');
     this.channelRecordStarts.push({ name: opts.name, channelId, beep: opts.beep, ifExists: opts.ifExists });
+    this.recordSilenceLimits.set(opts.name, opts.maxSilenceSeconds);
     this.recordings.set(opts.name, { target: channelId, kind: 'channel' });
     return { name: opts.name, format: 'wav', target_uri: `channel:${channelId}`, state: 'recording' };
   }

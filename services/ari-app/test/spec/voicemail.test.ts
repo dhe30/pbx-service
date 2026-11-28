@@ -50,6 +50,16 @@ describe('§3 Voicemail: leaving a message', () => {
     return { h, caller, name: up.name, goodbyes };
   }
 
+  // Live 2026-11-27: with a 5 s silence limit Asterisk stopped a quiet caller's message and trimmed
+  // the silence, leaving an empty file the uploader dropped.
+  it('silence never ends the message: it records until hangup, # or the maximum length', async () => {
+    const { h, caller, name } = await voicemailCall();
+    expect(h.ari.channelRecordStarts).toEqual([expect.objectContaining({ name, channelId: caller })]);
+    expect(h.ari.recordSilenceLimits.get(name)).toBe(0);
+    h.ari.remoteHangup(caller);
+    await h.settle();
+  });
+
   it('caller holds mid-message: the recording continues in the same file once they come back', async () => {
     const { h, caller, name, goodbyes } = await voicemailCall();
     h.ari.hold(caller);
