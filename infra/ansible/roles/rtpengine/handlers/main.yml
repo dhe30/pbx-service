@@ -1,10 +1,30 @@
 ---
-# NOTE: restarting rtpengine drops audio of calls in progress on this node.
+# NOTE: restarting rtpengine drops the audio of calls in progress on this node. Since 2026-11-27 a
+# config change does NOT restart it by itself: a site.yml run touched every media node at once,
+# which would have dropped every call. The change is recorded in /var/lib/pbx-rtpengine-restart-pending
+# and infra/ansible/scripts/media-rollout.sh restarts the nodes one at a time (drain on both edges,
+# wait for 0 sessions, restart, enable again). rtpengine_restart_now=true restarts right away (a
+# node that carries no calls, e.g. a new one before the edges know it).
 - name: Restart rtpengine
   ansible.builtin.systemd:
     name: "{{ rtpengine_service }}"
     state: restarted
     daemon_reload: true
+  when: rtpengine_restart_now | default(false) | bool
+
+- name: Record a pending rtpengine restart
+  ansible.builtin.copy:
+    dest: /var/lib/pbx-rtpengine-restart-pending
+    content: "rtpengine config changed by Ansible; restart with infra/ansible/scripts/media-rollout.sh\n"
+    mode: "0644"
+  listen: Restart rtpengine
+  when: not (rtpengine_restart_now | default(false) | bool)
+
+- name: Reload systemd units (rtpengine drop-in changed; takes effect at the next restart)
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: Restart rtpengine
+  when: not (rtpengine_restart_now | default(false) | bool)
 
 - name: Restart pbx-call-audio
   ansible.builtin.systemd:

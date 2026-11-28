@@ -431,7 +431,11 @@ describe.skipIf(!rendered)('rendered configs', () => {
         'listen=tcp:127.0.0.12:8080',
       ]);
       // rtpengine: same local address for both sides; the external side advertises the public IP.
-      expect(read('edge-2', 'rtpengine.conf')).toMatch(/^interface = internal\/127\.0\.0\.12;external\/127\.0\.0\.12!127\.0\.1\.12$/m);
+      const rtp2 = read('edge-2', 'rtpengine.conf');
+      expect(rtp2).toMatch(/^interfaces-config = interface$/m);
+      expect(rtp2).not.toMatch(/^interface = /m);
+      expect(rtp2).toContain('[interface-internal]\naddress = 127.0.0.12\nport-min = 40100\nport-max = 49999\n');
+      expect(rtp2).toContain('[interface-external]\naddress = 127.0.0.12\nadvertised = 127.0.1.12\nport-min = 30000\nport-max = 40000\n');
     });
     it('new requests toward the internet leave from the public socket', () => {
       // ' {': the route itself, not the mention in the Listeners comment
@@ -645,7 +649,18 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
 
   it('media nodes get an rtpengine config with their own internal/external interfaces', () => {
     const conf = readFileSync(join(RM, 'media-2', 'rtpengine.conf'), 'utf8');
-    expect(conf).toMatch(/^interface = internal\/127\.0\.0\.52;external\/127\.0\.0\.52!127\.0\.1\.52$/m);
+    // Asterisk-facing ports on their own range: the host firewall opens only 30000-40000 to everyone,
+    // so leftover streams from other hosts can't reach a call's Asterisk side (2026-11-27).
+    expect(conf).toContain('[interface-internal]\naddress = 127.0.0.52\nport-min = 40100\nport-max = 49999\n');
+    expect(conf).toContain('[interface-external]\naddress = 127.0.0.52\nadvertised = 127.0.1.52\nport-min = 30000\nport-max = 40000\n');
+    // the host firewall opens only 30000-40000 to everyone; the Asterisk-facing range must stay outside it
+    const nft = readFileSync(join(import.meta.dirname, '../../../infra/ansible/roles/common/templates/nftables.conf.j2'), 'utf8');
+    expect(nft).toMatch(/# Dedicated media node: rtpengine media\.\n\t\tudp dport 30000-40000 accept\n/);
+    expect(nft).not.toMatch(/dport[^\n]*\b(4010\d|4[1-9]\d{3})\b/); // nothing opened in 40100-49999
+    // the [interface-*] sections come after every [rtpengine] key (a section header ends the previous one)
+    expect(conf.indexOf('[interface-internal]')).toBeGreaterThan(conf.indexOf('log-level ='));
+    // internal is listed first: the first section is rtpengine's default interface
+    expect(conf.indexOf('[interface-internal]')).toBeLessThan(conf.indexOf('[interface-external]'));
     expect(conf).toMatch(/^listen-ng = 127\.0\.0\.52:2223$/m);
   });
 });
