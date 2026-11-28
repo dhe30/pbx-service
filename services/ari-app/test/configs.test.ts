@@ -85,11 +85,28 @@ describe.skipIf(!rendered)('rendered configs', () => {
     it('each forked branch gets its own rtpengine media leg (via-branch=extra)', () => {
       expect(kam).toMatch(/modparam\("rtpengine", "extra_id_pv", "\$avp\(extra_id\)"\)/);
       const br = block(kam, 'branch_route[DEV_BRANCH]');
-      expect(br).toMatch(/\$avp\(extra_id\) = @via\[1\]\.branch \+ \$T_branch_idx;/);
+      expect(br).toContain('$var(xb) = @via[1].branch + $T_branch_idx;\n\t$avp(extra_id) = $(var(xb){s.md5}{s.substr,0,10});');
       expect(br.match(/rtpengine_offer\("via-branch=extra /g)).toHaveLength(5);   // ws, tls, udp + private-network tls, udp
       const rep = block(kam, 'onreply_route[DEV_REPLY]');
-      expect(rep).toMatch(/\$avp\(extra_id\) = @via\[2\]\.branch \+ \$T_branch_idx;/);
+      expect(rep).toContain('$var(xb) = @via[2].branch + $T_branch_idx;\n\t\t$avp(extra_id) = $(var(xb){s.md5}{s.substr,0,10});');
       expect(rep.match(/rtpengine_answer\("via-branch=extra /g)).toHaveLength(3);
+    });
+    it('a phone leg keeps its media node in-dialog while nodes are disabled or enabled (2026-11-28)', () => {
+      // The module files a session under Call-ID + via-branch; in-dialog commands without the same
+      // id miss and re-hash over the nodes enabled at that moment.
+      const br = block(kam, 'branch_route[DEV_BRANCH]');
+      expect(br).toContain('add_rr_param(";vb=$avp(extra_id)");');
+      expect(br.indexOf('add_rr_param(";vb=')).toBeLessThan(br.indexOf('record_route()'));
+      const ind = block(kam, 'route[INDLG_SDP]');
+      expect(ind).toContain('$var(vb) = $(hdr(Route){s.select,0,,}{nameaddr.uri}{uri.param,vb});');
+      expect(ind).toMatch(/\$avp\(extra_id\) = \$var\(vb\);\s+\$avp\(rtp_vb\) = "via-branch=extra ";/);
+      expect(ind.indexOf('$avp(rtp_vb) = "";')).toBeLessThan(ind.indexOf('$var(vb) ='));
+      expect(ind.match(/rtpengine_offer\("\$avp\(rtp_vb\)/g)).toHaveLength(14);
+      expect(ind.match(/\$avp\(rtp_answer\) = \$avp\(rtp_vb\) \+ "/g)).toHaveLength(10);
+      for (const k of [kam, kam2]) {
+        expect(k).toMatch(/^modparam\("rtpengine", "hash_table_tout", 7200\)$/m);
+        expect(k).toMatch(/^modparam\("rtpengine", "hash_table_size", 4096\)$/m);
+      }
     });
     it('a peer edge delivers a relayed INVITE from its own Path ;received, not loose_route()\'s return code', () => {
       // loose_route() returns -3 for a pre-loaded route on an initial request: `if (!loose_route())`
@@ -443,7 +460,7 @@ describe.skipIf(!rendered)('rendered configs', () => {
       expect(block(kam, 'route[SEND_PUBLIC] {')).toMatch(/force_send_socket\(udp:127\.0\.1\.11:5060\)/);
       // vendor legs, a phone on this edge, a phone delivered for the peer edge
       expect(block(kam, 'route[TO_VENDOR]')).toMatch(/route\(SEND_PUBLIC\);\n\troute\(RELAY\);/);
-      expect(block(kam, 'branch_route[DEV_BRANCH]')).toMatch(/\$du = \$var\(rcv\);\n\t\troute\(SEND_PUBLIC\);/);
+      expect(block(kam, 'branch_route[DEV_BRANCH]')).toMatch(/\$du = \$var\(rcv\);\n\t\troute\(TLS_LIVE_DST\);\n\t\troute\(SEND_PUBLIC\);/);
       expect(block(kam, 'route[FROM_PEER]')).toMatch(/route\(SEND_PUBLIC\);\n\troute\(RELAY\);/);
       // in-dialog requests: double Record-Route picks the socket
       expect(kam).toMatch(/modparam\("rr", "enable_double_rr", 1\)/);
@@ -604,9 +621,9 @@ describe.skipIf(!renderedMedia || !rendered)('rendered configs with media nodes'
     expect(kam).toMatch(/one set per GENERATION of the media group \(set 1: 2 nodes, set 2: 3 nodes\)/);
   });
 
-  it('a live switch; after a restart it starts at group_vars rtpengine_media_new_calls (1 since 2026-11-15)', () => {
+  it('a live switch; after a restart it starts at group_vars rtpengine_media_new_calls (2 since 2026-11-25)', () => {
     expect(kam).toMatch(/^loadmodule "cfg_rpc\.so"$/m);
-    expect(kam).toMatch(/^pbx\.media_rtp = 1 desc /m);
+    expect(kam).toMatch(/^pbx\.media_rtp = 2 desc /m);
     const sn = block(kam, 'route[RTP_SET_NEW]');
     expect(sn).toContain('$var(rs) = $sel(cfg_get.pbx.media_rtp);');
     expect(sn).toContain('if ($var(rs) == 1) { $avp(rtpset) = 1; return; }');

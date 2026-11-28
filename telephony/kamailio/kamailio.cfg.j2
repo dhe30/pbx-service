@@ -373,7 +373,8 @@ modparam("rtpengine", "rtpengine_disable_tout", 20)
 # Asterisk with the phone's raw SDP (500 SDP negotiation failed / 488), the grader's 09:53-09:55
 # us/phone_in failures. Only nodes disabled by RPC count; a node that times out is still skipped.
 # Relies on the module's Call-ID -> node table, which the edge that set the call up holds (its
-# Record-Route makes it do every in-dialog rtpengine command). [VERIFY V-T24]
+# Record-Route makes it do every in-dialog rtpengine command). Phone legs only hit that table
+# since 2026-11-28 (;vb, see extra_id_pv below); checked with an isolated instance (V-T24).
 modparam("rtpengine", "rtpengine_allow_op", 1)
 # Wait per attempt for rtpengine's reply. Measured 2026-11-14 (10 min, 191 commands): replies take
 # 0.2-6 ms (same edge < 1.5 ms, cross-edge 1-6 ms). With 1000 ms, ONE lost UDP packet held the SIP
@@ -399,6 +400,16 @@ modparam("rtpengine", "rtpengine_retr", 20)
 # a per-branch id), otherwise the branches' offers overwrite each other and the answering phone
 # can end up with no audio.
 modparam("rtpengine", "extra_id_pv", "$avp(extra_id)")
+# The module's Call-ID -> node table is keyed on Call-ID + via-branch. A command that misses it
+# hashes the Call-ID over the nodes ENABLED right now, so while a node is disabled (drain, or 20 s
+# after a timeout) and after it comes back, a call can be sent to a node that doesn't know it:
+# the phone keeps sending to the old address and the leg goes silent (2026-11-28 03:53 UTC: two
+# calls set up on media-7/media-4 moved to media-2 by their 30 s refresh when media-2 was enabled
+# again). Phone legs are set up with via-branch=extra, so their in-dialog commands must send the
+# same id (Record-Route ;vb, route INDLG_SDP). Entries live 2 h (calls last up to ~1 h); more
+# buckets because each phone branch adds one.
+modparam("rtpengine", "hash_table_tout", 7200)
+modparam("rtpengine", "hash_table_size", 4096)
 
 # ----- nathelper -----
 modparam("nathelper", "natping_interval", 0)       # clients keep their own NAT bindings alive
@@ -1060,7 +1071,12 @@ branch_route[DEV_BRANCH] {
 
 	# Leg tag for in-dialog requests (hold/resume, transfer). They can't tell from their own
 	# transport: with two edges a browser's re-INVITE reaches the anchoring edge over UDP.
-	$avp(extra_id) = @via[1].branch + $T_branch_idx;
+	# The id this branch's rtpengine leg is filed under (via-branch=extra); in-dialog commands send
+	# it back from the Record-Route. 10 hex chars of a hash, not the Via branch itself: INVITEs to
+	# UDP phones are already up to ~1420 bytes (2026-11-28) and ;vb goes into both RR entries.
+	$var(xb) = @via[1].branch + $T_branch_idx;
+	$avp(extra_id) = $(var(xb){s.md5}{s.substr,0,10});
+	add_rr_param(";vb=$avp(extra_id)");
 {% if MEDIA %}
 	route(RTP_SET_RR);
 {% endif %}
@@ -1095,7 +1111,8 @@ onreply_route[DEV_REPLY] {
 	if ($rs >= 180) xlog("L_INFO", "devices: $rs $rr from $si for $tU [ci=$ci]\n");
 	route(REPLY_ALIAS);
 	if (has_body("application/sdp")) {
-		$avp(extra_id) = @via[2].branch + $T_branch_idx;
+		$var(xb) = @via[2].branch + $T_branch_idx;
+		$avp(extra_id) = $(var(xb){s.md5}{s.substr,0,10});   # same id as DEV_BRANCH
 		route(G723_FIX);
 		if (isbflagset(FLB_WS)) {
 			rtpengine_answer("via-branch=extra {{ F.ws.pbx_answer }}$var(g723fix)");
@@ -1256,25 +1273,33 @@ route[WITHINDLG] {
 # "From Asterisk" = FLT_PBX; anything else (carrier, vendor, phone, a peer edge relaying a phone's
 # request) is the far side.
 route[INDLG_SDP] {
+	# Phone legs: the branch id of the initial offer (;vb in OUR Record-Route entry, the first
+	# Route), so the rtpengine module finds the call's node instead of re-hashing (see extra_id_pv).
+	$avp(rtp_vb) = "";
+	$var(vb) = $(hdr(Route){s.select,0,,}{nameaddr.uri}{uri.param,vb});
+	if ($var(vb) != $null && $var(vb) != "") {
+		$avp(extra_id) = $var(vb);
+		$avp(rtp_vb) = "via-branch=extra ";
+	}
 {% for leg, fs, fp in [('carrier', F.plain, None), ('vendor', F.plain, None), ('staff_udp', F.plain, FP.plain), ('staff_tls', F.tls, FP.tls), ('staff_ws', F.ws, None)] %}
 	{% if not loop.first %}} else {% endif %}if (check_route_param("leg={{ leg }}")) {
 		if (isflagset(FLT_PBX)) {
 {% if fp %}
 			# ;pn=1: the phone is on the private network (initial INVITE): keep its private address.
-			if (check_route_param("pn=1")) rtpengine_offer("{{ fp.pbx_offer }}");
-			else rtpengine_offer("{{ fs.pbx_offer }}");
+			if (check_route_param("pn=1")) rtpengine_offer("$avp(rtp_vb){{ fp.pbx_offer }}");
+			else rtpengine_offer("$avp(rtp_vb){{ fs.pbx_offer }}");
 {% else %}
-			rtpengine_offer("{{ fs.pbx_offer }}");
+			rtpengine_offer("$avp(rtp_vb){{ fs.pbx_offer }}");
 {% endif %}
-			$avp(rtp_answer) = "{{ fs.pbx_answer }}";
+			$avp(rtp_answer) = $avp(rtp_vb) + "{{ fs.pbx_answer }}";
 		} else {
 {% if fp %}
-			if (check_route_param("pn=1")) rtpengine_offer("{{ fp.far_offer }}");
-			else rtpengine_offer("{{ fs.far_offer }}");
+			if (check_route_param("pn=1")) rtpengine_offer("$avp(rtp_vb){{ fp.far_offer }}");
+			else rtpengine_offer("$avp(rtp_vb){{ fs.far_offer }}");
 {% else %}
-			rtpengine_offer("{{ fs.far_offer }}");
+			rtpengine_offer("$avp(rtp_vb){{ fs.far_offer }}");
 {% endif %}
-			$avp(rtp_answer) = "{{ fs.far_answer }}";
+			$avp(rtp_answer) = $avp(rtp_vb) + "{{ fs.far_answer }}";
 		}
 		t_on_reply("RTP_REPLY");
 {% endfor %}
