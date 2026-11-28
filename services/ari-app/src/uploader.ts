@@ -5,7 +5,7 @@ import type { Logger } from './log.js';
 import { metrics } from './metrics.js';
 import type { ObjectStore } from './object-store.js';
 import type { Repo } from './repo.js';
-import { mixWavs, wavDurationMs } from './wav.js';
+import { mixWavsAsync, wavDurationMs } from './wav.js';
 
 // Moves finished recordings from Asterisk's local spool to the object store + DB.
 //
@@ -113,7 +113,7 @@ export class Uploader {
   private async mixParts(name: string, parts: string[]): Promise<void> {
     const inputs = await Promise.all(parts.map((p) => readFile(p)));
     const tmp = `${this.wavPath(name)}.tmp`;
-    await writeFile(tmp, mixWavs(inputs));
+    await writeFile(tmp, await mixWavsAsync(inputs));
     await rename(tmp, this.wavPath(name));
     for (const p of parts) await unlink(p).catch(() => {});
   }

@@ -5,7 +5,7 @@ import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { metrics } from '../src/metrics.js';
 import { Uploader, type SpoolMeta } from '../src/uploader.js';
-import { mixWavs, wavData, wavHeader } from '../src/wav.js';
+import { MIX_SLICE_SAMPLES, mixWavs, mixWavsAsync, wavData, wavHeader } from '../src/wav.js';
 import { readFile } from 'node:fs/promises';
 
 // pbx_upload_backlog counts finished recordings waiting for upload, not recordings of calls in
@@ -107,6 +107,24 @@ describe('Call recording parts (one file per party)', () => {
     expect(d.readInt16LE(2 * 7999)).toBe(1000);
     expect(wavData(mixWavs([tone(30000, 10), tone(30000, 10)])).readInt16LE(0)).toBe(32767);
     expect(out.readUInt32LE(24)).toBe(8000);
+  });
+
+  // Live 2026-11-27: mixing a long recording in one go stalled the ARI app's event loop for ~1 s.
+  it('mixWavsAsync gives the same file as mixWavs and yields to the event loop between slices', async () => {
+    const n = MIX_SLICE_SAMPLES * 3 + 123; // a bit over 3 slices
+    const ramp = (k: number) => {
+      const d = Buffer.alloc(n * 2);
+      for (let i = 0; i < n; i++) d.writeInt16LE(((i * k) % 60000) - 30000, i * 2);
+      return Buffer.concat([wavHeader(d.length), d]);
+    };
+    const a = ramp(7), b = tone(-1234, n - 5000);
+    let yields = 0;
+    const out = await mixWavsAsync([a, b], async () => { yields++; });
+    expect(yields).toBe(4);
+    expect(out.equals(mixWavs([a, b]))).toBe(true);
+    // A part whose bytes start at an odd offset in their buffer is still read correctly.
+    const odd = Buffer.concat([Buffer.alloc(1), tone(500, 10)]).subarray(1);
+    expect(wavData(await mixWavsAsync([odd, tone(1, 10)])).readInt16LE(18)).toBe(501);
   });
 
   it('a finished recording with parts is mixed into <name>.wav, uploaded, and every file removed', async () => {
