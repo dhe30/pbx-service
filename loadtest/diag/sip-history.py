@@ -2,7 +2,8 @@
 """Search an edge's SIP history: every SIP message Kamailio received or sent, on every transport.
 
 Kamailio's sipdump module (kamailio.cfg) writes hourly pcap files to /var/log/pbx/sipdump on each
-edge (sip-YYYY-MM-DD--HH-MM-SS.pcap, kept 24 h). TLS desk phones and browsers (WebSocket) are in
+edge (sip-YYYY-MM-DD--HH-MM-SS.pcap; the hourly prune timer compresses closed hours to .pcap.zst,
+read here through `zstd -dc`). TLS desk phones and browsers (WebSocket) are in
 them too, written after decryption, with a "P-KSR-SIPDump: <transport> pid=.. pno=.." header that
 gives the real transport (the pcap's IP/UDP headers are synthetic for TCP, TLS and WS).
 
@@ -33,14 +34,16 @@ Or give pcap files instead of --dir. Standard library only.
 """
 import argparse
 import datetime as dt
+import contextlib
 import ipaddress
 import os
 import re
 import struct
+import subprocess
 import sys
 from collections import OrderedDict, defaultdict
 
-FILE_TS = re.compile(r'(\d{4}-\d{2}-\d{2})--(\d{2})-(\d{2})-(\d{2})\.pcap$')
+FILE_TS = re.compile(r'(\d{4}-\d{2}-\d{2})--(\d{2})-(\d{2})-(\d{2})\.pcap(\.zst)?$')
 UTC = dt.timezone.utc
 MAX_WINDOW_H = 2  # longest --since/--until span on a live edge without --long
 
@@ -52,9 +55,26 @@ def parse_when(s, default_date):
     return dt.datetime.combine(default_date, dt.time(int(h), int(m)), tzinfo=UTC)
 
 
+@contextlib.contextmanager
+def open_pcap(path):
+    """A pcap for reading. Closed hours are zstd-compressed by the edge's hourly prune timer
+    (<name>.pcap.zst): those are streamed through `zstd -dc`, never unpacked to disk."""
+    if not path.endswith('.zst'):
+        with open(path, 'rb') as f:
+            yield f
+        return
+    proc = subprocess.Popen(['zstd', '-dcq', '--', path], stdout=subprocess.PIPE, bufsize=1 << 20)
+    try:
+        yield proc.stdout
+    finally:
+        proc.stdout.close()
+        proc.kill()
+        proc.wait()
+
+
 def first_packet_time(path):
     """UTC time of a pcap's first record, or None if it has none yet."""
-    with open(path, 'rb') as f:
+    with open_pcap(path) as f:
         head = f.read(32)
     if len(head) < 32:
         return None
@@ -85,7 +105,7 @@ def pick_files(folder, since, until):
 
 def packets(path):
     """(time, src ip:port, dst ip:port, payload) per UDP packet of a classic pcap."""
-    with open(path, 'rb') as f:
+    with open_pcap(path) as f:
         head = f.read(24)
         if len(head) < 24:
             return

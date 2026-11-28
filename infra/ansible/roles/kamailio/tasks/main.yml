@@ -91,7 +91,11 @@
       d {{ kamailio_sipdump_dir }} 0750 kamailio kamailio {{ kamailio_sipdump_keep_hours + 12 }}h
     mode: "0644"
 
-- name: SIP history prune script (age + size cap)
+- name: zstd (the prune script compresses closed SIP history hours)
+  ansible.builtin.apt:
+    name: zstd
+
+- name: SIP history prune script (compression, age + size cap)
   ansible.builtin.template:
     src: pbx-sipdump-prune.sh.j2
     dest: /usr/local/sbin/pbx-sipdump-prune
@@ -105,7 +109,7 @@
   loop:
     - name: pbx-sipdump-prune.service
       content: |
-        # Managed by Ansible (role kamailio). Deletes old SIP history pcaps, see the script.
+        # Managed by Ansible (role kamailio). Compresses and deletes old SIP history pcaps, see the script.
         [Unit]
         Description=Prune SIP history pcaps (sipdump)
 
@@ -114,6 +118,8 @@
         ExecStart=/usr/local/sbin/pbx-sipdump-prune
         Nice=10
         IOSchedulingClass=idle
+        # zstd on a 1-vCPU edge: never more than half of it, even if the lowest priority were ignored
+        CPUQuota=50%
     - name: pbx-sipdump-prune.timer
       content: |
         # Managed by Ansible (role kamailio). sipdump rotates hourly; prune a few minutes later.
