@@ -36,6 +36,30 @@
     mode: "0644"
   notify: Restart rtpengine
 
+# Kamailio's commands (offer/answer/delete) reach rtpengine on one UDP control socket (listen-ng),
+# which had the kernel default receive buffer of 208 KB. Bursts overflowed it: media-1..4 had
+# dropped 1,018-6,144 commands since 11-24, and on 2026-11-28 01:10-01:20 UTC media-1's drops made
+# each edge time out 35 commands ("no available proxies": those calls failed). rtpengine has no
+# option for that socket's buffer, so the default goes up. A socket gets rmem_default when it is
+# created: the control socket gets it at rtpengine's next restart (recorded as pending, done by
+# scripts/media-rollout.sh). It caps queued data per socket; nothing is allocated up front.
+# 90-: on a host that also runs Kamailio (no media group), its 91-kamailio-udp-buffers.conf (4 MB) wins.
+- name: Larger UDP receive buffers for rtpengine's control socket
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-rtpengine-udp-buffers.conf
+    content: |
+      # Managed by Ansible (role rtpengine).
+      net.core.rmem_default = {{ rtpengine_udp_rcvbuf | default(2097152) }}
+      net.core.rmem_max = {{ rtpengine_udp_rmem_max | default(4194304) }}
+    mode: "0644"
+  register: rtpengine_udp_buffers
+  notify: Restart rtpengine
+
+- name: Apply the UDP buffer settings now (new sockets only)
+  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/90-rtpengine-udp-buffers.conf
+  when: rtpengine_udp_buffers.changed
+  changed_when: true
+
 - name: Systemd drop-in directory
   ansible.builtin.file:
     path: /etc/systemd/system/{{ rtpengine_service }}.service.d
